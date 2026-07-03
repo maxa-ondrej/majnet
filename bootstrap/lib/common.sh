@@ -38,6 +38,12 @@ install_stdin() {
   CHANGED=1
 }
 
+# The step-side of the CHANGED protocol: `changed && systemctl restart …`,
+# then `reset_changed` as the step's last line (returns 0, so a false
+# condition above never fails the `source` in bootstrap.sh under set -e).
+changed() { [[ ${CHANGED:-} == 1 ]]; }
+reset_changed() { CHANGED=; }
+
 apt_ensure() {
   local missing=()
   for pkg in "$@"; do

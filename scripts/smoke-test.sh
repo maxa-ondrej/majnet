@@ -58,7 +58,7 @@ app_single() { [[ $(app_container | wc -l | tr -d ' ') == 1 ]]; }
 
 step "preflight"
 docker info >/dev/null || { red "docker daemon not reachable"; exit 1; }
-command -v sops >/dev/null && command -v age-keygen >/dev/null || { red "need sops + age-keygen (nix dev shell)"; exit 1; }
+{ command -v sops && command -v age-keygen; } >/dev/null || { red "need sops + age-keygen (nix dev shell)"; exit 1; }
 
 step "building fixture in $WORK"
 SNAP="$WORK/snapshots"
@@ -107,9 +107,11 @@ wait_for 10 "reconciler is up" curl -fs "http://$LISTEN/healthz"
 
 step "1) initial converge: container healthy, secret decrypted onto tmpfs"
 wait_for 90 "app container healthy" app_is_healthy
-docker exec "$(app_container)" sh -c 'test "$(cat /run/secrets/greeting)" = hello-from-sops' \
-  && green "SOPS secret decrypted and mounted at /run/secrets/greeting" \
-  || fail "secret file wrong or missing"
+if docker exec "$(app_container)" sh -c 'test "$(cat /run/secrets/greeting)" = hello-from-sops'; then
+  green "SOPS secret decrypted and mounted at /run/secrets/greeting"
+else
+  fail "secret file wrong or missing"
+fi
 docker network inspect "proj-$PROJECT" >/dev/null 2>&1 && green "project network exists"
 
 step "2) blue-green: config change replaces the container, no gap"
@@ -117,7 +119,7 @@ OLD_ID=$(app_container)
 manifest 2
 curl -fs -X POST "http://$LISTEN/notify" -H 'content-type: application/json' -d '{}' >/dev/null
 wait_for 90 "new container serving REV=2" app_env_rev 2
-[[ $(app_container) != "$OLD_ID" ]] && green "old container replaced" || fail "container was not replaced"
+if [[ $(app_container) != "$OLD_ID" ]]; then green "old container replaced"; else fail "container was not replaced"; fi
 wait_for 30 "exactly one container remains" app_single
 app_is_healthy && green "replacement is healthy"
 

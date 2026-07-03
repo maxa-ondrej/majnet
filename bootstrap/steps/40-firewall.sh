@@ -58,8 +58,8 @@ PROD
 EOF
 
 systemctl enable --now nftables
-[[ ${CHANGED:-} == 1 ]] && nft -f /etc/nftables.conf
-CHANGED=
+changed && nft -f /etc/nftables.conf
+reset_changed
 
 if [[ $NODE_ROLE == prod ]]; then
   # Cloudflare ranges drift — refresh weekly by re-running this step.

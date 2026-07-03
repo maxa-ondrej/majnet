@@ -47,4 +47,4 @@ EOF
 
 systemctl daemon-reload
 systemctl enable --now majnet-backup.timer
-CHANGED=
+reset_changed

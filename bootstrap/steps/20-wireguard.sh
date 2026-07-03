@@ -36,5 +36,5 @@ EOF
 install_stdin /etc/wireguard/wg0.conf 0600 < <(render_wg_conf)
 
 systemctl enable --now wg-quick@wg0
-[[ ${CHANGED:-} == 1 ]] && systemctl reload-or-restart wg-quick@wg0
-CHANGED=
+changed && systemctl reload-or-restart wg-quick@wg0
+reset_changed
