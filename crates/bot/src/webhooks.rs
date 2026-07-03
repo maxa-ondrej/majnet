@@ -104,9 +104,17 @@ async fn on_push(state: &AppState, org: &str, payload: &serde_json::Value) -> an
         tracing::info!(org, repo, branch, commit, "deployable push — notifying reconciler");
         state.store.log_event("push", Some(org), &format!("{repo}@{branch} {commit}"))?;
         crate::notify::notify_reconciler(state, org, repo, branch, commit).await;
+        if is_platform {
+            // Registry or people may have changed: full reconciliation.
+            crate::org_sync::sync_all(state).await?;
+        }
     } else if is_ops_main {
-        tracing::info!(org, commit, "ops main push — rendering");
+        tracing::info!(org, commit, "ops main push — rendering + org sync");
         crate::render::on_ops_main_push(state, org, commit).await?;
+        // project.yaml may have changed: reconcile this org (repos, teams, ACLs).
+        let (_, platform_tar) = crate::proxy::fetch_snapshot(state, &state.config.root_org, "platform", "main").await?;
+        let platform = majnet_common::tarball::untar(&platform_tar)?;
+        crate::org_sync::sync_org(state, org, &platform).await?;
     } else {
         tracing::debug!(org, repo, branch, "push ignored (not ops main/env or platform config)");
     }

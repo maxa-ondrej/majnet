@@ -13,6 +13,7 @@
 
 mod config;
 mod digest;
+mod git;
 mod github;
 mod notify;
 mod org_sync;
@@ -56,12 +57,25 @@ async fn main() -> Result<()> {
         .route("/webhook", post(webhooks::handle))
         .with_state(state.clone());
 
-    // WG-internal listener: the reconciler's snapshot API. Trust comes from
-    // the bind address being the WireGuard IP (§7) — keep it that way.
+    // WG-internal listener: the reconciler's snapshot + authkey API. Trust
+    // comes from the bind address being the WireGuard IP (§7) — keep it so.
     let internal_app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/api/snapshot/{org}/{repo}/{branch}", get(proxy::snapshot))
+        .route("/api/tailscale-authkey/{project}", post(tailscale::authkey))
         .with_state(state.clone());
+
+    // Org reconciliation: hourly, plus webhook-triggered on config pushes (§11.2).
+    let sync_state = state.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(3600));
+        loop {
+            tick.tick().await;
+            if let Err(e) = org_sync::sync_all(&sync_state).await {
+                tracing::error!(error = format!("{e:#}"), "scheduled org sync failed");
+            }
+        }
+    });
 
     let webhook_listener = tokio::net::TcpListener::bind(&state.config.listen_webhook).await?;
     let internal_listener = tokio::net::TcpListener::bind(&state.config.listen_internal).await?;

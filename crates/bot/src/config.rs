@@ -23,6 +23,10 @@ pub struct Config {
     pub data_dir: PathBuf,
     /// Root platform org (registry + platform config live here) — §2.
     pub root_org: String,
+    /// Tailscale API key (the bot's second credential, §6). Empty = TS sync off.
+    pub tailscale_api_key: Option<String>,
+    /// Tailnet name, e.g. `example.com` or `tail1234.ts.net`.
+    pub tailnet: Option<String>,
 }
 
 impl Config {
@@ -39,6 +43,8 @@ impl Config {
             reconciler_url: std::env::var("MAJNET_RECONCILER_URL").unwrap_or_default(),
             data_dir: std::env::var("MAJNET_DATA_DIR").unwrap_or_else(|_| "/var/lib/majnet-bot".into()).into(),
             root_org: std::env::var("MAJNET_ROOT_ORG").unwrap_or_else(|_| "majksa-platform".into()),
+            tailscale_api_key: std::env::var("MAJNET_TAILSCALE_API_KEY").ok(),
+            tailnet: std::env::var("MAJNET_TAILNET").ok(),
         })
     }
 }

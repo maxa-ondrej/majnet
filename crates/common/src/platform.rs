@@ -39,6 +39,12 @@ pub struct PeopleFile {
     pub people: Vec<Person>,
 }
 
+impl PeopleFile {
+    pub fn parse(yaml: &[u8]) -> anyhow::Result<Self> {
+        Ok(serde_yaml::from_slice(yaml)?)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Person {
     pub github: String,

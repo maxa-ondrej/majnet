@@ -41,13 +41,16 @@ Code ✅ / live verification ⏳:
 - [ ] End-to-end verification against a real node (needs phase 0 infra): render PR → merge → converge → hello-world serving
 - [ ] Private GHCR pull auth on nodes (bootstrap-level `docker login`; reconciler stays credential-free)
 
-## Phase 3 — Org management
+## Phase 3 — Org management 🚧
 
-- [ ] Registry-gated discovery (App installed ∧ listed in `projects.yaml`)
-- [ ] Org reconciliation loop: repo creation from templates, settings, branch protection, teams, membership, archive-on-removal
-- [ ] Tailscale sync: groups, ACLs, per-project ingress auth keys
-- [ ] Per-project ingress (Traefik + tailscale sidecar) + Docker networks
-- [ ] Split DNS for `*.{project}.majksa.net` on the tailnet
+Code ✅ / live wiring ⏳:
+
+- [x] Registry-gated discovery: App installed ∧ listed in `projects.yaml`; listed-but-uninstalled logs "pending" (`bot/src/org_sync.rs`)
+- [x] Org reconciliation loop (hourly + on config pushes): ops repo + scaffold, app repos from `repo-templates/` with `{{app}}`/`{{org}}` placeholders, archive-on-removal, branch protection (`env/production` review gate, app `main` build check), `admins`/`developers` teams + membership
+- [x] Tailscale sync: ACL policy rendered from people.yaml + project members, pushed via API; one-shot tagged auth keys minted for ingresses over the WG-internal API (`bot/src/tailscale.rs`)
+- [x] Per-project ingress: Traefik + tailscale sidecar (shared netns, state volume, docker-provider constraint on `majnet.project`) ensured by the reconciler on the private node (`reconciler/src/ingress.rs`)
+- [ ] Split DNS for `*.<project>.majksa.net` on the tailnet (Tailscale admin: DNS → split DNS pointing at the project ingress IPs; automate later)
+- [ ] Live verification: real org onboarding end-to-end (create org → install App → registry line → repos/teams/ACLs appear)
 
 ## Phase 4 — Environment classes
 

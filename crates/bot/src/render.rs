@@ -109,23 +109,15 @@ async fn push_render_pr(
     let repo = format!("/repos/{org}/ops");
 
     // Full replacement tree — env branches contain exactly the render output.
-    let tree_items: Vec<_> = files
-        .iter()
-        .map(|(path, content)| json!({ "path": path, "mode": "100644", "type": "blob", "content": content }))
-        .collect();
-    let tree: serde_json::Value = client
-        .post(format!("{repo}/git/trees"), Some(&json!({ "tree": tree_items })))
-        .await
-        .context("creating rendered tree")?;
-    let tree_sha = tree["sha"].as_str().context("tree response has no sha")?;
+    let tree_sha = &crate::git::create_tree(&client, &repo, &files).await.context("creating rendered tree")?;
 
     // Ensure the env branch exists (orphan history: first render is the root).
-    let env_head = get_branch_head(&client, &repo, &env_branch).await?;
+    let env_head = crate::git::get_branch_head(&client, &repo, &env_branch).await?;
     let env_head = match env_head {
         Some(sha) => sha,
         None => {
-            let commit = create_commit(&client, &repo, tree_sha, &[], &format!("render: initial {} tree", class.as_str())).await?;
-            create_ref(&client, &repo, &env_branch, &commit).await?;
+            let commit = crate::git::create_commit(&client, &repo, tree_sha, &[], &format!("render: initial {} tree", class.as_str())).await?;
+            crate::git::create_ref(&client, &repo, &env_branch, &commit).await?;
             tracing::info!(org, branch = env_branch, "created env branch with initial render");
             return Ok(());
         }
@@ -139,16 +131,14 @@ async fn push_render_pr(
     }
 
     let message = format!("render({}): from main@{}", class.as_str(), &source_commit[..12.min(source_commit.len())]);
-    let commit_sha = create_commit(&client, &repo, tree_sha, &[&env_head], &message).await?;
+    let commit_sha = crate::git::create_commit(&client, &repo, tree_sha, &[&env_head], &message).await?;
 
     // Point render/<class> at the new commit (force: pending changes accumulate
     // into the same PR, always as a single rendered state).
-    if get_branch_head(&client, &repo, &render_branch).await?.is_some() {
-        let _: serde_json::Value = client
-            .patch(format!("{repo}/git/refs/heads/{render_branch}"), Some(&json!({ "sha": commit_sha, "force": true })))
-            .await?;
+    if crate::git::get_branch_head(&client, &repo, &render_branch).await?.is_some() {
+        crate::git::force_update_ref(&client, &repo, &render_branch, &commit_sha).await?;
     } else {
-        create_ref(&client, &repo, &render_branch, &commit_sha).await?;
+        crate::git::create_ref(&client, &repo, &render_branch, &commit_sha).await?;
     }
 
     // One open render PR per class.
@@ -195,31 +185,6 @@ async fn push_render_pr(
     } else {
         tracing::info!(org, class = class.as_str(), pr_number, "render PR awaits admin review (production gate)");
     }
-    Ok(())
-}
-
-async fn get_branch_head(client: &octocrab::Octocrab, repo: &str, branch: &str) -> Result<Option<String>> {
-    let result: Result<serde_json::Value, _> = client.get(format!("{repo}/git/ref/heads/{branch}"), None::<&()>).await;
-    match result {
-        Ok(r) => Ok(Some(r["object"]["sha"].as_str().context("ref has no sha")?.to_string())),
-        Err(octocrab::Error::GitHub { source, .. }) if source.status_code == 404 => Ok(None),
-        Err(e) => Err(e).context("resolving branch head"),
-    }
-}
-
-async fn create_commit(client: &octocrab::Octocrab, repo: &str, tree: &str, parents: &[&str], message: &str) -> Result<String> {
-    let commit: serde_json::Value = client
-        .post(format!("{repo}/git/commits"), Some(&json!({ "message": message, "tree": tree, "parents": parents })))
-        .await
-        .context("creating commit")?;
-    Ok(commit["sha"].as_str().context("commit has no sha")?.to_string())
-}
-
-async fn create_ref(client: &octocrab::Octocrab, repo: &str, branch: &str, sha: &str) -> Result<()> {
-    let _: serde_json::Value = client
-        .post(format!("{repo}/git/refs"), Some(&json!({ "ref": format!("refs/heads/{branch}"), "sha": sha })))
-        .await
-        .with_context(|| format!("creating ref {branch}"))?;
     Ok(())
 }
 

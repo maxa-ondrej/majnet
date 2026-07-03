@@ -20,6 +20,7 @@ mod converge;
 mod deploy;
 mod docker;
 mod gc;
+mod ingress;
 mod secrets;
 mod snapshot;
 mod state;
