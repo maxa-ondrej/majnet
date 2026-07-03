@@ -3,7 +3,7 @@
 
 if [[ -z ${BESZEL_AGENT_KEY:-} ]]; then
   warn "BESZEL_AGENT_KEY empty — skipping Beszel agent (set it once the hub on main is up)"
-  return 0 2>/dev/null || exit 0
+  return 0
 fi
 
 # Beszel agent as a container, listening on the WG IP only.

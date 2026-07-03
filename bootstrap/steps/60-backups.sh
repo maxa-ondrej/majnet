@@ -4,7 +4,7 @@
 
 if [[ ! -f /etc/majnet/restic.env ]]; then
   warn "no /etc/majnet/restic.env — skipping backup setup (phase-5 wiring)"
-  return 0 2>/dev/null || exit 0
+  return 0
 fi
 
 install_stdin /usr/local/bin/majnet-backup 0755 <<'EOF'
