@@ -23,8 +23,17 @@ jobs:
 
   shell:
     runs-on: ubuntu-latest
+    env:
+      # Keep in sync with what nixpkgs provides locally; the runner's apt
+      # version drifts (0.9 vs 0.11 disagree on e.g. SC2015 `|| true`).
+      SHELLCHECK_VERSION: v0.11.0
     steps:
       - uses: actions/checkout@v4
+      - name: install pinned shellcheck
+        run: |
+          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
+            | sudo tar -xJ --strip-components=1 -C /usr/local/bin "shellcheck-${SHELLCHECK_VERSION}/shellcheck"
+          shellcheck --version
       - run: bash -n bootstrap/bootstrap.sh bootstrap/lib/common.sh bootstrap/steps/*.sh bootstrap/pki/gen-certs.sh scripts/smoke-test.sh
       - run: shellcheck -x bootstrap/bootstrap.sh bootstrap/pki/gen-certs.sh bootstrap/lib/common.sh scripts/smoke-test.sh
       - run: shellcheck -x --shell=bash bootstrap/steps/*.sh
