@@ -18,6 +18,7 @@ mod git;
 mod github;
 mod notify;
 mod org_sync;
+mod platform_api;
 mod promote;
 mod proxy;
 mod render;
@@ -69,6 +70,8 @@ async fn main() -> Result<()> {
         .route("/api/tailscale-authkey/{project}", post(tailscale::authkey))
         .route("/api/promote/{org}/{app}", post(promote::promote))
         .route("/api/rollback/{org}", post(promote::rollback))
+        .route("/api/platform/seed", post(platform_api::seed))
+        .route("/api/platform/node", post(platform_api::upsert_node))
         .with_state(state.clone());
 
     // Org reconciliation: hourly, plus webhook-triggered on config pushes (§11.2).

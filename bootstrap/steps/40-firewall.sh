@@ -3,7 +3,9 @@
 #   all nodes : SSH (22) + WireGuard (51820) from anywhere; Docker API +
 #               everything else only over wg0
 #   prod      : additionally 80/443, restricted to Cloudflare ranges
-#   main/priv : no public service ports at all
+#   main      : additionally 8080 (GitHub webhooks) + 7600 (setup wizard —
+#               nothing listens there after setup completes, ADR 0004)
+#   private   : no public service ports at all
 
 WG_PORT=${WG_LISTEN_PORT:-51820}
 
@@ -47,6 +49,11 @@ $( [[ $NODE_ROLE == prod ]] && cat <<'PROD'
     ip  saddr @cloudflare4 tcp dport { 80, 443 } accept
     ip6 saddr @cloudflare6 tcp dport { 80, 443 } accept
 PROD
+)$( [[ $NODE_ROLE == main ]] && cat <<'MAIN'
+
+    # Control plane: GitHub webhooks (bot) + first-run setup wizard.
+    tcp dport { 8080, 7600 } accept
+MAIN
 )
   }
 

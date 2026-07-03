@@ -326,7 +326,11 @@ async fn ensure_team(client: &octocrab::Octocrab, org: &str, team: &str) -> Resu
     Ok(())
 }
 
-async fn repo_exists(client: &octocrab::Octocrab, org: &str, repo: &str) -> Result<bool> {
+pub(crate) async fn repo_exists(
+    client: &octocrab::Octocrab,
+    org: &str,
+    repo: &str,
+) -> Result<bool> {
     let result: Result<serde_json::Value, _> = client
         .get(format!("/repos/{org}/{repo}"), None::<&()>)
         .await;

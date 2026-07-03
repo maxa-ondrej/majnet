@@ -2,12 +2,13 @@
 
 A self-hosted deployment platform: **GitOps-driven**, built on **plain Docker** with static trust-zoned placement across three nodes, organized around **projects** — each project is its own GitHub organization, fully managed by the platform.
 
-Two custom Rust services form the control plane:
+Three custom Rust services form the control plane:
 
 - **GitHub Bot** (`crates/bot`) — the liaison. The only component talking to the GitHub and Tailscale APIs: org reconciliation, digest bumps, manifest rendering (render PRs onto `env/<class>` branches), membership + ACL sync, repo proxy for the reconciler, dashboard write API.
 - **Reconciler** (`crates/reconciler`) — the orchestrator. Consumes rendered `env/*` branches, decrypts SOPS secrets with class keys, and converges each node's Docker API over WireGuard: blue-green deploys, per-project networks/ingress/DB provisioning, ephemeral GC.
+- **Setup** (`crates/setup`) — the provisioner (ADR 0004). First-run wizard (GitHub App via manifest flow, platform repo seeding) + node enrollment over SSH.
 
-**Credential isolation:** the bot holds the GitHub App key + Tailscale API key; the reconciler holds age keys + Docker mTLS certs. Disjoint powers.
+**Credential isolation:** the bot holds the GitHub App key + Tailscale API key; the reconciler holds age keys + Docker mTLS certs; setup holds the enrollment SSH key + PKI CA. Disjoint powers.
 
 📄 **Full design:** [docs/design.md](docs/design.md) · **Roadmap:** [docs/roadmap.md](docs/roadmap.md) · **Diagrams:** [docs/diagrams/](docs/diagrams/)
 
@@ -33,15 +34,15 @@ scripts/smoke-test.sh
 
 ### Installing the platform (operators)
 
-The end goal is a Coolify-style one-line install (roadmap phase 6). Until then, bringing up a real installation is the phase-0/1 manual path:
+Create the root GitHub org by hand (the one manual step, §2), then on a fresh Debian machine — the future **main** node:
 
-1. **Nodes** — provision 3 Debian machines (main / prod / private) and run [`bootstrap/`](bootstrap/README.md): WireGuard mesh, Docker APIs on WG + mTLS, per-zone firewalls.
-2. **GitHub** — create the `majksa-platform` root org, push [`platform-seed/`](platform-seed/README.md) as its `platform` repo, register the GitHub App per [`crates/bot/README.md`](crates/bot/README.md).
-3. **Keys** — `age-keygen` the two class keys (`age-stable.key`, `age-production.key`) + `openssl rand -hex 32 > db-master.key` into the reconciler's key dir.
-4. **Control plane** — run `majnet-bot` and `majnet-reconciler` on the main node (env-var tables in the two crate READMEs), dashboard via [`dashboard/`](dashboard/README.md).
-5. **First project** — create a project org, install the App on it, add one line to `projects.yaml`. The bot materializes everything else.
+```sh
+curl -fsSL https://raw.githubusercontent.com/maxa-ondrej/majnet/main/bootstrap/install.sh | bash
+```
 
-Day-2 operations live in [`docs/runbooks/`](docs/runbooks/).
+The installer bootstraps the node, generates all key material, starts the control plane, and prints a **setup-wizard URL**: create the GitHub App there (manifest flow — one click), seed the platform repo, and enroll the prod/private nodes by handing the wizard SSH access. See [ADR 0004](docs/adr/0004-setup-service-auto-provisioning.md) and [`crates/setup/README.md`](crates/setup/README.md).
+
+Break-glass / manual path: the [`bootstrap/`](bootstrap/README.md) scripts remain runnable standalone, and the crate READMEs document every env var. Day-2 operations live in [`docs/runbooks/`](docs/runbooks/).
 
 ## Topology
 
@@ -61,7 +62,8 @@ majnet/
 ├── crates/
 │   ├── common/           # shared types: manifest schema, project + platform config
 │   ├── bot/              # GitHub Bot (liaison)
-│   └── reconciler/       # Reconciler (orchestrator)
+│   ├── reconciler/       # Reconciler (orchestrator)
+│   └── setup/            # Setup (provisioner: wizard + node enrollment)
 ├── dashboard/            # web UI over reconciler (reads) + bot (writes)
 ├── bootstrap/            # node bootstrap: Docker, WireGuard, roles, firewall (bash, Debian)
 ├── platform-seed/        # initial content for the majksa-platform/platform repo
@@ -90,4 +92,4 @@ cargo run -p majnet-reconciler
 
 ## Status
 
-Pre-implementation — structure scaffolded from the final design draft (v4, 2026-07-03). Currently in **Phase 0 — Foundations**. See [docs/roadmap.md](docs/roadmap.md).
+All roadmap phases (0–6) are **code-complete with CI**; what remains is live wiring against real servers and a real GitHub org. See [docs/roadmap.md](docs/roadmap.md) for the per-phase checklists.

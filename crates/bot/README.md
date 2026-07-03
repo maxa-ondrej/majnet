@@ -30,6 +30,10 @@ The liaison (design doc §11). Phase-1 MVP: GitHub App auth, webhook intake, dig
 | `POST /webhook` | GitHub events (HMAC-verified, delivery-deduped) |
 | `GET /api/snapshot/{org}/{repo}/{branch}` | internal: branch tarball + `X-Majnet-Commit` (reconciler only) |
 | `POST /api/tailscale-authkey/{project}` | internal: mint a one-shot tagged auth key for a project ingress |
+| `POST /api/promote/{org}/{app}` | internal: copy the stable digest into the production overlay (§13) |
+| `POST /api/rollback/{org}` | internal: revert the ops `main` head (§16) |
+| `POST /api/platform/seed` | internal: create the `platform` repo from a posted tree (setup wizard, ADR 0004) |
+| `POST /api/platform/node` | internal: upsert one `nodes.yaml` entry (node enrollment, ADR 0004) |
 | `GET /healthz` | on both listeners |
 
 ## Org reconciliation (phase 3)

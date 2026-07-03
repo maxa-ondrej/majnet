@@ -1001,6 +1001,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "majnet-setup"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "majnet-common",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

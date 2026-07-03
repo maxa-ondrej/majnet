@@ -79,14 +79,17 @@ Code ✅ / remaining ⏳:
 - [ ] Self-update story (open question §20.3)
 - [ ] First weekly restore test actually performed
 
-## Phase 6 — One-line auto-provisioning (Coolify-style install)
+## Phase 6 — One-line auto-provisioning (Coolify-style install) 🚧
 
-The end-state onboarding must be fully automatic — no manual per-node SSH steps:
+Code ✅ / live verification ⏳ (architecture: **ADR 0004** — the `majnet-setup` provisioner, a fourth disjoint credential class: SSH enrollment key + PKI CA + wizard token):
 
-- [ ] **One-line install on the main node** (`curl … | bash` style): installs the control plane (bot, reconciler, dashboard) and self-configures everything it can locally
-- [ ] **Web-based setup continues from there**: first-run wizard on the dashboard (GitHub App creation via the [App manifest flow](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app-from-a-manifest), Tailscale key, Cloudflare token, root org)
-- [ ] **Node enrollment through the brain**: give the control plane SSH credentials for a fresh server + pick its role → it runs the bootstrap remotely (WG keys, Docker + mTLS PKI, firewall, agents) and registers the node in `nodes.yaml` itself
-- [ ] The manual `bootstrap/` scripts remain the underlying payload — the brain executes the same steps over SSH; keep them runnable standalone for break-glass/recovery
+- [x] **One-line install on the main node** (`bootstrap/install.sh`): deps + rustup, clone, bootstrap role=main, all key material (PKI CA, age class keys, db-master, enroll key, wizard token), release build, systemd units (bot gated on App credentials existing)
+- [x] **Web-based setup wizard** (`crates/setup`, one-time token): GitHub App via the [manifest flow](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app-from-a-manifest) → bot.env written + bot started; platform repo seeded from `platform-seed/` **committed by the bot** (writes-through-git); public listener closes permanently at /finish
+- [x] **Node enrollment through the brain** (`POST /enroll`, wizard + WG-internal): bootstrap payload over SSH (root first contact, `majnet`+sudo after hardening), PKI server certs issued from the CA, WG pubkey collected, peers re-rendered on every node, `nodes.yaml` updated via the bot
+- [x] The manual `bootstrap/` scripts remain the underlying payload — setup only executes them; standalone break-glass unchanged
+- [ ] Live verification on a real Debian VPS: install → wizard → App → seed → enroll 2 workers → hello-world serving
+- [ ] TLS in front of webhooks + wizard (currently plain HTTP on 8080/7600; Cloudflare or caddy — follow-up)
+- [ ] Dashboard deployment in the installer (needs Tailscale up first; manual per `dashboard/README.md` for now)
 
 > Origin: requirement added 2026-07-03 — the whole setup must be auto-provisioned like Coolify: one command on the master, continue in the web UI, add nodes by handing the brain SSH access.
 
