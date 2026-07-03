@@ -1,30 +1,79 @@
 //! MajNet GitHub Bot — the only component talking to GitHub and Tailscale APIs.
 //!
-//! Responsibilities (design doc §11):
-//!  1. GitHub App auth (JWT → per-org installation tokens)
-//!  2. Org reconciliation loop — repos, settings, teams, members, webhooks
-//!  3. Webhook intake across all project orgs
-//!  4. Digest bumps — signed commits to project `ops` repos
-//!  5. Manifest rendering — base ⊕ overlay → render PRs onto `env/<class>` branches
-//!  6. Tailscale sync — groups, ACLs, ingress auth keys
-//!  7. PR feedback — preview URLs + deploy status
-//!  8. Repo access proxy — cached snapshots served to the reconciler over WG
-//!  9. Dashboard write API — UI actions → validated commits/PRs
+//! Responsibilities (design doc §11); phase 1 implements 1, 3, 4, 8:
+//!  1. GitHub App auth (JWT → per-org installation tokens)        [github]
+//!  3. Webhook intake across all project orgs                     [webhooks]
+//!  4. Digest bumps — App-signed commits to project `ops` repos   [digest]
+//!  8. Repo access proxy — snapshots for the reconciler over WG   [proxy, notify]
+//!
+//! Phase 2: manifest rendering [render]. Phase 3: org reconciliation
+//! [org_sync] + Tailscale sync [tailscale]. Phase 5: dashboard write API.
 //!
 //! Credentials held: GitHub App key + Tailscale API key. Nothing else.
 
+mod config;
+mod digest;
+mod github;
+mod notify;
 mod org_sync;
+mod proxy;
 mod render;
+mod state;
 mod tailscale;
 mod webhooks;
 
+use anyhow::{Context, Result};
+use axum::routing::{get, post};
+use axum::Router;
+use std::sync::Arc;
+
+pub struct AppState {
+    pub config: config::Config,
+    pub github: github::GitHub,
+    pub store: state::Store,
+    pub http: reqwest::Client,
+}
+
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
-    tracing::info!("majnet-bot starting (Phase 1 MVP — see docs/roadmap.md)");
+async fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .init();
 
-    // TODO(phase-1): GitHub App auth, webhook server (axum), digest bumps, repo proxy.
-    // TODO(phase-3): org reconciliation loop, Tailscale sync.
+    let config = config::Config::from_env()?;
+    let key = std::fs::read(&config.github_private_key_path)
+        .with_context(|| format!("reading {}", config.github_private_key_path.display()))?;
+    let state = Arc::new(AppState {
+        github: github::GitHub::new(config.github_app_id, &key)?,
+        store: state::Store::open(&config.data_dir)?,
+        http: reqwest::Client::new(),
+        config,
+    });
 
+    // Public listener: GitHub webhooks (reaches us via edge / tunnel).
+    let webhook_app = Router::new()
+        .route("/healthz", get(|| async { "ok" }))
+        .route("/webhook", post(webhooks::handle))
+        .with_state(state.clone());
+
+    // WG-internal listener: the reconciler's snapshot API. Trust comes from
+    // the bind address being the WireGuard IP (§7) — keep it that way.
+    let internal_app = Router::new()
+        .route("/healthz", get(|| async { "ok" }))
+        .route("/api/snapshot/{org}/{repo}/{branch}", get(proxy::snapshot))
+        .with_state(state.clone());
+
+    let webhook_listener = tokio::net::TcpListener::bind(&state.config.listen_webhook).await?;
+    let internal_listener = tokio::net::TcpListener::bind(&state.config.listen_internal).await?;
+    tracing::info!(
+        webhook = %state.config.listen_webhook,
+        internal = %state.config.listen_internal,
+        "majnet-bot listening"
+    );
+
+    tokio::try_join!(
+        async { axum::serve(webhook_listener, webhook_app).await.context("webhook server") },
+        async { axum::serve(internal_listener, internal_app).await.context("internal server") },
+    )?;
     Ok(())
 }

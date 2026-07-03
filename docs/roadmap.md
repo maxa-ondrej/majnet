@@ -15,13 +15,18 @@ Tooling ✅ / infra provisioning ⏳:
 - [ ] Create root org `majksa-platform` on GitHub + push `platform-seed/` as the `platform` repo
 - [ ] Cloudflare: origin cert on prod node, proxied DNS record → hello-world reachable publicly
 
-## Phase 1 — Bot MVP
+## Phase 1 — Bot MVP 🚧
 
-- [ ] GitHub App: JWT auth, per-org installation tokens
-- [ ] Webhook server + signature verification
-- [ ] Digest bumps: signed commits to a project `ops` repo
-- [ ] Repo access proxy (cached snapshots served to the reconciler over WG)
-- [ ] GHA workflow template (`templates/repo-templates/`)
+Code ✅ / live wiring ⏳:
+
+- [x] GitHub App: JWT auth, per-org installation token cache (`bot/src/github.rs`)
+- [x] Webhook server: HMAC verification, delivery dedup, event dispatch (`bot/src/webhooks.rs`)
+- [x] Digest bumps: GHCR `registry_package` event → App-signed commit to `apps/<app>/stable.yaml` on ops `main` (ADR 0001, `bot/src/digest.rs`)
+- [x] Repo access proxy: `GET /api/snapshot/{org}/{repo}/{branch}` — SHA-cached tarballs on the WG-internal listener (`bot/src/proxy.rs`)
+- [x] Reconciler notify on `env/*` + platform pushes (best-effort; drift poll backs it up)
+- [x] GHA workflow templates: `rust-service`, `web-app` (test → GHCR by digest)
+- [ ] Register the GitHub App (key, webhook secret, events per `crates/bot/README.md`) and deploy the bot to the main node
+- [ ] Verify the `registry_package` payload digest path against a real delivery (ADR 0001 caveat)
 
 ## Phase 2 — Reconciler MVP
 
