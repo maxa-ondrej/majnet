@@ -40,7 +40,9 @@ pub struct AppState {
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
         .init();
 
     let config = config::Config::from_env()?;
@@ -90,8 +92,16 @@ async fn main() -> Result<()> {
     );
 
     tokio::try_join!(
-        async { axum::serve(webhook_listener, webhook_app).await.context("webhook server") },
-        async { axum::serve(internal_listener, internal_app).await.context("internal server") },
+        async {
+            axum::serve(webhook_listener, webhook_app)
+                .await
+                .context("webhook server")
+        },
+        async {
+            axum::serve(internal_listener, internal_app)
+                .await
+                .context("internal server")
+        },
     )?;
     Ok(())
 }

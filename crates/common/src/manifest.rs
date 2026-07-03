@@ -80,7 +80,10 @@ impl AppManifest {
         ensure!(
             !self.name.is_empty()
                 && self.name.len() <= 63
-                && self.name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                && self
+                    .name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
                 && !self.name.starts_with('-')
                 && !self.name.ends_with('-'),
             "app name '{}' must be lowercase alphanumeric/hyphens (DNS label)",
@@ -88,27 +91,46 @@ impl AppManifest {
         );
         // Images are pinned by digest, never by tag (§5 decision log).
         let Some((repo, digest)) = self.image.split_once('@') else {
-            bail!("image '{}' is not digest-pinned (expected repo@sha256:…)", self.image);
+            bail!(
+                "image '{}' is not digest-pinned (expected repo@sha256:…)",
+                self.image
+            );
         };
-        ensure!(!repo.is_empty() && !repo.contains(' '), "image repository '{repo}' is invalid");
         ensure!(
-            digest.strip_prefix("sha256:").is_some_and(|h| h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit())),
+            !repo.is_empty() && !repo.contains(' '),
+            "image repository '{repo}' is invalid"
+        );
+        ensure!(
+            digest
+                .strip_prefix("sha256:")
+                .is_some_and(|h| h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit())),
             "image digest '{digest}' is not a valid sha256 digest"
         );
         if let Some(ingress) = &self.ingress {
             ensure!(
-                !ingress.host.is_empty() && ingress.host.chars().all(|c| c.is_ascii_alphanumeric() || ".-".contains(c)),
+                !ingress.host.is_empty()
+                    && ingress
+                        .host
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || ".-".contains(c)),
                 "ingress host '{}' is invalid",
                 ingress.host
             );
             ensure!(ingress.port != 0, "ingress port must be non-zero");
         }
         if let Some(health) = &self.health {
-            ensure!(health.path.starts_with('/'), "health path '{}' must start with /", health.path);
+            ensure!(
+                health.path.starts_with('/'),
+                "health path '{}' must start with /",
+                health.path
+            );
             ensure!(health.port != 0, "health port must be non-zero");
         }
         if let Some(migration) = &self.migration {
-            ensure!(!migration.command.is_empty(), "migration command must not be empty");
+            ensure!(
+                !migration.command.is_empty(),
+                "migration command must not be empty"
+            );
         }
         for secret in &self.secrets {
             ensure!(
@@ -145,7 +167,10 @@ mod tests {
     #[test]
     fn rejects_tag_pinned_image() {
         let yaml = "name: api\nimage: ghcr.io/org/api:latest\n";
-        assert!(AppManifest::parse(yaml).unwrap_err().to_string().contains("digest-pinned"));
+        assert!(AppManifest::parse(yaml)
+            .unwrap_err()
+            .to_string()
+            .contains("digest-pinned"));
     }
 
     #[test]

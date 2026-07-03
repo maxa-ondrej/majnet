@@ -28,7 +28,10 @@ impl GitHub {
         let key = jsonwebtoken::EncodingKey::from_rsa_pem(private_key_pem)
             .context("GitHub App private key is not a valid RSA PEM")?;
         let app = Octocrab::builder().app(app_id.into(), key).build()?;
-        Ok(Self { app, cache: Mutex::new(HashMap::new()) })
+        Ok(Self {
+            app,
+            cache: Mutex::new(HashMap::new()),
+        })
     }
 
     /// Installation-scoped client for an org (cached).
@@ -55,7 +58,11 @@ impl GitHub {
         let (client, token) = self.installation_client(installation.id).await?;
         cache.insert(
             org.to_string(),
-            CachedInstallation { client: client.clone(), token: token.clone(), fetched_at: Instant::now() },
+            CachedInstallation {
+                client: client.clone(),
+                token: token.clone(),
+                fetched_at: Instant::now(),
+            },
         );
         Ok((client, token))
     }

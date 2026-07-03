@@ -43,10 +43,19 @@ impl Store {
                  PRIMARY KEY (project, app)
              );",
         )?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
-    pub fn record(&self, commit: &str, project: &str, node: &str, action: &str, result: &str) -> Result<()> {
+    pub fn record(
+        &self,
+        commit: &str,
+        project: &str,
+        node: &str,
+        action: &str,
+        result: &str,
+    ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO events (commit_sha, project, node, action, result) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -101,13 +110,18 @@ impl Store {
             "SELECT app FROM ephemeral_stacks
              WHERE project = ?1 AND missing_since < datetime('now', '-48 hours')",
         )?;
-        let apps = stmt.query_map([project], |row| row.get(0))?.collect::<Result<_, _>>()?;
+        let apps = stmt
+            .query_map([project], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
         Ok(apps)
     }
 
     pub fn ephemeral_forget(&self, project: &str, app: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM ephemeral_stacks WHERE project = ?1 AND app = ?2", [project, app])?;
+        conn.execute(
+            "DELETE FROM ephemeral_stacks WHERE project = ?1 AND app = ?2",
+            [project, app],
+        )?;
         Ok(())
     }
 

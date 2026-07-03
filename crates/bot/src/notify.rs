@@ -4,12 +4,21 @@
 
 use crate::AppState;
 
-pub async fn notify_reconciler(state: &AppState, org: &str, repo: &str, branch: &str, commit: &str) {
+pub async fn notify_reconciler(
+    state: &AppState,
+    org: &str,
+    repo: &str,
+    branch: &str,
+    commit: &str,
+) {
     if state.config.reconciler_url.is_empty() {
         tracing::debug!("MAJNET_RECONCILER_URL unset — skipping notify");
         return;
     }
-    let url = format!("{}/notify", state.config.reconciler_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/notify",
+        state.config.reconciler_url.trim_end_matches('/')
+    );
     let body = serde_json::json!({ "org": org, "repo": repo, "branch": branch, "commit": commit });
     match state.http.post(&url).json(&body).send().await {
         Ok(resp) if resp.status().is_success() => {}

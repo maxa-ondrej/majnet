@@ -10,7 +10,10 @@
 //! check tears the new container down and leaves the old serving.
 
 use anyhow::{bail, Context, Result};
-use bollard::models::{ContainerCreateBody, ContainerSummary, HealthConfig, HostConfig, RestartPolicy, RestartPolicyNameEnum};
+use bollard::models::{
+    ContainerCreateBody, ContainerSummary, HealthConfig, HostConfig, RestartPolicy,
+    RestartPolicyNameEnum,
+};
 use bollard::query_parameters as qp;
 use bollard::Docker;
 use futures_util::TryStreamExt;
@@ -49,13 +52,18 @@ pub async fn converge_app(
     let existing = list_app_containers(ctx, &manifest.name).await?;
 
     let current = existing.iter().find(|c| {
-        label(c, LABEL_CONFIG) == Some(config_hash.as_str()) && c.state == Some(bollard::models::ContainerSummaryStateEnum::RUNNING)
+        label(c, LABEL_CONFIG) == Some(config_hash.as_str())
+            && c.state == Some(bollard::models::ContainerSummaryStateEnum::RUNNING)
     });
     if current.is_some() {
         return Ok("in sync".into());
     }
     if ctx.dry_run {
-        return Ok(format!("DRY RUN: would deploy {} ({})", manifest.image, &config_hash[..8]));
+        return Ok(format!(
+            "DRY RUN: would deploy {} ({})",
+            manifest.image,
+            &config_hash[..8]
+        ));
     }
 
     pull_image(ctx.docker, &manifest.image).await?;
@@ -63,27 +71,68 @@ pub async fn converge_app(
     // Secrets land on the node's tmpfs before anything runs.
     let secrets_dir = crate::secrets::host_dir(ctx.project, &manifest.name, ctx.class);
     if let Some(secrets) = secrets {
-        crate::secrets::deliver(ctx.docker, &secrets_dir, secrets).await.context("delivering secrets")?;
+        crate::secrets::deliver(ctx.docker, &secrets_dir, secrets)
+            .await
+            .context("delivering secrets")?;
     }
 
     // Migrations: one-shot, must exit 0 before the rollout (§12.6).
     if let Some(migration) = &manifest.migration {
-        run_migration(ctx, manifest, secrets.is_some(), &secrets_dir, extra_env, &migration.command).await?;
+        run_migration(
+            ctx,
+            manifest,
+            secrets.is_some(),
+            &secrets_dir,
+            extra_env,
+            &migration.command,
+        )
+        .await?;
     }
 
-    let name = format!("{}-{}-{}-{}", ctx.project, manifest.name, ctx.class.as_str(), &config_hash[..8]);
+    let name = format!(
+        "{}-{}-{}-{}",
+        ctx.project,
+        manifest.name,
+        ctx.class.as_str(),
+        &config_hash[..8]
+    );
     remove_container_if_exists(ctx.docker, &name).await?; // crashed previous attempt
 
-    let body = container_spec(ctx, manifest, secrets.is_some(), &secrets_dir, extra_env, &config_hash);
+    let body = container_spec(
+        ctx,
+        manifest,
+        secrets.is_some(),
+        &secrets_dir,
+        extra_env,
+        &config_hash,
+    );
     ctx.docker
-        .create_container(Some(qp::CreateContainerOptions { name: Some(name.clone()), ..Default::default() }), body)
+        .create_container(
+            Some(qp::CreateContainerOptions {
+                name: Some(name.clone()),
+                ..Default::default()
+            }),
+            body,
+        )
         .await
         .context("creating container")?;
-    ctx.docker.start_container(&name, None::<qp::StartContainerOptions>).await.context("starting container")?;
+    ctx.docker
+        .start_container(&name, None::<qp::StartContainerOptions>)
+        .await
+        .context("starting container")?;
 
     // Health gate. Failure leaves the old container serving.
     if let Err(e) = await_healthy(ctx.docker, &name, manifest).await {
-        let _ = ctx.docker.remove_container(&name, Some(qp::RemoveContainerOptions { force: true, ..Default::default() })).await;
+        let _ = ctx
+            .docker
+            .remove_container(
+                &name,
+                Some(qp::RemoveContainerOptions {
+                    force: true,
+                    ..Default::default()
+                }),
+            )
+            .await;
         return Err(e.context("health check failed — old container keeps serving"));
     }
 
@@ -95,7 +144,11 @@ pub async fn converge_app(
             }
         }
     }
-    Ok(format!("deployed {} ({})", manifest.image, &config_hash[..8]))
+    Ok(format!(
+        "deployed {} ({})",
+        manifest.image,
+        &config_hash[..8]
+    ))
 }
 
 /// Restart all running containers of one app (the §16 escape hatch —
@@ -143,7 +196,9 @@ pub async fn gc_removed_apps(ctx: &DeployCtx<'_>, rendered_apps: &[String]) -> R
     let all = list_class_containers(ctx).await?;
     let mut removed = Vec::new();
     for container in &all {
-        let Some(app) = label(container, LABEL_APP) else { continue };
+        let Some(app) = label(container, LABEL_APP) else {
+            continue;
+        };
         if rendered_apps.iter().any(|a| a == app) {
             continue;
         }
@@ -159,10 +214,19 @@ pub async fn gc_removed_apps(ctx: &DeployCtx<'_>, rendered_apps: &[String]) -> R
     Ok(removed)
 }
 
-fn config_hash(manifest: &AppManifest, secrets: Option<&BTreeMap<String, String>>, extra_env: &[(String, String)]) -> String {
+fn config_hash(
+    manifest: &AppManifest,
+    secrets: Option<&BTreeMap<String, String>>,
+    extra_env: &[(String, String)],
+) -> String {
     let mut hasher = sha2::Sha256::new();
     hasher.update(serde_yaml::to_string(manifest).expect("manifest serializes"));
-    for (k, v) in secrets.into_iter().flatten().map(|(k, v)| (k.as_str(), v.as_str())).chain(extra_env.iter().map(|(k, v)| (k.as_str(), v.as_str()))) {
+    for (k, v) in secrets
+        .into_iter()
+        .flatten()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .chain(extra_env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+    {
         hasher.update(k);
         hasher.update([0]);
         hasher.update(v);
@@ -198,10 +262,19 @@ fn container_spec(
     if let Some(ingress) = &manifest.ingress {
         let router = format!("{}-{}-{}", ctx.project, manifest.name, ctx.class.as_str());
         labels.insert("traefik.enable".into(), "true".into());
-        labels.insert(format!("traefik.http.routers.{router}.rule"), format!("Host(`{}`)", ingress.host));
-        labels.insert(format!("traefik.http.routers.{router}.entrypoints"), "websecure".into());
+        labels.insert(
+            format!("traefik.http.routers.{router}.rule"),
+            format!("Host(`{}`)", ingress.host),
+        );
+        labels.insert(
+            format!("traefik.http.routers.{router}.entrypoints"),
+            "websecure".into(),
+        );
         labels.insert(format!("traefik.http.routers.{router}.tls"), "true".into());
-        labels.insert(format!("traefik.http.services.{router}.loadbalancer.server.port"), ingress.port.to_string());
+        labels.insert(
+            format!("traefik.http.services.{router}.loadbalancer.server.port"),
+            ingress.port.to_string(),
+        );
     }
 
     let health = manifest.health.as_ref().map(|h| HealthConfig {
@@ -246,14 +319,22 @@ async fn run_migration(
     extra_env: &[(String, String)],
     command: &[String],
 ) -> Result<()> {
-    let name = format!("{}-{}-{}-migrate", ctx.project, manifest.name, ctx.class.as_str());
+    let name = format!(
+        "{}-{}-{}-migrate",
+        ctx.project,
+        manifest.name,
+        ctx.class.as_str()
+    );
     remove_container_if_exists(ctx.docker, &name).await?;
 
     let body = ContainerCreateBody {
         image: Some(manifest.image.clone()),
         cmd: Some(command.to_vec()),
         env: Some(env_list(manifest, extra_env)),
-        labels: Some(HashMap::from([(LABEL_PROJECT.to_string(), ctx.project.to_string())])),
+        labels: Some(HashMap::from([(
+            LABEL_PROJECT.to_string(),
+            ctx.project.to_string(),
+        )])),
         host_config: Some(HostConfig {
             network_mode: Some(network_name(ctx.project)),
             binds: with_secrets.then(|| vec![format!("{secrets_dir}:/run/secrets:ro")]),
@@ -262,9 +343,17 @@ async fn run_migration(
         ..Default::default()
     };
     ctx.docker
-        .create_container(Some(qp::CreateContainerOptions { name: Some(name.clone()), ..Default::default() }), body)
+        .create_container(
+            Some(qp::CreateContainerOptions {
+                name: Some(name.clone()),
+                ..Default::default()
+            }),
+            body,
+        )
         .await?;
-    ctx.docker.start_container(&name, None::<qp::StartContainerOptions>).await?;
+    ctx.docker
+        .start_container(&name, None::<qp::StartContainerOptions>)
+        .await?;
 
     let exit = ctx
         .docker
@@ -288,8 +377,14 @@ async fn await_healthy(docker: &Docker, name: &str, manifest: &AppManifest) -> R
         // No health check defined: settle briefly, require the container to
         // still be running.
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-        let state = docker.inspect_container(name, None::<qp::InspectContainerOptions>).await?;
-        let running = state.state.as_ref().and_then(|s| s.running).unwrap_or(false);
+        let state = docker
+            .inspect_container(name, None::<qp::InspectContainerOptions>)
+            .await?;
+        let running = state
+            .state
+            .as_ref()
+            .and_then(|s| s.running)
+            .unwrap_or(false);
         if !running {
             bail!("container exited immediately (no health check defined)");
         }
@@ -300,8 +395,14 @@ async fn await_healthy(docker: &Docker, name: &str, manifest: &AppManifest) -> R
     let deadline = std::time::Duration::from_secs(15 + (health.retries as u64) * 9);
     let started = std::time::Instant::now();
     loop {
-        let state = docker.inspect_container(name, None::<qp::InspectContainerOptions>).await?;
-        let status = state.state.as_ref().and_then(|s| s.health.as_ref()).and_then(|h| h.status);
+        let state = docker
+            .inspect_container(name, None::<qp::InspectContainerOptions>)
+            .await?;
+        let status = state
+            .state
+            .as_ref()
+            .and_then(|s| s.health.as_ref())
+            .and_then(|h| h.status);
         match status {
             Some(HealthStatusEnum::HEALTHY) => return Ok(()),
             Some(HealthStatusEnum::UNHEALTHY) => bail!("container reported unhealthy"),
@@ -322,7 +423,14 @@ async fn pull_image(docker: &Docker, image: &str) -> Result<()> {
     // the node, done at bootstrap) — the reconciler itself holds no GitHub
     // credentials by design (§6). Tracked in roadmap open questions.
     docker
-        .create_image(Some(qp::CreateImageOptions { from_image: Some(image.into()), ..Default::default() }), None, None)
+        .create_image(
+            Some(qp::CreateImageOptions {
+                from_image: Some(image.into()),
+                ..Default::default()
+            }),
+            None,
+            None,
+        )
         .try_collect::<Vec<_>>()
         .await
         .with_context(|| format!("pulling {image}"))?;
@@ -344,15 +452,25 @@ async fn list_app_containers(ctx: &DeployCtx<'_>, app: &str) -> Result<Vec<Conta
 async fn list_class_containers(ctx: &DeployCtx<'_>) -> Result<Vec<ContainerSummary>> {
     list_containers(
         ctx.docker,
-        vec![format!("{LABEL_PROJECT}={}", ctx.project), format!("{LABEL_CLASS}={}", ctx.class.as_str())],
+        vec![
+            format!("{LABEL_PROJECT}={}", ctx.project),
+            format!("{LABEL_CLASS}={}", ctx.class.as_str()),
+        ],
     )
     .await
 }
 
-async fn list_containers(docker: &Docker, label_filters: Vec<String>) -> Result<Vec<ContainerSummary>> {
+async fn list_containers(
+    docker: &Docker,
+    label_filters: Vec<String>,
+) -> Result<Vec<ContainerSummary>> {
     let filters = HashMap::from([("label".to_string(), label_filters)]);
     Ok(docker
-        .list_containers(Some(qp::ListContainersOptions { all: true, filters: Some(filters), ..Default::default() }))
+        .list_containers(Some(qp::ListContainersOptions {
+            all: true,
+            filters: Some(filters),
+            ..Default::default()
+        }))
         .await?)
 }
 
@@ -361,16 +479,28 @@ fn label<'a>(container: &'a ContainerSummary, key: &str) -> Option<&'a str> {
 }
 
 fn container_name(container: &ContainerSummary) -> Option<String> {
-    container.names.as_ref()?.first().map(|n| n.trim_start_matches('/').to_string())
+    container
+        .names
+        .as_ref()?
+        .first()
+        .map(|n| n.trim_start_matches('/').to_string())
 }
 
 async fn remove_container_if_exists(docker: &Docker, name: &str) -> Result<()> {
     match docker
-        .remove_container(name, Some(qp::RemoveContainerOptions { force: true, ..Default::default() }))
+        .remove_container(
+            name,
+            Some(qp::RemoveContainerOptions {
+                force: true,
+                ..Default::default()
+            }),
+        )
         .await
     {
         Ok(()) => Ok(()),
-        Err(bollard::errors::Error::DockerResponseServerError { status_code: 404, .. }) => Ok(()),
+        Err(bollard::errors::Error::DockerResponseServerError {
+            status_code: 404, ..
+        }) => Ok(()),
         Err(e) => Err(e.into()),
     }
 }

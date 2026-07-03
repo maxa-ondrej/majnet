@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n bootstrap/bootstrap.sh bootstrap/lib/common.sh bootstrap/steps/*.sh bootstrap/pki/gen-certs.sh scripts/smoke-test.sh
+      - run: shellcheck -x -e SC1091 bootstrap/bootstrap.sh bootstrap/pki/gen-certs.sh bootstrap/lib/common.sh scripts/smoke-test.sh
+      - run: shellcheck -x -e SC1091,SC2034,SC2154 --shell=bash bootstrap/steps/*.sh
+
+  # The reconciler's §12 loop against the runner's real Docker daemon:
+  # converge → SOPS secret on tmpfs → blue-green → GC (scripts/smoke-test.sh).
+  smoke:
+    runs-on: ubuntu-latest
+    needs: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: install sops + age
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y age
+          curl -fsSL -o /usr/local/bin/sops \
+            https://github.com/getsops/sops/releases/download/v3.11.0/sops-v3.11.0.linux.amd64
+          chmod +x /usr/local/bin/sops
+      - run: scripts/smoke-test.sh

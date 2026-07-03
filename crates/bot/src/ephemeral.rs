@@ -20,12 +20,23 @@ use crate::AppState;
 const COMMENT_MARKER: &str = "<!-- majnet-preview -->";
 
 /// A `pr-<N>` image landed in GHCR: render + deploy the preview.
-pub async fn on_pr_build(state: &AppState, org: &str, app: &str, pr: u64, image: &str) -> Result<()> {
+pub async fn on_pr_build(
+    state: &AppState,
+    org: &str,
+    app: &str,
+    pr: u64,
+    image: &str,
+) -> Result<()> {
     let (_, tarball) = crate::proxy::fetch_snapshot(state, org, "ops", "main").await?;
     let sources = majnet_common::tarball::untar(&tarball)?;
 
     let Some(overlay) = sources.get(&format!("apps/{app}/ephemeral.yaml")) else {
-        tracing::info!(org, app, pr, "no ephemeral overlay — previews not enabled for this app");
+        tracing::info!(
+            org,
+            app,
+            pr,
+            "no ephemeral overlay — previews not enabled for this app"
+        );
         return Ok(());
     };
     let base = sources
@@ -46,8 +57,16 @@ pub async fn on_pr_build(state: &AppState, org: &str, app: &str, pr: u64, image:
         );
     }
 
-    commit_to_ephemeral(state, org, changes, &format!("preview({app}): pr-{pr} @ {}", short(image))).await?;
-    state.store.log_event("ephemeral-deploy", Some(org), &format!("{name} → {image}"))?;
+    commit_to_ephemeral(
+        state,
+        org,
+        changes,
+        &format!("preview({app}): pr-{pr} @ {}", short(image)),
+    )
+    .await?;
+    state
+        .store
+        .log_event("ephemeral-deploy", Some(org), &format!("{name} → {image}"))?;
 
     if let Some(url) = preview_url {
         comment_preview_url(state, org, app, pr, &url).await?;
@@ -62,9 +81,18 @@ pub async fn on_pr_closed(state: &AppState, org: &str, app: &str, pr: u64) -> Re
         (format!("{name}.yaml"), None),
         (format!("secrets/{name}.yaml"), None),
     ]);
-    match commit_to_ephemeral(state, org, changes, &format!("preview({app}): remove pr-{pr}")).await {
+    match commit_to_ephemeral(
+        state,
+        org,
+        changes,
+        &format!("preview({app}): remove pr-{pr}"),
+    )
+    .await
+    {
         Ok(()) => {
-            state.store.log_event("ephemeral-remove", Some(org), &name)?;
+            state
+                .store
+                .log_event("ephemeral-remove", Some(org), &name)?;
             Ok(())
         }
         // Nothing was ever deployed for this PR (e.g. previews disabled).
@@ -88,13 +116,18 @@ fn generate_manifest(
 
     let name = format!("{app}-pr{pr}");
     let host = format!("{name}.{project}.majksa.net");
-    let map = merged.as_mapping_mut().context("merged manifest is not a mapping")?;
+    let map = merged
+        .as_mapping_mut()
+        .context("merged manifest is not a mapping")?;
     map.insert("name".into(), name.clone().into());
     map.insert("image".into(), image.into());
 
     // Previews get their own host; apps without ingress deploy silently.
     let mut preview_url = None;
-    if let Some(ingress) = map.get_mut(serde_yaml::Value::from("ingress")).and_then(|i| i.as_mapping_mut()) {
+    if let Some(ingress) = map
+        .get_mut(serde_yaml::Value::from("ingress"))
+        .and_then(|i| i.as_mapping_mut())
+    {
         ingress.insert("host".into(), host.clone().into());
         preview_url = Some(format!("https://{host}"));
     }
@@ -125,7 +158,10 @@ async fn commit_to_ephemeral(
                 // Deletion-only trees fail on paths that don't exist — filter
                 // against the current tree first.
                 let current: serde_json::Value = client
-                    .get(format!("{repo}/git/trees/{base_tree}?recursive=1"), None::<&()>)
+                    .get(
+                        format!("{repo}/git/trees/{base_tree}?recursive=1"),
+                        None::<&()>,
+                    )
                     .await?;
                 let existing: Vec<&str> = current["tree"]
                     .as_array()
@@ -141,12 +177,15 @@ async fn commit_to_ephemeral(
             if tree == base_tree {
                 return Ok(());
             }
-            let commit = crate::git::create_commit(&client, &repo, &tree, &[&head], message).await?;
+            let commit =
+                crate::git::create_commit(&client, &repo, &tree, &[&head], message).await?;
             crate::git::force_update_ref(&client, &repo, &branch, &commit).await?;
         }
         None => {
-            let additions: BTreeMap<String, String> =
-                changes.into_iter().filter_map(|(p, c)| Some((p, c?))).collect();
+            let additions: BTreeMap<String, String> = changes
+                .into_iter()
+                .filter_map(|(p, c)| Some((p, c?)))
+                .collect();
             anyhow::ensure!(!additions.is_empty(), "nothing to change on env/ephemeral");
             let tree = crate::git::create_tree(&client, &repo, &additions).await?;
             let commit = crate::git::create_commit(&client, &repo, &tree, &[], message).await?;
@@ -157,24 +196,42 @@ async fn commit_to_ephemeral(
 }
 
 /// Preview URL as a PR comment — once per PR, updated in place on new digests.
-async fn comment_preview_url(state: &AppState, org: &str, app: &str, pr: u64, url: &str) -> Result<()> {
+async fn comment_preview_url(
+    state: &AppState,
+    org: &str,
+    app: &str,
+    pr: u64,
+    url: &str,
+) -> Result<()> {
     let client = state.github.org_client(org).await?;
     let body = format!(
         "{COMMENT_MARKER}\n🚀 Preview deployed: {url}\n\n_Updates on every push; removed 48 h after this PR closes (7 d hard limit)._"
     );
 
     let comments: Vec<serde_json::Value> = client
-        .get(format!("/repos/{org}/{app}/issues/{pr}/comments?per_page=100"), None::<&()>)
+        .get(
+            format!("/repos/{org}/{app}/issues/{pr}/comments?per_page=100"),
+            None::<&()>,
+        )
         .await
         .unwrap_or_default();
-    if let Some(existing) = comments.iter().find(|c| c["body"].as_str().unwrap_or("").starts_with(COMMENT_MARKER)) {
+    if let Some(existing) = comments
+        .iter()
+        .find(|c| c["body"].as_str().unwrap_or("").starts_with(COMMENT_MARKER))
+    {
         let id = existing["id"].as_u64().context("comment has no id")?;
         let _: serde_json::Value = client
-            .patch(format!("/repos/{org}/{app}/issues/comments/{id}"), Some(&serde_json::json!({ "body": body })))
+            .patch(
+                format!("/repos/{org}/{app}/issues/comments/{id}"),
+                Some(&serde_json::json!({ "body": body })),
+            )
             .await?;
     } else {
         let _: serde_json::Value = client
-            .post(format!("/repos/{org}/{app}/issues/{pr}/comments"), Some(&serde_json::json!({ "body": body })))
+            .post(
+                format!("/repos/{org}/{app}/issues/{pr}/comments"),
+                Some(&serde_json::json!({ "body": body })),
+            )
             .await?;
     }
     Ok(())
@@ -182,10 +239,13 @@ async fn comment_preview_url(state: &AppState, org: &str, app: &str, pr: u64, ur
 
 /// Project name for an org, from the root registry.
 async fn project_name(state: &AppState, org: &str) -> Result<String> {
-    let (_, tarball) = crate::proxy::fetch_snapshot(state, &state.config.root_org, "platform", "main").await?;
+    let (_, tarball) =
+        crate::proxy::fetch_snapshot(state, &state.config.root_org, "platform", "main").await?;
     let platform = majnet_common::tarball::untar(&tarball)?;
     let projects = majnet_common::platform::ProjectsFile::parse(
-        platform.get("projects.yaml").context("platform repo has no projects.yaml")?,
+        platform
+            .get("projects.yaml")
+            .context("platform repo has no projects.yaml")?,
     )?;
     projects
         .projects
@@ -207,7 +267,8 @@ mod tests {
 
     #[test]
     fn patches_name_image_and_host() {
-        let base = b"env:\n  RUST_LOG: info\ningress:\n  host: api.zpevnik.majksa.net\n  port: 8080\n";
+        let base =
+            b"env:\n  RUST_LOG: info\ningress:\n  host: api.zpevnik.majksa.net\n  port: 8080\n";
         let overlay = b"env:\n  MODE: preview\n";
         let image = format!("ghcr.io/zpevnik/api@{DIGEST}");
         let (yaml, url) = generate_manifest(base, overlay, "zpevnik", "api", 12, &image).unwrap();
@@ -220,7 +281,8 @@ mod tests {
     #[test]
     fn no_ingress_means_no_preview_url() {
         let image = format!("ghcr.io/o/worker@{DIGEST}");
-        let (yaml, url) = generate_manifest(b"env: {}\n", b"{}\n", "p", "worker", 3, &image).unwrap();
+        let (yaml, url) =
+            generate_manifest(b"env: {}\n", b"{}\n", "p", "worker", 3, &image).unwrap();
         assert!(yaml.contains("name: worker-pr3"));
         assert!(url.is_none());
     }

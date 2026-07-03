@@ -42,14 +42,17 @@ pub struct AppState {
 impl AppState {
     /// Node connection pool, initialized from the first platform snapshot.
     pub fn nodes(&self, nodes_file: &NodesFile) -> &docker::Nodes {
-        self.nodes.get_or_init(|| docker::Nodes::new(&self.config, nodes_file))
+        self.nodes
+            .get_or_init(|| docker::Nodes::new(&self.config, nodes_file))
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
         .init();
 
     let config = config::Config::from_env()?;

@@ -37,24 +37,56 @@ async fn restart(
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e:#}")))
 }
 
-async fn do_restart(state: &AppState, project: &str, class: &str, app: &str, actor: &str) -> anyhow::Result<String> {
+async fn do_restart(
+    state: &AppState,
+    project: &str,
+    class: &str,
+    app: &str,
+    actor: &str,
+) -> anyhow::Result<String> {
     use anyhow::Context;
-    let class: majnet_common::EnvClass =
-        serde_yaml::from_str(class).map_err(|_| anyhow::anyhow!("class must be production|stable|ephemeral"))?;
+    let class: majnet_common::EnvClass = serde_yaml::from_str(class)
+        .map_err(|_| anyhow::anyhow!("class must be production|stable|ephemeral"))?;
 
     // Resolve the node the same way convergence does.
-    let platform = crate::snapshot::fetch(&state.http, &state.config, &state.config.root_org, "platform", "main")
-        .await?
-        .context("platform snapshot unavailable")?;
-    let nodes = majnet_common::platform::NodesFile::parse(platform.files.get("nodes.yaml").context("no nodes.yaml")?)?;
-    let node = nodes.by_role(class.node_role()).context("no node for class")?;
+    let platform = crate::snapshot::fetch(
+        &state.http,
+        &state.config,
+        &state.config.root_org,
+        "platform",
+        "main",
+    )
+    .await?
+    .context("platform snapshot unavailable")?;
+    let nodes = majnet_common::platform::NodesFile::parse(
+        platform.files.get("nodes.yaml").context("no nodes.yaml")?,
+    )?;
+    let node = nodes
+        .by_role(class.node_role())
+        .context("no node for class")?;
     let docker = state.nodes(&nodes).client_for(node).await?;
 
-    let ctx = crate::deploy::DeployCtx { docker: &docker, project, class, commit: "imperative", dry_run: false };
+    let ctx = crate::deploy::DeployCtx {
+        docker: &docker,
+        project,
+        class,
+        commit: "imperative",
+        dry_run: false,
+    };
     let restarted = crate::deploy::restart_app(&ctx, app).await?;
-    anyhow::ensure!(restarted > 0, "no containers found for {project}/{app} ({})", class.as_str());
+    anyhow::ensure!(
+        restarted > 0,
+        "no containers found for {project}/{app} ({})",
+        class.as_str()
+    );
 
-    state.store.record("imperative", project, &node.name, &format!("restart {app}"), &format!("by {actor}"))?;
+    state.store.record(
+        "imperative",
+        project,
+        &node.name,
+        &format!("restart {app}"),
+        &format!("by {actor}"),
+    )?;
     tracing::info!(project, app, actor, "restarted (imperative escape hatch)");
     Ok(format!("restarted {restarted} container(s)"))
 }

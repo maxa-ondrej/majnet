@@ -26,18 +26,41 @@ use crate::AppState;
 const CLASSES: [EnvClass; 3] = [EnvClass::Stable, EnvClass::Production, EnvClass::Ephemeral];
 
 pub async fn converge_all(state: &AppState) -> Result<()> {
-    let platform = crate::snapshot::fetch(&state.http, &state.config, &state.config.root_org, "platform", "main")
-        .await?
-        .context("platform repo snapshot unavailable")?;
-    let nodes = NodesFile::parse(platform.files.get("nodes.yaml").context("platform repo has no nodes.yaml")?)?;
-    let projects = ProjectsFile::parse(platform.files.get("projects.yaml").context("platform repo has no projects.yaml")?)?;
+    let platform = crate::snapshot::fetch(
+        &state.http,
+        &state.config,
+        &state.config.root_org,
+        "platform",
+        "main",
+    )
+    .await?
+    .context("platform repo snapshot unavailable")?;
+    let nodes = NodesFile::parse(
+        platform
+            .files
+            .get("nodes.yaml")
+            .context("platform repo has no nodes.yaml")?,
+    )?;
+    let projects = ProjectsFile::parse(
+        platform
+            .files
+            .get("projects.yaml")
+            .context("platform repo has no projects.yaml")?,
+    )?;
 
     tracing::info!(projects = projects.projects.len(), commit = %platform.commit, "converging");
 
     for project in &projects.projects {
         for class in CLASSES {
-            if let Err(e) = converge_project_class(state, &nodes, &project.name, &project.org, class).await {
-                tracing::error!(project = project.name, class = class.as_str(), error = format!("{e:#}"), "class convergence failed");
+            if let Err(e) =
+                converge_project_class(state, &nodes, &project.name, &project.org, class).await
+            {
+                tracing::error!(
+                    project = project.name,
+                    class = class.as_str(),
+                    error = format!("{e:#}"),
+                    "class convergence failed"
+                );
             }
         }
     }
@@ -51,7 +74,9 @@ async fn converge_project_class(
     org: &str,
     class: EnvClass,
 ) -> Result<()> {
-    let Some(snapshot) = crate::snapshot::fetch(&state.http, &state.config, org, "ops", &class.env_branch()).await? else {
+    let Some(snapshot) =
+        crate::snapshot::fetch(&state.http, &state.config, org, "ops", &class.env_branch()).await?
+    else {
         return Ok(()); // class not rendered yet for this project
     };
 
@@ -84,7 +109,12 @@ async fn converge_project_class(
     let manifests: BTreeMap<&str, &Vec<u8>> = snapshot
         .files
         .iter()
-        .filter_map(|(path, content)| Some((path.strip_suffix(".yaml").filter(|p| !p.contains('/'))?, content)))
+        .filter_map(|(path, content)| {
+            Some((
+                path.strip_suffix(".yaml").filter(|p| !p.contains('/'))?,
+                content,
+            ))
+        })
         .collect();
 
     let mut converged_apps = Vec::new();
@@ -96,7 +126,13 @@ async fn converge_project_class(
                 deploy::remove_app(&ctx, app).await?;
                 state.store.ephemeral_forget(project, app)?;
             }
-            state.store.record(&snapshot.commit, project, &node.name, &format!("gc {app}"), "7 d hard TTL")?;
+            state.store.record(
+                &snapshot.commit,
+                project,
+                &node.name,
+                &format!("gc {app}"),
+                "7 d hard TTL",
+            )?;
             tracing::info!(project, app, "ephemeral stack hit 7 d hard TTL");
             continue; // deliberately not in the keep-list
         }
@@ -105,7 +141,13 @@ async fn converge_project_class(
         match result {
             Ok(summary) => {
                 tracing::info!(project, class = class.as_str(), app, %summary, "converged");
-                state.store.record(&snapshot.commit, project, &node.name, &format!("converge {app}"), &summary)?;
+                state.store.record(
+                    &snapshot.commit,
+                    project,
+                    &node.name,
+                    &format!("converge {app}"),
+                    &summary,
+                )?;
                 converged_apps.push(app.to_string());
                 if class == EnvClass::Ephemeral {
                     state.store.ephemeral_mark_seen(project, app)?;
@@ -115,8 +157,20 @@ async fn converge_project_class(
                 // Loud abort for this app; the rest continue. The app stays
                 // in the GC keep-list — a failed deploy must not remove the
                 // old (still serving) container.
-                tracing::error!(project, class = class.as_str(), app, error = format!("{e:#}"), "app convergence failed");
-                state.store.record(&snapshot.commit, project, &node.name, &format!("converge {app}"), &format!("FAILED: {e:#}"))?;
+                tracing::error!(
+                    project,
+                    class = class.as_str(),
+                    app,
+                    error = format!("{e:#}"),
+                    "app convergence failed"
+                );
+                state.store.record(
+                    &snapshot.commit,
+                    project,
+                    &node.name,
+                    &format!("converge {app}"),
+                    &format!("FAILED: {e:#}"),
+                )?;
                 converged_apps.push(app.to_string());
             }
         }
@@ -130,7 +184,9 @@ async fn converge_project_class(
         deploy::gc_removed_apps(&ctx, &converged_apps).await?
     };
     for entry in removed {
-        state.store.record(&snapshot.commit, project, &node.name, "gc", &entry)?;
+        state
+            .store
+            .record(&snapshot.commit, project, &node.name, "gc", &entry)?;
         tracing::info!(project, class = class.as_str(), entry, "removed");
     }
     Ok(())
@@ -147,12 +203,21 @@ async fn converge_one(
     // but the reconciler trusts nothing it didn't check.
     let yaml = std::str::from_utf8(manifest_bytes).context("manifest is not UTF-8")?;
     let manifest = AppManifest::parse(yaml).context("rendered manifest failed validation")?;
-    anyhow::ensure!(manifest.name == app, "manifest name '{}' does not match file name '{app}'", manifest.name);
+    anyhow::ensure!(
+        manifest.name == app,
+        "manifest name '{}' does not match file name '{app}'",
+        manifest.name
+    );
 
     let secrets = match snapshot.files.get(&format!("secrets/{app}.yaml")) {
-        Some(encrypted) => Some(crate::secrets::decrypt(&state.config, ctx.class, encrypted).await?),
+        Some(encrypted) => {
+            Some(crate::secrets::decrypt(&state.config, ctx.class, encrypted).await?)
+        }
         None => {
-            anyhow::ensure!(manifest.secrets.is_empty(), "manifest declares secrets but env branch has none");
+            anyhow::ensure!(
+                manifest.secrets.is_empty(),
+                "manifest declares secrets but env branch has none"
+            );
             None
         }
     };
@@ -160,7 +225,16 @@ async fn converge_one(
     // Managed database (§15): provision before the app (and its migrations) run.
     let extra_env = match &manifest.database {
         Some(db) => {
-            crate::db::ensure(&state.config, ctx.docker, ctx.project, app, ctx.class, db.engine, ctx.dry_run).await?
+            crate::db::ensure(
+                &state.config,
+                ctx.docker,
+                ctx.project,
+                app,
+                ctx.class,
+                db.engine,
+                ctx.dry_run,
+            )
+            .await?
         }
         None => Vec::new(),
     };
@@ -175,7 +249,10 @@ async fn ensure_network(docker: &bollard::Docker, project: &str, dry_run: bool) 
             filters: Some([("name".to_string(), vec![name.clone()])].into()),
         }))
         .await?;
-    if existing.iter().any(|n| n.name.as_deref() == Some(name.as_str())) {
+    if existing
+        .iter()
+        .any(|n| n.name.as_deref() == Some(name.as_str()))
+    {
         return Ok(());
     }
     if dry_run {

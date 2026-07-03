@@ -35,13 +35,19 @@ impl Config {
             std::env::var(name).with_context(|| format!("missing env var {name}"))
         }
         Ok(Self {
-            github_app_id: var("MAJNET_GITHUB_APP_ID")?.parse().context("MAJNET_GITHUB_APP_ID must be a number")?,
+            github_app_id: var("MAJNET_GITHUB_APP_ID")?
+                .parse()
+                .context("MAJNET_GITHUB_APP_ID must be a number")?,
             github_private_key_path: var("MAJNET_GITHUB_PRIVATE_KEY_PATH")?.into(),
             webhook_secret: var("MAJNET_WEBHOOK_SECRET")?,
-            listen_webhook: std::env::var("MAJNET_LISTEN_WEBHOOK").unwrap_or_else(|_| "0.0.0.0:8080".into()),
-            listen_internal: std::env::var("MAJNET_LISTEN_INTERNAL").unwrap_or_else(|_| "127.0.0.1:8081".into()),
+            listen_webhook: std::env::var("MAJNET_LISTEN_WEBHOOK")
+                .unwrap_or_else(|_| "0.0.0.0:8080".into()),
+            listen_internal: std::env::var("MAJNET_LISTEN_INTERNAL")
+                .unwrap_or_else(|_| "127.0.0.1:8081".into()),
             reconciler_url: std::env::var("MAJNET_RECONCILER_URL").unwrap_or_default(),
-            data_dir: std::env::var("MAJNET_DATA_DIR").unwrap_or_else(|_| "/var/lib/majnet-bot".into()).into(),
+            data_dir: std::env::var("MAJNET_DATA_DIR")
+                .unwrap_or_else(|_| "/var/lib/majnet-bot".into())
+                .into(),
             root_org: std::env::var("MAJNET_ROOT_ORG").unwrap_or_else(|_| "majksa-platform".into()),
             tailscale_api_key: std::env::var("MAJNET_TAILSCALE_API_KEY").ok(),
             tailnet: std::env::var("MAJNET_TAILNET").ok(),

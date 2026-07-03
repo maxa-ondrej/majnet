@@ -10,7 +10,11 @@ use base64::Engine;
 
 use crate::AppState;
 
-pub async fn on_package_published(state: &AppState, org: &str, payload: &serde_json::Value) -> Result<()> {
+pub async fn on_package_published(
+    state: &AppState,
+    org: &str,
+    payload: &serde_json::Value,
+) -> Result<()> {
     let action = payload["action"].as_str().unwrap_or_default();
     if action != "published" && action != "updated" {
         return Ok(());
@@ -18,17 +22,34 @@ pub async fn on_package_published(state: &AppState, org: &str, payload: &serde_j
     // `registry_package` puts the data under "registry_package"; the legacy
     // event name is "package". Container publishes carry the digest either on
     // the tag metadata or as the version name itself.
-    let pkg = if payload["registry_package"].is_object() { &payload["registry_package"] } else { &payload["package"] };
-    if pkg["package_type"].as_str().unwrap_or_default().to_lowercase() != "container" {
+    let pkg = if payload["registry_package"].is_object() {
+        &payload["registry_package"]
+    } else {
+        &payload["package"]
+    };
+    if pkg["package_type"]
+        .as_str()
+        .unwrap_or_default()
+        .to_lowercase()
+        != "container"
+    {
         return Ok(());
     }
-    let app = pkg["name"].as_str().context("package payload has no name")?;
+    let app = pkg["name"]
+        .as_str()
+        .context("package payload has no name")?;
     let version = &pkg["package_version"];
-    let tag = version["container_metadata"]["tag"]["name"].as_str().unwrap_or_default();
+    let tag = version["container_metadata"]["tag"]["name"]
+        .as_str()
+        .unwrap_or_default();
     let digest = version["container_metadata"]["tag"]["digest"]
         .as_str()
         .filter(|d| d.starts_with("sha256:"))
-        .or_else(|| version["version"].as_str().filter(|v| v.starts_with("sha256:")))
+        .or_else(|| {
+            version["version"]
+                .as_str()
+                .filter(|v| v.starts_with("sha256:"))
+        })
         .context("package payload carries no sha256 digest")?;
 
     // Builds of main move stable; pr-<N> builds feed the ephemeral flow.
@@ -40,7 +61,9 @@ pub async fn on_package_published(state: &AppState, org: &str, payload: &serde_j
     let image = format!("ghcr.io/{org}/{app}@{digest}");
     tracing::info!(org, app, %image, "bumping stable digest");
     bump_stable_digest(state, org, app, &image).await?;
-    state.store.log_event("digest-bump", Some(org), &format!("{app} → {digest}"))?;
+    state
+        .store
+        .log_event("digest-bump", Some(org), &format!("{app} → {digest}"))?;
     Ok(())
 }
 
@@ -52,14 +75,19 @@ async fn bump_stable_digest(state: &AppState, org: &str, app: &str, image: &str)
     let existing = repos.get_content().path(&path).r#ref("main").send().await;
     let (current, sha) = match existing {
         Ok(content) => {
-            let item = content.items.into_iter().next().context("empty contents response")?;
+            let item = content
+                .items
+                .into_iter()
+                .next()
+                .context("empty contents response")?;
             let encoded = item.content.unwrap_or_default().replace(['\n', ' '], "");
             let decoded = base64::engine::general_purpose::STANDARD.decode(encoded)?;
             (String::from_utf8(decoded)?, Some(item.sha))
         }
-        Err(octocrab::Error::GitHub { source, .. }) if source.status_code == 404 => {
-            (format!("# stable overlay for {app} — digest managed by the bot\nimage: {image}\n"), None)
-        }
+        Err(octocrab::Error::GitHub { source, .. }) if source.status_code == 404 => (
+            format!("# stable overlay for {app} — digest managed by the bot\nimage: {image}\n"),
+            None,
+        ),
         Err(e) => return Err(e).context("fetching stable overlay"),
     };
 
@@ -69,14 +97,26 @@ async fn bump_stable_digest(state: &AppState, org: &str, app: &str, image: &str)
         return Ok(());
     }
 
-    let short = image.rsplit(':').next().map(|d| &d[..12.min(d.len())]).unwrap_or("?");
+    let short = image
+        .rsplit(':')
+        .next()
+        .map(|d| &d[..12.min(d.len())])
+        .unwrap_or("?");
     let message = format!("chore({app}): bump stable digest to {short}");
     match sha {
         Some(sha) => {
-            repos.update_file(&path, &message, &updated, &sha).branch("main").send().await?;
+            repos
+                .update_file(&path, &message, &updated, &sha)
+                .branch("main")
+                .send()
+                .await?;
         }
         None => {
-            repos.create_file(&path, &message, &updated).branch("main").send().await?;
+            repos
+                .create_file(&path, &message, &updated)
+                .branch("main")
+                .send()
+                .await?;
         }
     }
     Ok(())
@@ -114,7 +154,10 @@ mod tests {
     fn replaces_top_level_image_preserving_rest() {
         let input = "# managed\nimage: ghcr.io/o/a@sha256:old\nreplicas: 2\n";
         let out = replace_image_line(input, "ghcr.io/o/a@sha256:new").unwrap();
-        assert_eq!(out, "# managed\nimage: ghcr.io/o/a@sha256:new\nreplicas: 2\n");
+        assert_eq!(
+            out,
+            "# managed\nimage: ghcr.io/o/a@sha256:new\nreplicas: 2\n"
+        );
     }
 
     #[test]

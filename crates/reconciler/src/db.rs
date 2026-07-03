@@ -41,22 +41,34 @@ pub async fn ensure(
 
     let env = match engine {
         DbEngine::Postgres => vec![
-            ("DATABASE_URL".into(), format!("postgres://{name}:{password}@{container}:5432/{name}")),
+            (
+                "DATABASE_URL".into(),
+                format!("postgres://{name}:{password}@{container}:5432/{name}"),
+            ),
             ("PGHOST".into(), container.to_string()),
             ("PGDATABASE".into(), name.clone()),
             ("PGUSER".into(), name.clone()),
             ("PGPASSWORD".into(), password.clone()),
         ],
-        DbEngine::Mariadb => vec![
-            ("DATABASE_URL".into(), format!("mysql://{name}:{password}@{container}:3306/{name}")),
-        ],
+        DbEngine::Mariadb => vec![(
+            "DATABASE_URL".into(),
+            format!("mysql://{name}:{password}@{container}:3306/{name}"),
+        )],
         DbEngine::Valkey | DbEngine::Mongodb => {
-            bail!("engine {engine:?} provisioning is not implemented yet (roadmap phase 5 remainder)")
+            bail!(
+                "engine {engine:?} provisioning is not implemented yet (roadmap phase 5 remainder)"
+            )
         }
     };
 
     if dry_run {
-        tracing::info!(project, app, ?engine, db = name, "DRY RUN: would provision database");
+        tracing::info!(
+            project,
+            app,
+            ?engine,
+            db = name,
+            "DRY RUN: would provision database"
+        );
         return Ok(env);
     }
 
@@ -74,7 +86,9 @@ psql -U postgres -tc "SELECT 1 FROM pg_database WHERE datname='{name}'" | grep -
         ),
         _ => unreachable!(),
     };
-    exec(docker, container, &script).await.with_context(|| format!("provisioning {name} on {container}"))?;
+    exec(docker, container, &script)
+        .await
+        .with_context(|| format!("provisioning {name} on {container}"))?;
     tracing::debug!(project, app, db = name, "database ensured");
     Ok(env)
 }
@@ -86,10 +100,20 @@ fn db_name(project: &str, app: &str, class: EnvClass) -> String {
     name
 }
 
-fn derive_password(config: &Config, engine: DbEngine, project: &str, app: &str, class: EnvClass) -> Result<String> {
+fn derive_password(
+    config: &Config,
+    engine: DbEngine,
+    project: &str,
+    app: &str,
+    class: EnvClass,
+) -> Result<String> {
     let key_path = config.age_key_dir.join("db-master.key");
-    let master = std::fs::read(&key_path)
-        .with_context(|| format!("missing DB master key {} (generate: openssl rand -hex 32 > …)", key_path.display()))?;
+    let master = std::fs::read(&key_path).with_context(|| {
+        format!(
+            "missing DB master key {} (generate: openssl rand -hex 32 > …)",
+            key_path.display()
+        )
+    })?;
     let mut mac = Hmac::<Sha256>::new_from_slice(&master).expect("any key length");
     mac.update(format!("{engine:?}:{project}:{app}:{}", class.as_str()).as_bytes());
     Ok(hex::encode(&mac.finalize().into_bytes()[..16]))
@@ -108,7 +132,11 @@ async fn connect_engine_to_network(docker: &Docker, container: &str, project: &s
     let inspect = docker
         .inspect_container(container, None::<qp::InspectContainerOptions>)
         .await
-        .with_context(|| format!("engine container '{container}' not found — deploy it via platform manifests first"))?;
+        .with_context(|| {
+            format!(
+                "engine container '{container}' not found — deploy it via platform manifests first"
+            )
+        })?;
     let network = network_name(project);
     let attached = inspect
         .network_settings
@@ -120,7 +148,10 @@ async fn connect_engine_to_network(docker: &Docker, container: &str, project: &s
     docker
         .connect_network(
             &network,
-            bollard::models::NetworkConnectRequest { container: container.into(), ..Default::default() },
+            bollard::models::NetworkConnectRequest {
+                container: container.into(),
+                ..Default::default()
+            },
         )
         .await
         .with_context(|| format!("attaching {container} to {network}"))?;
@@ -141,8 +172,11 @@ async fn exec(docker: &Docker, container: &str, script: &str) -> Result<()> {
         )
         .await?;
     let mut collected = String::new();
-    if let bollard::exec::StartExecResults::Attached { output: mut stream, .. } =
-        docker.start_exec(&exec.id, None::<bollard::exec::StartExecOptions>).await?
+    if let bollard::exec::StartExecResults::Attached {
+        output: mut stream, ..
+    } = docker
+        .start_exec(&exec.id, None::<bollard::exec::StartExecOptions>)
+        .await?
     {
         while let Some(chunk) = stream.next().await {
             collected.push_str(&chunk?.to_string());
@@ -150,7 +184,11 @@ async fn exec(docker: &Docker, container: &str, script: &str) -> Result<()> {
     }
     let inspect = docker.inspect_exec(&exec.id).await?;
     let code = inspect.exit_code.unwrap_or(-1);
-    anyhow::ensure!(code == 0, "provisioning script exited {code}: {}", collected.trim());
+    anyhow::ensure!(
+        code == 0,
+        "provisioning script exited {code}: {}",
+        collected.trim()
+    );
     Ok(())
 }
 
@@ -161,7 +199,13 @@ mod tests {
 
     #[test]
     fn db_names_are_identifier_safe() {
-        assert_eq!(db_name("zpevnik", "api-pr12", EnvClass::Ephemeral), "zpevnik_api_pr12_ephemeral");
-        assert_eq!(db_name("zpevnik", "api", EnvClass::Production), "zpevnik_api_production");
+        assert_eq!(
+            db_name("zpevnik", "api-pr12", EnvClass::Ephemeral),
+            "zpevnik_api_pr12_ephemeral"
+        );
+        assert_eq!(
+            db_name("zpevnik", "api", EnvClass::Production),
+            "zpevnik_api_production"
+        );
     }
 }

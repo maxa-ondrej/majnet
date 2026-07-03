@@ -19,7 +19,7 @@
 //! undeploy it.
 
 use anyhow::{bail, ensure, Context, Result};
-use majnet_common::{merge::merge, manifest::AppManifest, EnvClass};
+use majnet_common::{manifest::AppManifest, merge::merge, EnvClass};
 use serde_json::json;
 use std::collections::BTreeMap;
 
@@ -33,7 +33,9 @@ pub async fn on_ops_main_push(state: &AppState, org: &str, commit: &str) -> Resu
     let sources = majnet_common::tarball::untar(&tarball)?;
 
     for class in RENDERED_CLASSES {
-        match render_class(&sources, class).with_context(|| format!("rendering {}", class.as_str()))? {
+        match render_class(&sources, class)
+            .with_context(|| format!("rendering {}", class.as_str()))?
+        {
             Some(rendered) => {
                 push_render_pr(state, org, class, commit, rendered).await?;
             }
@@ -44,7 +46,10 @@ pub async fn on_ops_main_push(state: &AppState, org: &str, commit: &str) -> Resu
 }
 
 /// Pure render: sources tree → rendered env-branch tree. None = class empty.
-fn render_class(sources: &BTreeMap<String, Vec<u8>>, class: EnvClass) -> Result<Option<BTreeMap<String, String>>> {
+fn render_class(
+    sources: &BTreeMap<String, Vec<u8>>,
+    class: EnvClass,
+) -> Result<Option<BTreeMap<String, String>>> {
     let mut rendered = BTreeMap::new();
 
     let apps: Vec<&str> = sources
@@ -60,8 +65,10 @@ fn render_class(sources: &BTreeMap<String, Vec<u8>>, class: EnvClass) -> Result<
         };
         let base_bytes = &sources[&format!("apps/{app}/base.yaml")];
 
-        let base: serde_yaml::Value = serde_yaml::from_slice(base_bytes).with_context(|| format!("{app}: base.yaml"))?;
-        let overlay: serde_yaml::Value = serde_yaml::from_slice(overlay_bytes).with_context(|| format!("{app}: {overlay_path}"))?;
+        let base: serde_yaml::Value =
+            serde_yaml::from_slice(base_bytes).with_context(|| format!("{app}: base.yaml"))?;
+        let overlay: serde_yaml::Value = serde_yaml::from_slice(overlay_bytes)
+            .with_context(|| format!("{app}: {overlay_path}"))?;
         let mut merged = merge(base, overlay);
 
         // The app's identity is its directory; a conflicting `name` is a bug.
@@ -71,22 +78,32 @@ fn render_class(sources: &BTreeMap<String, Vec<u8>>, class: EnvClass) -> Result<
                 None => {
                     map.insert(name_key, serde_yaml::Value::from(app));
                 }
-                Some(existing) => ensure!(existing == app, "{app}: manifest name '{existing}' does not match app directory"),
+                Some(existing) => ensure!(
+                    existing == app,
+                    "{app}: manifest name '{existing}' does not match app directory"
+                ),
             }
         } else {
             bail!("{app}: merged manifest is not a mapping");
         }
 
         let yaml = serde_yaml::to_string(&merged)?;
-        let manifest = AppManifest::parse(&yaml).with_context(|| format!("{app}: rendered manifest invalid"))?;
+        let manifest = AppManifest::parse(&yaml)
+            .with_context(|| format!("{app}: rendered manifest invalid"))?;
 
         // Secrets pass through encrypted, and every declared secret must exist.
         let secrets_path = format!("apps/{app}/secrets.{}.yaml", class.as_str());
         match sources.get(&secrets_path) {
             Some(bytes) => {
-                rendered.insert(format!("secrets/{app}.yaml"), String::from_utf8(bytes.clone()).context("secrets file is not UTF-8")?);
+                rendered.insert(
+                    format!("secrets/{app}.yaml"),
+                    String::from_utf8(bytes.clone()).context("secrets file is not UTF-8")?,
+                );
             }
-            None => ensure!(manifest.secrets.is_empty(), "{app}: declares secrets but {secrets_path} is missing"),
+            None => ensure!(
+                manifest.secrets.is_empty(),
+                "{app}: declares secrets but {secrets_path} is missing"
+            ),
         }
         rendered.insert(format!("{app}.yaml"), yaml);
     }
@@ -109,33 +126,60 @@ async fn push_render_pr(
     let repo = format!("/repos/{org}/ops");
 
     // Full replacement tree — env branches contain exactly the render output.
-    let tree_sha = &crate::git::create_tree(&client, &repo, &files).await.context("creating rendered tree")?;
+    let tree_sha = &crate::git::create_tree(&client, &repo, &files)
+        .await
+        .context("creating rendered tree")?;
 
     // Ensure the env branch exists (orphan history: first render is the root).
     let env_head = crate::git::get_branch_head(&client, &repo, &env_branch).await?;
     let env_head = match env_head {
         Some(sha) => sha,
         None => {
-            let commit = crate::git::create_commit(&client, &repo, tree_sha, &[], &format!("render: initial {} tree", class.as_str())).await?;
+            let commit = crate::git::create_commit(
+                &client,
+                &repo,
+                tree_sha,
+                &[],
+                &format!("render: initial {} tree", class.as_str()),
+            )
+            .await?;
             crate::git::create_ref(&client, &repo, &env_branch, &commit).await?;
-            tracing::info!(org, branch = env_branch, "created env branch with initial render");
+            tracing::info!(
+                org,
+                branch = env_branch,
+                "created env branch with initial render"
+            );
             return Ok(());
         }
     };
 
     // No-op renders create no PR noise.
-    let env_tree: serde_json::Value = client.get(format!("{repo}/git/commits/{env_head}"), None::<&()>).await?;
+    let env_tree: serde_json::Value = client
+        .get(format!("{repo}/git/commits/{env_head}"), None::<&()>)
+        .await?;
     if env_tree["tree"]["sha"].as_str() == Some(tree_sha) {
-        tracing::info!(org, class = class.as_str(), "render identical to env branch, nothing to do");
+        tracing::info!(
+            org,
+            class = class.as_str(),
+            "render identical to env branch, nothing to do"
+        );
         return Ok(());
     }
 
-    let message = format!("render({}): from main@{}", class.as_str(), &source_commit[..12.min(source_commit.len())]);
-    let commit_sha = crate::git::create_commit(&client, &repo, tree_sha, &[&env_head], &message).await?;
+    let message = format!(
+        "render({}): from main@{}",
+        class.as_str(),
+        &source_commit[..12.min(source_commit.len())]
+    );
+    let commit_sha =
+        crate::git::create_commit(&client, &repo, tree_sha, &[&env_head], &message).await?;
 
     // Point render/<class> at the new commit (force: pending changes accumulate
     // into the same PR, always as a single rendered state).
-    if crate::git::get_branch_head(&client, &repo, &render_branch).await?.is_some() {
+    if crate::git::get_branch_head(&client, &repo, &render_branch)
+        .await?
+        .is_some()
+    {
         crate::git::force_update_ref(&client, &repo, &render_branch, &commit_sha).await?;
     } else {
         crate::git::create_ref(&client, &repo, &render_branch, &commit_sha).await?;
@@ -171,7 +215,11 @@ async fn push_render_pr(
         }
     };
 
-    state.store.log_event("render-pr", Some(org), &format!("{} PR #{pr_number} @ {commit_sha}", class.as_str()))?;
+    state.store.log_event(
+        "render-pr",
+        Some(org),
+        &format!("{} PR #{pr_number} @ {commit_sha}", class.as_str()),
+    )?;
 
     if class.auto_merges() {
         let _: serde_json::Value = client
@@ -181,9 +229,19 @@ async fn push_render_pr(
             )
             .await
             .with_context(|| format!("auto-merging render PR #{pr_number}"))?;
-        tracing::info!(org, class = class.as_str(), pr_number, "render PR auto-merged (deploy trigger)");
+        tracing::info!(
+            org,
+            class = class.as_str(),
+            pr_number,
+            "render PR auto-merged (deploy trigger)"
+        );
     } else {
-        tracing::info!(org, class = class.as_str(), pr_number, "render PR awaits admin review (production gate)");
+        tracing::info!(
+            org,
+            class = class.as_str(),
+            pr_number,
+            "render PR awaits admin review (production gate)"
+        );
     }
     Ok(())
 }
@@ -195,14 +253,20 @@ mod tests {
     const DIGEST: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     fn sources(entries: &[(&str, &str)]) -> BTreeMap<String, Vec<u8>> {
-        entries.iter().map(|(k, v)| (k.to_string(), v.as_bytes().to_vec())).collect()
+        entries
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.as_bytes().to_vec()))
+            .collect()
     }
 
     #[test]
     fn renders_only_opted_in_apps() {
         let src = sources(&[
             ("apps/api/base.yaml", "env:\n  RUST_LOG: info\n"),
-            ("apps/api/stable.yaml", &format!("image: ghcr.io/o/api@{DIGEST}\n")),
+            (
+                "apps/api/stable.yaml",
+                &format!("image: ghcr.io/o/api@{DIGEST}\n"),
+            ),
             ("apps/web/base.yaml", "env: {}\n"), // no stable overlay → not rendered
         ]);
         let rendered = render_class(&src, EnvClass::Stable).unwrap().unwrap();
@@ -230,28 +294,49 @@ mod tests {
     fn declared_secrets_require_secrets_file() {
         let src = sources(&[
             ("apps/api/base.yaml", "secrets: [db-url]\n"),
-            ("apps/api/stable.yaml", &format!("image: ghcr.io/o/api@{DIGEST}\n")),
+            (
+                "apps/api/stable.yaml",
+                &format!("image: ghcr.io/o/api@{DIGEST}\n"),
+            ),
         ]);
-        assert!(render_class(&src, EnvClass::Stable).unwrap_err().to_string().contains("secrets"));
+        assert!(render_class(&src, EnvClass::Stable)
+            .unwrap_err()
+            .to_string()
+            .contains("secrets"));
     }
 
     #[test]
     fn secrets_pass_through_encrypted() {
         let src = sources(&[
             ("apps/api/base.yaml", "secrets: [db-url]\n"),
-            ("apps/api/stable.yaml", &format!("image: ghcr.io/o/api@{DIGEST}\n")),
-            ("apps/api/secrets.stable.yaml", "db-url: ENC[AES256_GCM,...]\n"),
+            (
+                "apps/api/stable.yaml",
+                &format!("image: ghcr.io/o/api@{DIGEST}\n"),
+            ),
+            (
+                "apps/api/secrets.stable.yaml",
+                "db-url: ENC[AES256_GCM,...]\n",
+            ),
         ]);
         let rendered = render_class(&src, EnvClass::Stable).unwrap().unwrap();
-        assert_eq!(rendered["secrets/api.yaml"], "db-url: ENC[AES256_GCM,...]\n");
+        assert_eq!(
+            rendered["secrets/api.yaml"],
+            "db-url: ENC[AES256_GCM,...]\n"
+        );
     }
 
     #[test]
     fn name_mismatch_is_rejected() {
         let src = sources(&[
             ("apps/api/base.yaml", "name: other\n"),
-            ("apps/api/stable.yaml", &format!("image: ghcr.io/o/api@{DIGEST}\n")),
+            (
+                "apps/api/stable.yaml",
+                &format!("image: ghcr.io/o/api@{DIGEST}\n"),
+            ),
         ]);
-        assert!(render_class(&src, EnvClass::Stable).unwrap_err().to_string().contains("does not match"));
+        assert!(render_class(&src, EnvClass::Stable)
+            .unwrap_err()
+            .to_string()
+            .contains("does not match"));
     }
 }

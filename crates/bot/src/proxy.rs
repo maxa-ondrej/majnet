@@ -29,13 +29,24 @@ pub async fn snapshot(
             (StatusCode::OK, headers, bytes).into_response()
         }
         Err(e) => {
-            tracing::error!(org, repo, branch, error = format!("{e:#}"), "snapshot failed");
+            tracing::error!(
+                org,
+                repo,
+                branch,
+                error = format!("{e:#}"),
+                "snapshot failed"
+            );
             (StatusCode::BAD_GATEWAY, format!("snapshot failed: {e:#}")).into_response()
         }
     }
 }
 
-pub(crate) async fn fetch_snapshot(state: &AppState, org: &str, repo: &str, branch: &str) -> Result<(String, Vec<u8>)> {
+pub(crate) async fn fetch_snapshot(
+    state: &AppState,
+    org: &str,
+    repo: &str,
+    branch: &str,
+) -> Result<(String, Vec<u8>)> {
     let (client, token) = state.github.org_client_and_token(org).await?;
 
     // Resolve branch → commit SHA (also the cache key).
@@ -71,6 +82,13 @@ pub(crate) async fn fetch_snapshot(state: &AppState, org: &str, repo: &str, bran
     let tmp = cache_path.with_extension("tmp");
     tokio::fs::write(&tmp, &bytes).await?;
     tokio::fs::rename(&tmp, &cache_path).await?;
-    tracing::info!(org, repo, branch, sha, size = bytes.len(), "snapshot cached");
+    tracing::info!(
+        org,
+        repo,
+        branch,
+        sha,
+        size = bytes.len(),
+        "snapshot cached"
+    );
     Ok((sha, bytes))
 }

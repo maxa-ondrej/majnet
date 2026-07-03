@@ -34,7 +34,8 @@ impl Nodes {
         }
         if self.local {
             // Smoke-test mode: every "node" is the local daemon.
-            let docker = Docker::connect_with_local_defaults().context("connecting to local Docker")?;
+            let docker =
+                Docker::connect_with_local_defaults().context("connecting to local Docker")?;
             clients.insert(node.name.clone(), docker.clone());
             return Ok(docker);
         }

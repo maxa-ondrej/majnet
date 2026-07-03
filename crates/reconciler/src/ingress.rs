@@ -13,7 +13,9 @@
 //! named volume across restarts, so keys are one-shot and short-lived.
 
 use anyhow::{Context, Result};
-use bollard::models::{ContainerCreateBody, DeviceMapping, HostConfig, RestartPolicy, RestartPolicyNameEnum};
+use bollard::models::{
+    ContainerCreateBody, DeviceMapping, HostConfig, RestartPolicy, RestartPolicyNameEnum,
+};
 use bollard::query_parameters as qp;
 use bollard::Docker;
 use std::collections::HashMap;
@@ -37,13 +39,19 @@ pub async fn ensure_ingress(state: &AppState, docker: &Docker, project: &str) ->
         tracing::info!(project, "DRY RUN: would (re)create ingress stack");
         return Ok(());
     }
-    tracing::info!(project, "creating ingress stack (traefik + tailscale sidecar)");
+    tracing::info!(
+        project,
+        "creating ingress stack (traefik + tailscale sidecar)"
+    );
 
     if !sidecar_running {
         // One-shot key from the bot; state volume keeps identity thereafter.
         let authkey = state
             .http
-            .post(format!("{}/api/tailscale-authkey/{project}", state.config.bot_url))
+            .post(format!(
+                "{}/api/tailscale-authkey/{project}",
+                state.config.bot_url
+            ))
             .send()
             .await?
             .error_for_status()
@@ -55,7 +63,10 @@ pub async fn ensure_ingress(state: &AppState, docker: &Docker, project: &str) ->
         pull(docker, TAILSCALE_IMAGE).await?;
         docker
             .create_container(
-                Some(qp::CreateContainerOptions { name: Some(sidecar.clone()), ..Default::default() }),
+                Some(qp::CreateContainerOptions {
+                    name: Some(sidecar.clone()),
+                    ..Default::default()
+                }),
                 ContainerCreateBody {
                     image: Some(TAILSCALE_IMAGE.into()),
                     hostname: Some(project.to_string()), // tailnet name = project
@@ -64,7 +75,10 @@ pub async fn ensure_ingress(state: &AppState, docker: &Docker, project: &str) ->
                         "TS_STATE_DIR=/var/lib/tailscale".into(),
                         "TS_USERSPACE=false".into(),
                     ]),
-                    labels: Some(HashMap::from([(LABEL_PROJECT.to_string(), project.to_string())])),
+                    labels: Some(HashMap::from([(
+                        LABEL_PROJECT.to_string(),
+                        project.to_string(),
+                    )])),
                     host_config: Some(HostConfig {
                         network_mode: Some(network_name(project)),
                         binds: Some(vec![format!("proj-{project}-ts-state:/var/lib/tailscale")]),
@@ -74,7 +88,10 @@ pub async fn ensure_ingress(state: &AppState, docker: &Docker, project: &str) ->
                             path_in_container: Some("/dev/net/tun".into()),
                             cgroup_permissions: Some("rwm".into()),
                         }]),
-                        restart_policy: Some(RestartPolicy { name: Some(RestartPolicyNameEnum::UNLESS_STOPPED), ..Default::default() }),
+                        restart_policy: Some(RestartPolicy {
+                            name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
+                            ..Default::default()
+                        }),
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -82,7 +99,9 @@ pub async fn ensure_ingress(state: &AppState, docker: &Docker, project: &str) ->
             )
             .await
             .context("creating tailscale sidecar")?;
-        docker.start_container(&sidecar, None::<qp::StartContainerOptions>).await?;
+        docker
+            .start_container(&sidecar, None::<qp::StartContainerOptions>)
+            .await?;
     }
 
     if !traefik_running {
@@ -90,7 +109,10 @@ pub async fn ensure_ingress(state: &AppState, docker: &Docker, project: &str) ->
         pull(docker, TRAEFIK_IMAGE).await?;
         docker
             .create_container(
-                Some(qp::CreateContainerOptions { name: Some(traefik.clone()), ..Default::default() }),
+                Some(qp::CreateContainerOptions {
+                    name: Some(traefik.clone()),
+                    ..Default::default()
+                }),
                 ContainerCreateBody {
                     image: Some(TRAEFIK_IMAGE.into()),
                     cmd: Some(vec![
@@ -98,16 +120,24 @@ pub async fn ensure_ingress(state: &AppState, docker: &Docker, project: &str) ->
                         "--providers.docker.exposedbydefault=false".into(),
                         // Only this project's containers — cross-project
                         // isolation even if a manifest lies about its host.
-                        format!("--providers.docker.constraints=Label(`{LABEL_PROJECT}`,`{project}`)"),
+                        format!(
+                            "--providers.docker.constraints=Label(`{LABEL_PROJECT}`,`{project}`)"
+                        ),
                         "--entrypoints.web.address=:80".into(),
                         "--entrypoints.websecure.address=:443".into(),
                     ]),
-                    labels: Some(HashMap::from([(LABEL_PROJECT.to_string(), project.to_string())])),
+                    labels: Some(HashMap::from([(
+                        LABEL_PROJECT.to_string(),
+                        project.to_string(),
+                    )])),
                     host_config: Some(HostConfig {
                         // Shares the sidecar's netns: listens on the tailnet IP.
                         network_mode: Some(format!("container:{sidecar}")),
                         binds: Some(vec!["/var/run/docker.sock:/var/run/docker.sock:ro".into()]),
-                        restart_policy: Some(RestartPolicy { name: Some(RestartPolicyNameEnum::UNLESS_STOPPED), ..Default::default() }),
+                        restart_policy: Some(RestartPolicy {
+                            name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
+                            ..Default::default()
+                        }),
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -115,22 +145,41 @@ pub async fn ensure_ingress(state: &AppState, docker: &Docker, project: &str) ->
             )
             .await
             .context("creating ingress traefik")?;
-        docker.start_container(&traefik, None::<qp::StartContainerOptions>).await?;
+        docker
+            .start_container(&traefik, None::<qp::StartContainerOptions>)
+            .await?;
     }
     Ok(())
 }
 
 async fn container_running(docker: &Docker, name: &str) -> Result<bool> {
-    match docker.inspect_container(name, None::<qp::InspectContainerOptions>).await {
+    match docker
+        .inspect_container(name, None::<qp::InspectContainerOptions>)
+        .await
+    {
         Ok(c) => Ok(c.state.as_ref().and_then(|s| s.running).unwrap_or(false)),
-        Err(bollard::errors::Error::DockerResponseServerError { status_code: 404, .. }) => Ok(false),
+        Err(bollard::errors::Error::DockerResponseServerError {
+            status_code: 404, ..
+        }) => Ok(false),
         Err(e) => Err(e.into()),
     }
 }
 
 async fn remove_if_exists(docker: &Docker, name: &str) -> Result<()> {
-    match docker.remove_container(name, Some(qp::RemoveContainerOptions { force: true, ..Default::default() })).await {
-        Ok(()) | Err(bollard::errors::Error::DockerResponseServerError { status_code: 404, .. }) => Ok(()),
+    match docker
+        .remove_container(
+            name,
+            Some(qp::RemoveContainerOptions {
+                force: true,
+                ..Default::default()
+            }),
+        )
+        .await
+    {
+        Ok(())
+        | Err(bollard::errors::Error::DockerResponseServerError {
+            status_code: 404, ..
+        }) => Ok(()),
         Err(e) => Err(e.into()),
     }
 }
@@ -141,7 +190,14 @@ async fn pull(docker: &Docker, image: &str) -> Result<()> {
         return Ok(());
     }
     docker
-        .create_image(Some(qp::CreateImageOptions { from_image: Some(image.into()), ..Default::default() }), None, None)
+        .create_image(
+            Some(qp::CreateImageOptions {
+                from_image: Some(image.into()),
+                ..Default::default()
+            }),
+            None,
+            None,
+        )
         .try_collect::<Vec<_>>()
         .await
         .with_context(|| format!("pulling {image}"))?;

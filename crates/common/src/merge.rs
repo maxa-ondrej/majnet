@@ -39,7 +39,10 @@ mod tests {
         let base = yaml("image: a\nenv: {A: '1', B: '2'}\nhealth: {path: /x, port: 80}");
         let overlay = yaml("image: b\nenv: {B: '3', C: '4'}");
         let merged = merge(base, overlay);
-        assert_eq!(merged, yaml("image: b\nenv: {A: '1', B: '3', C: '4'}\nhealth: {path: /x, port: 80}"));
+        assert_eq!(
+            merged,
+            yaml("image: b\nenv: {A: '1', B: '3', C: '4'}\nhealth: {path: /x, port: 80}")
+        );
     }
 
     #[test]

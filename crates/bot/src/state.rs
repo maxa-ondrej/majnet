@@ -27,7 +27,9 @@ impl Store {
                  detail TEXT NOT NULL
              );",
         )?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     /// Returns true if this delivery ID is new (and records it).

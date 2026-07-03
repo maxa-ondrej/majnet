@@ -25,15 +25,24 @@ use std::collections::BTreeMap;
 use crate::AppState;
 
 pub async fn sync_all(state: &AppState) -> Result<()> {
-    let (_, platform_tar) = crate::proxy::fetch_snapshot(state, &state.config.root_org, "platform", "main").await?;
+    let (_, platform_tar) =
+        crate::proxy::fetch_snapshot(state, &state.config.root_org, "platform", "main").await?;
     let platform = majnet_common::tarball::untar(&platform_tar)?;
-    let projects = ProjectsFile::parse(platform.get("projects.yaml").context("platform repo has no projects.yaml")?)?;
+    let projects = ProjectsFile::parse(
+        platform
+            .get("projects.yaml")
+            .context("platform repo has no projects.yaml")?,
+    )?;
 
     let mut synced: Vec<(String, ProjectConfig)> = Vec::new();
     for entry in &projects.projects {
         // The discovery gate: registry entry ∧ App installation.
         if state.github.org_client(&entry.org).await.is_err() {
-            tracing::warn!(org = entry.org, project = entry.name, "registered but App not installed — pending");
+            tracing::warn!(
+                org = entry.org,
+                project = entry.name,
+                "registered but App not installed — pending"
+            );
             continue;
         }
         match sync_org(state, &entry.org, &platform).await {
@@ -41,7 +50,9 @@ pub async fn sync_all(state: &AppState) -> Result<()> {
             Ok(None) => {}
             Err(e) => {
                 tracing::error!(org = entry.org, error = format!("{e:#}"), "org sync failed");
-                state.store.log_event("org-sync", Some(&entry.org), &format!("FAILED: {e:#}"))?;
+                state
+                    .store
+                    .log_event("org-sync", Some(&entry.org), &format!("FAILED: {e:#}"))?;
             }
         }
     }
@@ -54,7 +65,11 @@ pub async fn sync_all(state: &AppState) -> Result<()> {
     Ok(())
 }
 
-pub async fn sync_org(state: &AppState, org: &str, platform: &BTreeMap<String, Vec<u8>>) -> Result<Option<ProjectConfig>> {
+pub async fn sync_org(
+    state: &AppState,
+    org: &str,
+    platform: &BTreeMap<String, Vec<u8>>,
+) -> Result<Option<ProjectConfig>> {
     let client = state.github.org_client(org).await?;
 
     ensure_ops_repo(state, &client, org).await?;
@@ -62,17 +77,25 @@ pub async fn sync_org(state: &AppState, org: &str, platform: &BTreeMap<String, V
     let (_, ops_tar) = crate::proxy::fetch_snapshot(state, org, "ops", "main").await?;
     let ops = majnet_common::tarball::untar(&ops_tar)?;
     let Some(project_yaml) = ops.get("project.yaml") else {
-        tracing::info!(org, "ops repo has no project.yaml yet — nothing to reconcile");
+        tracing::info!(
+            org,
+            "ops repo has no project.yaml yet — nothing to reconcile"
+        );
         return Ok(None);
     };
-    let project: ProjectConfig = serde_yaml::from_slice(project_yaml).context("parsing project.yaml")?;
+    let project: ProjectConfig =
+        serde_yaml::from_slice(project_yaml).context("parsing project.yaml")?;
 
     // App repos: create from template, archive removed.
     let existing = list_org_repos(&client, org).await?;
     for app in &project.apps {
         if !existing.contains_key(&app.name) {
             create_repo_from_template(&client, org, &app.name, &app.template, platform).await?;
-            state.store.log_event("repo-created", Some(org), &format!("{} (template {})", app.name, app.template))?;
+            state.store.log_event(
+                "repo-created",
+                Some(org),
+                &format!("{} (template {})", app.name, app.template),
+            )?;
         }
         protect_app_main(&client, org, &app.name).await?;
     }
@@ -82,7 +105,12 @@ pub async fn sync_org(state: &AppState, org: &str, platform: &BTreeMap<String, V
         }
         if !project.apps.iter().any(|a| &a.name == repo) {
             // Archival is the safe terminal state — never delete (§2).
-            let _: serde_json::Value = client.patch(format!("/repos/{org}/{repo}"), Some(&json!({ "archived": true }))).await?;
+            let _: serde_json::Value = client
+                .patch(
+                    format!("/repos/{org}/{repo}"),
+                    Some(&json!({ "archived": true })),
+                )
+                .await?;
             tracing::info!(org, repo, "archived (removed from project.yaml)");
             state.store.log_event("repo-archived", Some(org), repo)?;
         }
@@ -134,7 +162,8 @@ async fn ensure_ops_repo(state: &AppState, client: &octocrab::Octocrab, org: &st
     ]);
     let repo = format!("/repos/{org}/ops");
     let tree = crate::git::create_tree(client, &repo, &scaffold).await?;
-    let commit = crate::git::create_commit(client, &repo, &tree, &[], "chore: initial ops scaffold").await?;
+    let commit =
+        crate::git::create_commit(client, &repo, &tree, &[], "chore: initial ops scaffold").await?;
     crate::git::create_ref(client, &repo, "main", &commit).await?;
     state.store.log_event("repo-created", Some(org), "ops")?;
     Ok(())
@@ -155,10 +184,16 @@ async fn create_repo_from_template(
         .filter_map(|(path, content)| {
             let rel = path.strip_prefix(&prefix)?;
             let text = String::from_utf8(content.clone()).ok()?;
-            Some((rel.to_string(), text.replace("{{app}}", app).replace("{{org}}", org)))
+            Some((
+                rel.to_string(),
+                text.replace("{{app}}", app).replace("{{org}}", org),
+            ))
         })
         .collect();
-    anyhow::ensure!(!files.is_empty(), "template '{template}' not found in platform repo (repo-templates/{template}/)");
+    anyhow::ensure!(
+        !files.is_empty(),
+        "template '{template}' not found in platform repo (repo-templates/{template}/)"
+    );
 
     tracing::info!(org, app, template, "creating app repo from template");
     let _: serde_json::Value = client
@@ -171,7 +206,14 @@ async fn create_repo_from_template(
 
     let repo = format!("/repos/{org}/{app}");
     let tree = crate::git::create_tree(client, &repo, &files).await?;
-    let commit = crate::git::create_commit(client, &repo, &tree, &[], &format!("chore: scaffold from template {template}")).await?;
+    let commit = crate::git::create_commit(
+        client,
+        &repo,
+        &tree,
+        &[],
+        &format!("chore: scaffold from template {template}"),
+    )
+    .await?;
     crate::git::create_ref(client, &repo, "main", &commit).await?;
     Ok(())
 }
@@ -179,7 +221,10 @@ async fn create_repo_from_template(
 /// The production gate (§9): merging into env/production requires an
 /// approving review. Even a compromised dashboard can't skip this.
 async fn protect_ops_production(client: &octocrab::Octocrab, org: &str) -> Result<()> {
-    if crate::git::get_branch_head(client, &format!("/repos/{org}/ops"), "env/production").await?.is_none() {
+    if crate::git::get_branch_head(client, &format!("/repos/{org}/ops"), "env/production")
+        .await?
+        .is_none()
+    {
         return Ok(()); // branch appears with the first production render
     }
     let _: serde_json::Value = client
@@ -222,18 +267,29 @@ async fn protect_app_main(client: &octocrab::Octocrab, org: &str, app: &str) -> 
 async fn sync_teams(client: &octocrab::Octocrab, org: &str, project: &ProjectConfig) -> Result<()> {
     for (team, role) in [("admins", Role::Admin), ("developers", Role::Developer)] {
         ensure_team(client, org, team).await?;
-        let desired: Vec<&str> = project.members.iter().filter(|m| m.role == role).map(|m| m.user.as_str()).collect();
+        let desired: Vec<&str> = project
+            .members
+            .iter()
+            .filter(|m| m.role == role)
+            .map(|m| m.user.as_str())
+            .collect();
 
         let current: Vec<serde_json::Value> = client
             .get(format!("/orgs/{org}/teams/{team}/members"), None::<&()>)
             .await
             .unwrap_or_default();
-        let current: Vec<String> = current.iter().filter_map(|m| m["login"].as_str().map(String::from)).collect();
+        let current: Vec<String> = current
+            .iter()
+            .filter_map(|m| m["login"].as_str().map(String::from))
+            .collect();
 
         for user in &desired {
             if !current.iter().any(|c| c.eq_ignore_ascii_case(user)) {
                 let _: serde_json::Value = client
-                    .put(format!("/orgs/{org}/teams/{team}/memberships/{user}"), Some(&json!({ "role": "member" })))
+                    .put(
+                        format!("/orgs/{org}/teams/{team}/memberships/{user}"),
+                        Some(&json!({ "role": "member" })),
+                    )
                     .await
                     .with_context(|| format!("adding {user} to {team}"))?;
                 tracing::info!(org, team, user, "added team member");
@@ -242,7 +298,10 @@ async fn sync_teams(client: &octocrab::Octocrab, org: &str, project: &ProjectCon
         for user in &current {
             if !desired.iter().any(|d| d.eq_ignore_ascii_case(user)) {
                 let route = format!("/orgs/{org}/teams/{team}/memberships/{user}");
-                client.delete::<serde_json::Value, _, ()>(route, None).await.ok();
+                client
+                    .delete::<serde_json::Value, _, ()>(route, None)
+                    .await
+                    .ok();
                 tracing::info!(org, team, user, "removed team member");
             }
         }
@@ -251,19 +310,26 @@ async fn sync_teams(client: &octocrab::Octocrab, org: &str, project: &ProjectCon
 }
 
 async fn ensure_team(client: &octocrab::Octocrab, org: &str, team: &str) -> Result<()> {
-    let exists: Result<serde_json::Value, _> = client.get(format!("/orgs/{org}/teams/{team}"), None::<&()>).await;
+    let exists: Result<serde_json::Value, _> = client
+        .get(format!("/orgs/{org}/teams/{team}"), None::<&()>)
+        .await;
     if exists.is_ok() {
         return Ok(());
     }
     let _: serde_json::Value = client
-        .post(format!("/orgs/{org}/teams"), Some(&json!({ "name": team, "privacy": "closed" })))
+        .post(
+            format!("/orgs/{org}/teams"),
+            Some(&json!({ "name": team, "privacy": "closed" })),
+        )
         .await
         .with_context(|| format!("creating team {team}"))?;
     Ok(())
 }
 
 async fn repo_exists(client: &octocrab::Octocrab, org: &str, repo: &str) -> Result<bool> {
-    let result: Result<serde_json::Value, _> = client.get(format!("/repos/{org}/{repo}"), None::<&()>).await;
+    let result: Result<serde_json::Value, _> = client
+        .get(format!("/repos/{org}/{repo}"), None::<&()>)
+        .await;
     match result {
         Ok(_) => Ok(true),
         Err(octocrab::Error::GitHub { source, .. }) if source.status_code == 404 => Ok(false),
@@ -276,7 +342,10 @@ async fn list_org_repos(client: &octocrab::Octocrab, org: &str) -> Result<BTreeM
     let mut repos = BTreeMap::new();
     for page in 1..=10 {
         let batch: Vec<serde_json::Value> = client
-            .get(format!("/orgs/{org}/repos?per_page=100&page={page}"), None::<&()>)
+            .get(
+                format!("/orgs/{org}/repos?per_page=100&page={page}"),
+                None::<&()>,
+            )
             .await
             .context("listing org repos")?;
         if batch.is_empty() {
@@ -284,7 +353,10 @@ async fn list_org_repos(client: &octocrab::Octocrab, org: &str) -> Result<BTreeM
         }
         for repo in &batch {
             if let Some(name) = repo["name"].as_str() {
-                repos.insert(name.to_string(), repo["archived"].as_bool().unwrap_or(false));
+                repos.insert(
+                    name.to_string(),
+                    repo["archived"].as_bool().unwrap_or(false),
+                );
             }
         }
     }

@@ -16,7 +16,11 @@ use crate::deploy::{self, DeployCtx};
 use crate::AppState;
 
 /// Ephemeral GC pass: track presence, remove what's out of grace.
-pub async fn ephemeral_gc(state: &AppState, ctx: &DeployCtx<'_>, rendered_apps: &[String]) -> Result<Vec<String>> {
+pub async fn ephemeral_gc(
+    state: &AppState,
+    ctx: &DeployCtx<'_>,
+    rendered_apps: &[String],
+) -> Result<Vec<String>> {
     // Containers whose manifest vanished start (or continue) their countdown.
     for app in deploy::list_class_apps(ctx).await? {
         if !rendered_apps.contains(&app) {

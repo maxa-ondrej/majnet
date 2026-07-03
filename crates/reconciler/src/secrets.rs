@@ -26,25 +26,51 @@ pub const HELPER_IMAGE: &str = "busybox:stable";
 
 /// Decrypt a rendered `secrets/<app>.yaml` (SOPS document: flat map of
 /// name → value) with the class key.
-pub async fn decrypt(config: &Config, class: EnvClass, encrypted: &[u8]) -> Result<BTreeMap<String, String>> {
-    let key_file = config.age_key_dir.join(format!("age-{}.key", class.as_str()));
-    ensure!(key_file.exists(), "missing class age key {}", key_file.display());
+pub async fn decrypt(
+    config: &Config,
+    class: EnvClass,
+    encrypted: &[u8],
+) -> Result<BTreeMap<String, String>> {
+    let key_file = config
+        .age_key_dir
+        .join(format!("age-{}.key", class.as_str()));
+    ensure!(
+        key_file.exists(),
+        "missing class age key {}",
+        key_file.display()
+    );
 
     let mut child = tokio::process::Command::new("sops")
-        .args(["--decrypt", "--input-type", "yaml", "--output-type", "yaml", "/dev/stdin"])
+        .args([
+            "--decrypt",
+            "--input-type",
+            "yaml",
+            "--output-type",
+            "yaml",
+            "/dev/stdin",
+        ])
         .env("SOPS_AGE_KEY_FILE", &key_file)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .context("spawning sops (is it installed?)")?;
-    child.stdin.take().context("no stdin")?.write_all(encrypted).await?;
+    child
+        .stdin
+        .take()
+        .context("no stdin")?
+        .write_all(encrypted)
+        .await?;
     let output = child.wait_with_output().await?;
     if !output.status.success() {
         // Failed decrypt aborts that app loudly — no partial applies (§12).
-        bail!("sops decrypt failed: {}", String::from_utf8_lossy(&output.stderr).trim());
+        bail!(
+            "sops decrypt failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
-    let map: BTreeMap<String, String> = serde_yaml::from_slice(&output.stdout).context("decrypted secrets are not a flat name→value map")?;
+    let map: BTreeMap<String, String> = serde_yaml::from_slice(&output.stdout)
+        .context("decrypted secrets are not a flat name→value map")?;
     Ok(map)
 }
 
@@ -76,12 +102,17 @@ pub async fn deliver(docker: &Docker, dir: &str, secrets: &BTreeMap<String, Stri
         .context("creating secrets helper container")?;
 
     let result = async {
-        docker.start_container(&helper.id, None::<qp::StartContainerOptions>).await?;
+        docker
+            .start_container(&helper.id, None::<qp::StartContainerOptions>)
+            .await?;
         let tarball = tar_of(secrets)?;
         docker
             .upload_to_container(
                 &helper.id,
-                Some(qp::UploadToContainerOptions { path: "/secrets".into(), ..Default::default() }),
+                Some(qp::UploadToContainerOptions {
+                    path: "/secrets".into(),
+                    ..Default::default()
+                }),
                 bollard::body_full(tarball.into()),
             )
             .await
@@ -91,7 +122,9 @@ pub async fn deliver(docker: &Docker, dir: &str, secrets: &BTreeMap<String, Stri
     .await;
 
     // Best-effort teardown either way; auto_remove cleans up after the kill.
-    let _ = docker.kill_container(&helper.id, None::<qp::KillContainerOptions>).await;
+    let _ = docker
+        .kill_container(&helper.id, None::<qp::KillContainerOptions>)
+        .await;
     result
 }
 
@@ -102,7 +135,10 @@ async fn ensure_helper_image(docker: &Docker) -> Result<()> {
     }
     docker
         .create_image(
-            Some(qp::CreateImageOptions { from_image: Some(HELPER_IMAGE.into()), ..Default::default() }),
+            Some(qp::CreateImageOptions {
+                from_image: Some(HELPER_IMAGE.into()),
+                ..Default::default()
+            }),
             None,
             None,
         )

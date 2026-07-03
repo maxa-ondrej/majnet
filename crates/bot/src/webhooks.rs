@@ -25,7 +25,8 @@ pub fn verify_signature(secret: &str, body: &[u8], signature_header: &str) -> bo
     let Ok(expected) = hex::decode(hex_sig) else {
         return false;
     };
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
     mac.update(body);
     mac.verify_slice(&expected).is_ok()
 }
@@ -35,9 +36,18 @@ pub async fn handle(
     headers: HeaderMap,
     body: Bytes,
 ) -> (StatusCode, &'static str) {
-    let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok()).unwrap_or("");
+    let header = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+    };
 
-    if !verify_signature(&state.config.webhook_secret, &body, header("x-hub-signature-256")) {
+    if !verify_signature(
+        &state.config.webhook_secret,
+        &body,
+        header("x-hub-signature-256"),
+    ) {
         tracing::warn!("webhook signature verification failed");
         return (StatusCode::UNAUTHORIZED, "bad signature");
     }
@@ -74,7 +84,10 @@ pub async fn handle(
 }
 
 async fn dispatch(state: &AppState, event: &str, payload: serde_json::Value) -> anyhow::Result<()> {
-    let org = payload["organization"]["login"].as_str().unwrap_or_default().to_string();
+    let org = payload["organization"]["login"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     match event {
         "ping" => {}
         "registry_package" | "package" => {
@@ -108,8 +121,16 @@ async fn on_push(state: &AppState, org: &str, payload: &serde_json::Value) -> an
     let is_platform = org == state.config.root_org && repo == "platform" && branch == "main";
     let is_ops_main = repo == "ops" && branch == "main";
     if is_env_branch || is_platform {
-        tracing::info!(org, repo, branch, commit, "deployable push — notifying reconciler");
-        state.store.log_event("push", Some(org), &format!("{repo}@{branch} {commit}"))?;
+        tracing::info!(
+            org,
+            repo,
+            branch,
+            commit,
+            "deployable push — notifying reconciler"
+        );
+        state
+            .store
+            .log_event("push", Some(org), &format!("{repo}@{branch} {commit}"))?;
         crate::notify::notify_reconciler(state, org, repo, branch, commit).await;
         if is_platform {
             // Registry or people may have changed: full reconciliation.
@@ -119,11 +140,17 @@ async fn on_push(state: &AppState, org: &str, payload: &serde_json::Value) -> an
         tracing::info!(org, commit, "ops main push — rendering + org sync");
         crate::render::on_ops_main_push(state, org, commit).await?;
         // project.yaml may have changed: reconcile this org (repos, teams, ACLs).
-        let (_, platform_tar) = crate::proxy::fetch_snapshot(state, &state.config.root_org, "platform", "main").await?;
+        let (_, platform_tar) =
+            crate::proxy::fetch_snapshot(state, &state.config.root_org, "platform", "main").await?;
         let platform = majnet_common::tarball::untar(&platform_tar)?;
         crate::org_sync::sync_org(state, org, &platform).await?;
     } else {
-        tracing::debug!(org, repo, branch, "push ignored (not ops main/env or platform config)");
+        tracing::debug!(
+            org,
+            repo,
+            branch,
+            "push ignored (not ops main/env or platform config)"
+        );
     }
     Ok(())
 }
