@@ -121,6 +121,32 @@ pub async fn converge_app(
         .await
         .context("starting container")?;
 
+    // Production apps with an ingress also join the shared `edge` network so
+    // edge-main (Traefik) can route to them (ADR 0007). The network is ensured
+    // by the platform-services pass, which runs before projects.
+    if ctx.class == EnvClass::Production && manifest.ingress.is_some() {
+        // Best-effort: if the edge network isn't there yet (edge-main not
+        // converged, or local/smoke mode), the app just isn't routable until a
+        // later cycle — don't fail the deploy over it.
+        if let Err(e) = ctx
+            .docker
+            .connect_network(
+                "edge",
+                bollard::models::NetworkConnectRequest {
+                    container: name.clone(),
+                    ..Default::default()
+                },
+            )
+            .await
+        {
+            tracing::warn!(
+                app = manifest.name,
+                error = format!("{e:#}"),
+                "could not attach app to the edge network (is edge-main up?)"
+            );
+        }
+    }
+
     // Health gate. Failure leaves the old container serving.
     if let Err(e) = await_healthy(ctx.docker, &name, manifest).await {
         let _ = ctx
