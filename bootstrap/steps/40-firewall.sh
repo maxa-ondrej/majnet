@@ -27,9 +27,18 @@ fi
 install_stdin /etc/nftables.conf 0644 <<EOF
 #!/usr/sbin/nft -f
 # Managed by majnet bootstrap (40-firewall.sh) — do not edit by hand.
-flush ruleset
+# We manage ONLY our own table and never 'flush ruleset': flushing wipes
+# Docker's iptables-nft chains (DOCKER-FORWARD, …), which breaks container
+# network creation until dockerd is restarted. Leaving the rest of the ruleset
+# alone lets Docker's chains coexist. add+delete makes the replace idempotent,
+# and nft applies the whole file as one atomic transaction (no open window).
+add table inet majnet
+delete table inet majnet
+# Drop the legacy table this step used to install (no-op if absent).
+add table inet filter
+delete table inet filter
 
-table inet filter {
+table inet majnet {
 $CF_SET
   chain input {
     type filter hook input priority filter; policy drop;
