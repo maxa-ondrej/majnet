@@ -16,6 +16,18 @@ Three custom Rust services form the control plane:
 
 ## Quick start
 
+### Installing the platform (operators)
+
+Create the root GitHub org by hand (the one manual step, §2), then on a fresh Debian machine — the future **main** node:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/maxa-ondrej/majnet/main/bootstrap/install.sh | bash
+```
+
+The installer bootstraps the node, generates all key material, starts the control plane, and prints a **setup-wizard URL**: create the GitHub App there (manifest flow — one click), seed the platform repo, and enroll the prod/private nodes by handing the wizard SSH access. See [ADR 0004](docs/adr/0004-setup-service-auto-provisioning.md) and [`crates/setup/README.md`](crates/setup/README.md).
+
+Break-glass / manual path: the [`bootstrap/`](bootstrap/README.md) scripts remain runnable standalone, and the crate READMEs document every env var. Day-2 operations live in [`docs/runbooks/`](docs/runbooks/).
+
 ### Hacking on the platform
 
 Everything you need comes from **nix + direnv** ([hook direnv into your shell](https://direnv.net/docs/hook.html) first):
@@ -31,18 +43,6 @@ Then prove the core actually works — the smoke test runs the reconciler's full
 ```sh
 scripts/smoke-test.sh
 ```
-
-### Installing the platform (operators)
-
-Create the root GitHub org by hand (the one manual step, §2), then on a fresh Debian machine — the future **main** node:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/maxa-ondrej/majnet/main/bootstrap/install.sh | bash
-```
-
-The installer bootstraps the node, generates all key material, starts the control plane, and prints a **setup-wizard URL**: create the GitHub App there (manifest flow — one click), seed the platform repo, and enroll the prod/private nodes by handing the wizard SSH access. See [ADR 0004](docs/adr/0004-setup-service-auto-provisioning.md) and [`crates/setup/README.md`](crates/setup/README.md).
-
-Break-glass / manual path: the [`bootstrap/`](bootstrap/README.md) scripts remain runnable standalone, and the crate READMEs document every env var. Day-2 operations live in [`docs/runbooks/`](docs/runbooks/).
 
 ## Topology
 
