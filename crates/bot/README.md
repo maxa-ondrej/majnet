@@ -17,6 +17,7 @@ The liaison (design doc §11). Phase-1 MVP: GitHub App auth, webhook intake, dig
 | `MAJNET_TAILSCALE_API_KEY` | | *(empty = TS sync off)* | the bot's second credential (§6) |
 | `MAJNET_TAILNET` | | — | tailnet name (e.g. `example.com`) |
 | `MAJNET_CLOUDFLARE_TOKEN` | | *(empty = custom domains manual)* | the bot's third credential (ADR 0007): Zone→DNS→Edit + Zone→SSL and Certificates→Edit. Automates proxied DNS + Full-strict for production domains |
+| `MAJNET_AGE_PRODUCTION_RECIPIENT` | | *(empty = DNS-only, no origin certs)* | the `age-production` **public** recipient. The bot encrypts issued origin-cert keys to it before committing to git; the reconciler decrypts. Get it: `age-keygen -y /etc/majnet/age/age-production.key` (ADR 0007) |
 
 ## GitHub App settings
 
