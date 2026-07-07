@@ -38,20 +38,29 @@ async fn do_seed(state: &AppState, req: SeedRequest) -> Result<String> {
     let client = state.github.org_client(org).await?;
     let repo = format!("/repos/{org}/platform");
 
-    if !crate::org_sync::repo_exists(&client, org, "platform").await? {
-        tracing::info!(org, "creating platform repo");
-        let _: serde_json::Value = client
-            .post(
-                format!("/orgs/{org}/repos"),
-                Some(&json!({
-                    "name": "platform",
-                    "description": "MajNet platform config — nodes, people, project registry",
-                    "private": true,
-                    "auto_init": false,
-                })),
-            )
-            .await
-            .context("creating platform repo")?;
+    // Ensure the repo exists by attempting creation and tolerating 422
+    // ("name already exists"). We deliberately do NOT read-then-create: an
+    // installation token can return 404 on `GET /repos/{org}/platform` for a
+    // repo it just created, which made the old `repo_exists` guard loop —
+    // seeing "absent", trying to create, and failing the create with 422.
+    tracing::info!(org, "ensuring platform repo exists");
+    match client
+        .post(
+            format!("/orgs/{org}/repos"),
+            Some(&json!({
+                "name": "platform",
+                "description": "MajNet platform config — nodes, people, project registry",
+                "private": true,
+                "auto_init": false,
+            })),
+        )
+        .await
+    {
+        Ok::<serde_json::Value, _>(_) => tracing::info!(org, "created platform repo"),
+        Err(octocrab::Error::GitHub { source, .. }) if source.status_code == 422 => {
+            tracing::info!(org, "platform repo already exists — reusing")
+        }
+        Err(e) => return Err(e).context("creating platform repo"),
     }
     if crate::git::get_branch_head(&client, &repo, "main")
         .await?

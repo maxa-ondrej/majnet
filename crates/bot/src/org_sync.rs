@@ -124,11 +124,13 @@ pub async fn sync_org(
 }
 
 async fn ensure_ops_repo(state: &AppState, client: &octocrab::Octocrab, org: &str) -> Result<()> {
-    if repo_exists(client, org, "ops").await? {
-        return Ok(());
-    }
-    tracing::info!(org, "creating ops repo");
-    let _: serde_json::Value = client
+    // Attempt creation and tolerate 422 ("already exists"). A 422 means the
+    // repo is already there and scaffolded, so we're done; only a freshly
+    // created repo falls through to scaffolding. We avoid a read-then-create
+    // guard because an installation token can 404 a GET on a repo it just
+    // created (see the same fix in platform_api::do_seed).
+    tracing::info!(org, "ensuring ops repo exists");
+    match client
         .post(
             format!("/orgs/{org}/repos"),
             Some(&json!({
@@ -139,7 +141,13 @@ async fn ensure_ops_repo(state: &AppState, client: &octocrab::Octocrab, org: &st
             })),
         )
         .await
-        .context("creating ops repo")?;
+    {
+        Ok::<serde_json::Value, _>(_) => tracing::info!(org, "created ops repo"),
+        Err(octocrab::Error::GitHub { source, .. }) if source.status_code == 422 => {
+            return Ok(())
+        }
+        Err(e) => return Err(e).context("creating ops repo"),
+    }
 
     let scaffold = BTreeMap::from([
         (
@@ -324,21 +332,6 @@ async fn ensure_team(client: &octocrab::Octocrab, org: &str, team: &str) -> Resu
         .await
         .with_context(|| format!("creating team {team}"))?;
     Ok(())
-}
-
-pub(crate) async fn repo_exists(
-    client: &octocrab::Octocrab,
-    org: &str,
-    repo: &str,
-) -> Result<bool> {
-    let result: Result<serde_json::Value, _> = client
-        .get(format!("/repos/{org}/{repo}"), None::<&()>)
-        .await;
-    match result {
-        Ok(_) => Ok(true),
-        Err(octocrab::Error::GitHub { source, .. }) if source.status_code == 404 => Ok(false),
-        Err(e) => Err(e).context("checking repo existence"),
-    }
 }
 
 /// name → archived, for all repos in the org.
