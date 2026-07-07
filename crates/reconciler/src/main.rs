@@ -23,6 +23,7 @@ mod deploy;
 mod docker;
 mod gc;
 mod ingress;
+mod platform;
 mod secrets;
 mod snapshot;
 mod state;

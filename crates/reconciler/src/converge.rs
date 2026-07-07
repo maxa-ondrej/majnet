@@ -50,6 +50,10 @@ pub async fn converge_all(state: &AppState) -> Result<()> {
 
     tracing::info!(projects = projects.projects.len(), commit = %platform.commit, "converging");
 
+    // Platform services (edge-main, …) onto their role's nodes — ADR 0007.
+    // Non-fatal, and independent of any project.
+    crate::platform::converge_platform(state, &nodes, &platform).await;
+
     for project in &projects.projects {
         for class in CLASSES {
             if let Err(e) =
