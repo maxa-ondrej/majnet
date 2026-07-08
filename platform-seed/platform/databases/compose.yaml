@@ -2,6 +2,12 @@
 # for production data and on the private node for dev data. No published
 # ports: engines are reachable only via the project networks the reconciler
 # attaches them to. Container names are the contract (`reconciler/src/db.rs`).
+#
+# The reconciler owns the deploy: `platform::ensure_engine` creates each
+# engine over the Docker API on first use by an app that declares it (so a
+# node only runs the engines it needs), seeding the root-secret file from the
+# DB master key. This compose is the equivalent break-glass / documentation
+# form — the container specs here and in ensure_engine must stay in sync.
 services:
   postgres:
     image: postgres:17

@@ -8,15 +8,17 @@
 
 use anyhow::{ensure, Context, Result};
 use bollard::models::{
-    ContainerCreateBody, HostConfig, PortBinding, RestartPolicy, RestartPolicyNameEnum,
+    ContainerCreateBody, ExecConfig, HostConfig, PortBinding, RestartPolicy, RestartPolicyNameEnum,
 };
 use bollard::query_parameters as qp;
 use bollard::Docker;
+use majnet_common::manifest::DbEngine;
 use majnet_common::platform::NodesFile;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
+use crate::config::Config;
 use crate::snapshot::Snapshot;
 use crate::AppState;
 
@@ -165,6 +167,223 @@ async fn converge_edge_main(docker: &Docker, platform: &Snapshot, age_key_dir: &
         .context("starting edge-main")?;
     tracing::info!(commit = %platform.commit, "edge-main deployed");
     Ok(())
+}
+
+// ── managed DB engines (§15) ─────────────────────────────────────────────────
+
+const DB_ROOT_DIR: &str = "/etc/majnet/db-root";
+
+/// Container spec for a managed DB engine — mirrors
+/// `platform/databases/compose.yaml`, but the reconciler owns the deploy over
+/// the Docker API (same path as edge-main). The root password lives in a
+/// secret file (delivered separately), never as a plain env var.
+struct EngineSpec {
+    image: &'static str,
+    /// `KEY=VALUE` container env.
+    env: Vec<String>,
+    /// Optional entrypoint override (valkey seeds its ACL file on first boot).
+    cmd: Option<Vec<String>>,
+    /// Host binds: the named data volume + the read-only root-secret file.
+    binds: Vec<String>,
+    /// Basename of the root-secret file under DB_ROOT_DIR.
+    secret: &'static str,
+    /// Readiness probe run inside the container (exit 0 = accepting
+    /// authenticated connections).
+    ready: String,
+}
+
+fn engine_spec(engine: DbEngine) -> EngineSpec {
+    let secret = match engine {
+        DbEngine::Postgres => "postgres",
+        DbEngine::Mariadb => "mariadb",
+        DbEngine::Valkey => "valkey",
+        DbEngine::Mongodb => "mongodb",
+    };
+    let root_file = format!("/run/secrets/{secret}-root");
+    let root_bind = format!("{DB_ROOT_DIR}/{secret}:{root_file}:ro");
+    match engine {
+        DbEngine::Postgres => EngineSpec {
+            image: "postgres:17",
+            env: vec![
+                // Superuser stays inside the container (local socket trust);
+                // per-app users authenticate over TCP with scram.
+                "POSTGRES_HOST_AUTH_METHOD=scram-sha-256".into(),
+                format!("POSTGRES_PASSWORD_FILE={root_file}"),
+            ],
+            cmd: None,
+            binds: vec!["postgres-data:/var/lib/postgresql/data".into(), root_bind],
+            secret,
+            ready: "pg_isready -U postgres -q".into(),
+        },
+        DbEngine::Mariadb => EngineSpec {
+            image: "mariadb:11",
+            env: vec![format!("MARIADB_ROOT_PASSWORD_FILE={root_file}")],
+            cmd: None,
+            binds: vec!["mariadb-data:/var/lib/mysql".into(), root_bind],
+            secret,
+            ready: format!(r#"mariadb -uroot -p"$(cat {root_file})" -e "SELECT 1" >/dev/null 2>&1"#),
+        },
+        DbEngine::Valkey => EngineSpec {
+            image: "valkey/valkey:8",
+            env: vec![],
+            // The default user's password must live in the acl file
+            // (requirepass is ignored once --aclfile is set); seed it once.
+            cmd: Some(vec![
+                "sh".into(),
+                "-c".into(),
+                format!(
+                    "test -s /data/users.acl || printf 'user default on >%s ~* &* +@all\\n' \"$(cat {root_file})\" > /data/users.acl; exec docker-entrypoint.sh valkey-server --aclfile /data/users.acl"
+                ),
+            ]),
+            binds: vec!["valkey-data:/data".into(), root_bind],
+            secret,
+            ready: format!(
+                r#"valkey-cli -a "$(cat {root_file})" --no-auth-warning ping >/dev/null 2>&1"#
+            ),
+        },
+        DbEngine::Mongodb => EngineSpec {
+            image: "mongo:8",
+            env: vec![
+                "MONGO_INITDB_ROOT_USERNAME=root".into(),
+                format!("MONGO_INITDB_ROOT_PASSWORD_FILE={root_file}"),
+            ],
+            cmd: None,
+            binds: vec!["mongodb-data:/data/db".into(), root_bind],
+            secret,
+            ready: format!(
+                r#"mongosh --quiet -u root -p "$(cat {root_file})" --authenticationDatabase admin --eval 'db.runCommand({{ ping: 1 }})' >/dev/null 2>&1"#
+            ),
+        },
+    }
+}
+
+/// Ensure the managed engine for `engine` is running on this node (deploying it
+/// on first use), then block until it accepts connections. On-demand so a node
+/// only runs the engines its apps actually declare; idempotent via a config-hash
+/// label like edge-main. The reconciler holds the DB master key and derives the
+/// engine's root password statelessly, seeding it into the root-secret file.
+pub async fn ensure_engine(config: &Config, docker: &Docker, engine: DbEngine) -> Result<()> {
+    let name = crate::db::engine_container(engine);
+    let root_pw = crate::db::root_password(config, engine)?;
+    let spec = engine_spec(engine);
+
+    let hash = engine_hash(&spec, &root_pw);
+    if running_with_hash(docker, name, &hash).await? {
+        return Ok(());
+    }
+
+    // The root-secret file must exist before the (single-file) bind mount, or
+    // Docker would create a directory in its place.
+    ensure_image(docker, HELPER_IMAGE).await?;
+    deliver_files(
+        docker,
+        DB_ROOT_DIR,
+        &BTreeMap::from([(spec.secret.to_string(), root_pw.into_bytes())]),
+    )
+    .await
+    .context("delivering engine root secret")?;
+    ensure_image(docker, spec.image).await?;
+    remove_container(docker, name).await;
+
+    let created = docker
+        .create_container(
+            Some(qp::CreateContainerOptions {
+                name: Some(name.into()),
+                ..Default::default()
+            }),
+            ContainerCreateBody {
+                image: Some(spec.image.into()),
+                cmd: spec.cmd.clone(),
+                env: Some(spec.env.clone()),
+                labels: Some(HashMap::from([(LABEL_CONFIG.to_string(), hash)])),
+                host_config: Some(HostConfig {
+                    binds: Some(spec.binds.clone()),
+                    restart_policy: Some(RestartPolicy {
+                        name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .with_context(|| format!("creating {name}"))?;
+    docker
+        .start_container(&created.id, None::<qp::StartContainerOptions>)
+        .await
+        .with_context(|| format!("starting {name}"))?;
+    tracing::info!(?engine, "DB engine deployed; waiting for readiness");
+    wait_ready(docker, name, &spec.ready)
+        .await
+        .with_context(|| format!("{name} did not become ready"))?;
+    tracing::info!(?engine, "DB engine ready");
+    Ok(())
+}
+
+fn engine_hash(spec: &EngineSpec, root_pw: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(spec.image.as_bytes());
+    for e in &spec.env {
+        h.update(e.as_bytes());
+        h.update([0]);
+    }
+    for c in spec.cmd.iter().flatten() {
+        h.update(c.as_bytes());
+        h.update([0]);
+    }
+    for b in &spec.binds {
+        h.update(b.as_bytes());
+        h.update([0]);
+    }
+    h.update(root_pw.as_bytes());
+    hex::encode(h.finalize())[..16].to_string()
+}
+
+/// Poll the readiness probe until it exits 0 (engines take seconds to initdb).
+/// ~60 s ceiling, then give up so the loop records a failure and retries.
+async fn wait_ready(docker: &Docker, name: &str, probe: &str) -> Result<()> {
+    for _ in 0..31 {
+        if exec_ok(docker, name, probe).await {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+    anyhow::bail!("still not ready after ~60s")
+}
+
+/// Run `script` in `container`; true iff it exited 0. Tolerates a not-yet-running
+/// container (returns false) so readiness polling can start immediately.
+async fn exec_ok(docker: &Docker, container: &str, script: &str) -> bool {
+    use futures_util::StreamExt;
+    let make = docker
+        .create_exec(
+            container,
+            ExecConfig {
+                cmd: Some(vec!["sh".into(), "-c".into(), script.into()]),
+                attach_stdout: Some(true),
+                attach_stderr: Some(true),
+                ..Default::default()
+            },
+        )
+        .await;
+    let Ok(exec) = make else { return false };
+    match docker
+        .start_exec(&exec.id, None::<bollard::exec::StartExecOptions>)
+        .await
+    {
+        Ok(bollard::exec::StartExecResults::Attached {
+            output: mut stream, ..
+        }) => while stream.next().await.is_some() {},
+        Ok(_) => {}
+        Err(_) => return false,
+    }
+    docker
+        .inspect_exec(&exec.id)
+        .await
+        .ok()
+        .and_then(|i| i.exit_code)
+        == Some(0)
 }
 
 fn config_hash(config: &BTreeMap<String, Vec<u8>>, certs: &BTreeMap<String, Vec<u8>>) -> String {

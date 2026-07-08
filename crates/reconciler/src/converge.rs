@@ -226,9 +226,21 @@ async fn converge_one(
         }
     };
 
-    // Managed database (§15): provision before the app (and its migrations) run.
+    // Managed database (§15): deploy the engine on this node on first use, then
+    // provision the logical DB — both before the app (and its migrations) run.
     let extra_env = match &manifest.database {
         Some(db) => {
+            if !ctx.dry_run {
+                crate::platform::ensure_engine(&state.config, ctx.docker, db.engine)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "ensuring {:?} engine on the {} node",
+                            db.engine,
+                            ctx.class.node_role()
+                        )
+                    })?;
+            }
             crate::db::ensure(
                 &state.config,
                 ctx.docker,

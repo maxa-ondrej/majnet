@@ -95,7 +95,7 @@ psql -U postgres -c "ALTER ROLE \"{name}\" WITH PASSWORD '{password}'"
 psql -U postgres -tc "SELECT 1 FROM pg_database WHERE datname='{name}'" | grep -q 1 || psql -U postgres -c "CREATE DATABASE \"{name}\" OWNER \"{name}\"""#
         ),
         DbEngine::Mariadb => format!(
-            r#"mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS \`{name}\`; CREATE USER IF NOT EXISTS '{name}'@'%' IDENTIFIED BY '{password}'; ALTER USER '{name}'@'%' IDENTIFIED BY '{password}'; GRANT ALL ON \`{name}\`.* TO '{name}'@'%';""#
+            r#"mariadb -uroot -p"$(cat /run/secrets/mariadb-root)" -e "CREATE DATABASE IF NOT EXISTS \`{name}\`; CREATE USER IF NOT EXISTS '{name}'@'%' IDENTIFIED BY '{password}'; ALTER USER '{name}'@'%' IDENTIFIED BY '{password}'; GRANT ALL ON \`{name}\`.* TO '{name}'@'%';""#
         ),
         DbEngine::Valkey => format!(
             r#"AUTH="$(cat /run/secrets/valkey-root)"
@@ -127,6 +127,23 @@ fn derive_password(
     app: &str,
     class: EnvClass,
 ) -> Result<String> {
+    hmac16(
+        config,
+        &format!("{engine:?}:{project}:{app}:{}", class.as_str()),
+    )
+}
+
+/// The engine's superuser password — the same stateless HMAC derivation as
+/// per-app users, domain-separated by the `root:` prefix. `platform::ensure_engine`
+/// seeds the engine's root-secret file with this so a rebuilt node (fresh
+/// volume) reproduces it; the provisioning scripts read it from that file.
+pub fn root_password(config: &Config, engine: DbEngine) -> Result<String> {
+    hmac16(config, &format!("root:{engine:?}"))
+}
+
+/// `HMAC-SHA256(db-master.key, msg)`, first 16 bytes hex — the stateless
+/// credential primitive (§15). The master key lives next to the age keys.
+fn hmac16(config: &Config, msg: &str) -> Result<String> {
     let key_path = config.age_key_dir.join("db-master.key");
     let master = std::fs::read(&key_path).with_context(|| {
         format!(
@@ -134,12 +151,19 @@ fn derive_password(
             key_path.display()
         )
     })?;
-    let mut mac = Hmac::<Sha256>::new_from_slice(&master).expect("any key length");
-    mac.update(format!("{engine:?}:{project}:{app}:{}", class.as_str()).as_bytes());
-    Ok(hex::encode(&mac.finalize().into_bytes()[..16]))
+    Ok(hmac16_with(&master, msg))
 }
 
-fn engine_container(engine: DbEngine) -> &'static str {
+/// The pure derivation: `HMAC-SHA256(master, msg)`, first 16 bytes hex.
+fn hmac16_with(master: &[u8], msg: &str) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(master).expect("any key length");
+    mac.update(msg.as_bytes());
+    hex::encode(&mac.finalize().into_bytes()[..16])
+}
+
+/// The engine's container name — the contract shared with `platform::ensure_engine`
+/// (which creates it) and `db::ensure` (which execs into it).
+pub fn engine_container(engine: DbEngine) -> &'static str {
     match engine {
         DbEngine::Postgres => "majnet-postgres",
         DbEngine::Mariadb => "majnet-mariadb",
@@ -214,8 +238,25 @@ async fn exec(docker: &Docker, container: &str, script: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::db_name;
+    use super::{db_name, hmac16_with};
     use majnet_common::EnvClass;
+
+    #[test]
+    fn derived_credentials_are_deterministic_and_domain_separated() {
+        let master = b"0123456789abcdef0123456789abcdef";
+        // Deterministic: same inputs → same secret (node recovery reproduces it).
+        assert_eq!(
+            hmac16_with(master, "root:Postgres"),
+            hmac16_with(master, "root:Postgres")
+        );
+        // A root secret never collides with an app user, nor across engines,
+        // nor across a different master key.
+        let root_pg = hmac16_with(master, "root:Postgres");
+        assert_ne!(root_pg, hmac16_with(master, "Postgres:proj:app:production"));
+        assert_ne!(root_pg, hmac16_with(master, "root:Mariadb"));
+        assert_ne!(root_pg, hmac16_with(b"a-different-master-key-32-bytes!", "root:Postgres"));
+        assert_eq!(root_pg.len(), 32); // 16 bytes hex
+    }
 
     #[test]
     fn db_names_are_identifier_safe() {
