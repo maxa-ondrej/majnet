@@ -33,18 +33,37 @@ const MANIFEST_FILES: [&str; 4] = [
     "ephemeral.yaml",
 ];
 
-/// `GET /api/manifest/{org}/{app}` — the app's manifest files on ops `main`.
+/// One manifest file, as raw YAML plus its parsed structure — the raw form
+/// feeds the editor's escape hatch, the parsed form feeds the field builder.
+#[derive(Serialize)]
+pub struct ManifestFile {
+    pub yaml: String,
+    /// Parsed structure (sparse overlays allowed); `null` if the file is empty.
+    pub data: serde_json::Value,
+}
+
+/// `GET /api/manifest/{org}/{app}` — the app's manifest files on ops `main`,
+/// each as raw YAML + parsed data.
 pub async fn manifest_get(
     State(state): State<Arc<AppState>>,
     Path((org, app)): Path<(String, String)>,
-) -> Result<Json<BTreeMap<String, String>>, ApiError> {
+) -> Result<Json<BTreeMap<String, ManifestFile>>, ApiError> {
     check_name(&app)?;
     let files = app_files(&state, &org, &app).await.map_err(bad_gateway)?;
-    Ok(Json(files))
+    let out = files
+        .into_iter()
+        .map(|(name, yaml)| {
+            let data = serde_yaml::from_str(&yaml).unwrap_or(serde_json::Value::Null);
+            (name, ManifestFile { yaml, data })
+        })
+        .collect();
+    Ok(Json(out))
 }
 
 /// `PUT /api/manifest/{org}/{app}/{file}` — validate + commit one manifest
-/// file. Body is the raw YAML.
+/// file. Body is raw YAML, or JSON (serialized to YAML server-side) when the
+/// content-type is `application/json` — so the form builder sends structure
+/// and the raw editor sends text, both through the same validation.
 pub async fn manifest_put(
     State(state): State<Arc<AppState>>,
     Path((org, app, file)): Path<(String, String, String)>,
@@ -57,6 +76,19 @@ pub async fn manifest_put(
             "file must be one of {MANIFEST_FILES:?}"
         )));
     }
+    // Form builder posts JSON; convert to YAML so the rest of the path (and the
+    // committed file) is identical to a raw-YAML edit.
+    let is_json = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|c| c.contains("application/json"));
+    let body = if is_json {
+        let value: serde_json::Value =
+            serde_json::from_str(&body).map_err(|e| bad_request(format!("invalid JSON: {e}")))?;
+        serde_yaml::to_string(&value).map_err(|e| bad_gateway(e.into()))?
+    } else {
+        body
+    };
     // The production overlay is a production action (§9: role admin).
     let min_role = if file == "production.yaml" {
         Role::Admin

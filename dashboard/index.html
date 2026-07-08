@@ -318,12 +318,166 @@ routes.newapp = async (p) => {
   main.innerHTML = ''; main.appendChild(view);
 };
 
-// ── App detail: summary + manifest editor + actions ──────────────────────────
+// ── App detail: summary + manifest editor (form / yaml) + actions ────────────
 const MANIFEST_FILES = ['base.yaml', 'stable.yaml', 'production.yaml', 'ephemeral.yaml'];
+
+// small form primitives ------------------------------------------------------
+function inp(type, value, ph) {
+  const e = document.createElement('input');
+  e.type = type;
+  if (value !== undefined && value !== null) e.value = value;
+  if (ph) e.placeholder = ph;
+  return e;
+}
+function fieldEl(label, control, hint) {
+  const f = h(`<div class="field"><label>${esc(label)}</label></div>`);
+  f.appendChild(control);
+  if (hint) f.appendChild(h(`<span class="h">${esc(hint)}</span>`));
+  return f;
+}
+// a dynamic list of single-string inputs; el.values() reads them
+function listField(label, values, ph, hint) {
+  const el = h(`<div class="field"><label>${esc(label)}</label><div data-rows class="rows"></div></div>`);
+  const rows = el.querySelector('[data-rows]');
+  const addRow = (v = '') => {
+    const row = h('<div style="display:flex;gap:6px"></div>');
+    row.append(inp('text', v, ph));
+    const del = h('<button class="btn ghost sm" type="button">✕</button>');
+    del.onclick = () => row.remove();
+    row.append(del);
+    rows.append(row);
+  };
+  (values || []).forEach(addRow);
+  const add = h('<button class="btn ghost sm" type="button" style="align-self:flex-start">+ add</button>');
+  add.onclick = () => addRow();
+  el.append(add);
+  if (hint) el.append(h(`<span class="h">${esc(hint)}</span>`));
+  el.values = () => [...rows.querySelectorAll('input')].map((i) => i.value.trim()).filter(Boolean);
+  return el;
+}
+// a dynamic key/value map; el.pairs() reads it
+function kvField(label, obj, hint) {
+  const el = h(`<div class="field"><label>${esc(label)}</label><div data-rows class="rows"></div></div>`);
+  const rows = el.querySelector('[data-rows]');
+  const addRow = (k = '', v = '') => {
+    const row = h('<div style="display:grid;grid-template-columns:1fr 1fr auto;gap:6px"></div>');
+    row.append(inp('text', k, 'KEY'), inp('text', v, 'value'));
+    const del = h('<button class="btn ghost sm" type="button">✕</button>');
+    del.onclick = () => row.remove();
+    row.append(del);
+    rows.append(row);
+  };
+  Object.entries(obj || {}).forEach(([k, v]) => addRow(k, v));
+  const add = h('<button class="btn ghost sm" type="button" style="align-self:flex-start">+ add</button>');
+  add.onclick = () => addRow();
+  el.append(add);
+  if (hint) el.append(h(`<span class="h">${esc(hint)}</span>`));
+  el.pairs = () => {
+    const o = {};
+    for (const row of rows.children) {
+      const [ki, vi] = row.querySelectorAll('input');
+      const k = ki.value.trim();
+      if (k) o[k] = vi.value;
+    }
+    return o;
+  };
+  return el;
+}
+// an optional section gated by an enable checkbox; collect() → value | undefined
+function section(label, enabled, build) {
+  const el = h(`<div class="field" style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;gap:10px"></div>`);
+  const head = h(`<label style="display:flex;align-items:center;gap:8px;font-weight:560"><input type="checkbox" style="width:auto"> ${esc(label)}</label>`);
+  const cb = head.querySelector('input');
+  cb.checked = enabled;
+  const body = build();
+  const bodyWrap = h('<div style="display:flex;flex-direction:column;gap:10px"></div>');
+  bodyWrap.append(body.el);
+  const sync = () => { bodyWrap.style.display = cb.checked ? '' : 'none'; };
+  cb.onchange = sync;
+  sync();
+  el.append(head, bodyWrap);
+  el.collect = () => (cb.checked ? body.collect() : undefined);
+  return el;
+}
+
+// build the whole manifest form for one file; collect() → the manifest object
+function manifestForm(app, file, data) {
+  data = data || {};
+  const el = h('<div style="display:flex;flex-direction:column;gap:14px"></div>');
+
+  const image = inp('text', data.image || '', 'ghcr.io/org/app@sha256:…');
+  el.append(fieldEl('Image', image, file === 'base.yaml'
+    ? 'Digest-pinned (required in base.yaml); tags are rejected.'
+    : 'Optional per-class image override (production digests come from Promote).'));
+
+  const ing = data.ingress || {};
+  const ingHost = inp('text', ing.host || '', 'app.example.com');
+  const ingPort = inp('number', ing.port, '');
+  const ingDomains = listField('Additional domains', ing.domains, 'www.example.com');
+  const ingress = section('Ingress', !!data.ingress, () => {
+    const box = h('<div style="display:flex;flex-direction:column;gap:10px"></div>');
+    const row = h('<div class="row2"></div>');
+    row.append(fieldEl('Host', ingHost), fieldEl('Container port', ingPort));
+    box.append(row, ingDomains);
+    return {
+      el: box,
+      collect: () => {
+        const o = { host: ingHost.value.trim(), port: Number(ingPort.value) };
+        const d = ingDomains.values();
+        if (d.length) o.domains = d;
+        return o;
+      },
+    };
+  });
+  el.append(ingress);
+
+  const hl = data.health || {};
+  const hPath = inp('text', hl.path ?? '/', '/');
+  const hPort = inp('number', hl.port, '');
+  const hRetries = inp('number', hl.retries ?? 5, '');
+  const health = section('Health check', !!data.health, () => {
+    const row = h('<div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px"></div>');
+    row.append(fieldEl('Path', hPath), fieldEl('Port', hPort), fieldEl('Retries', hRetries));
+    return { el: row, collect: () => ({ path: hPath.value.trim(), port: Number(hPort.value), retries: Number(hRetries.value) }) };
+  });
+  el.append(health);
+
+  const engines = ['postgres', 'mariadb', 'valkey', 'mongodb'];
+  const dbSel = h('<select>' + engines.map((e) => `<option ${data.database?.engine === e ? 'selected' : ''}>${e}</option>`).join('') + '</select>');
+  const database = section('Database', !!data.database, () => ({ el: fieldEl('Engine', dbSel), collect: () => ({ engine: dbSel.value }) }));
+  el.append(database);
+
+  const envField = kvField('Environment variables', data.env, 'Plain (non-secret) values.');
+  el.append(envField);
+
+  const secField = listField('Secrets', data.secrets, 'SECRET_NAME',
+    'Names of secret env vars; the values live SOPS-encrypted and are edited outside the UI.');
+  el.append(secField);
+
+  const migCmd = listField('Command', data.migration?.command, 'arg');
+  const migration = section('Migration', !!data.migration, () => ({
+    el: migCmd, collect: () => ({ command: migCmd.values() }),
+  }));
+  el.append(migration);
+
+  const collect = () => {
+    const out = {};
+    if (file === 'base.yaml') out.name = app; // identity = directory
+    const img = image.value.trim();
+    if (img) out.image = img;
+    const i = ingress.collect(); if (i) out.ingress = i;
+    const hc = health.collect(); if (hc) out.health = hc;
+    const db = database.collect(); if (db) out.database = db;
+    const env = envField.pairs(); if (Object.keys(env).length) out.env = env;
+    const sec = secField.values(); if (sec.length) out.secrets = sec;
+    const m = migration.collect(); if (m && m.command.length) out.migration = m;
+    return out;
+  };
+  return { el, collect };
+}
+
 routes.app = async (p, a) => {
   const files = await api(`${BOT}/manifest/${encodeURIComponent(p.org)}/${encodeURIComponent(a.name)}`);
-  const state = { file: 'base.yaml', bufs: {} };
-  for (const f of MANIFEST_FILES) state.bufs[f] = files[f] ?? null; // null = absent
 
   const view = h('<div></div>');
   view.appendChild(h(`<div class="crumb"><a data-projects>Projects</a> / <a data-back>${esc(p.name)}</a> / ${esc(a.name)}</div>`));
@@ -369,32 +523,56 @@ routes.app = async (p, a) => {
     ${dbrow}
   </div></div>`));
 
-  // manifest editor
-  const editor = h(`<div class="panel"><div class="tabs"></div><div class="panel-b">
-    <textarea data-body spellcheck="false"></textarea>
-    <div class="actions"><button class="btn primary sm" data-save>Save &amp; commit</button>
-      <span class="h">Validated, committed to ops main; a render PR follows. production.yaml requires admin.</span></div>
-  </div></div>`);
-  const tabs = editor.querySelector('.tabs');
-  const body = editor.querySelector('[data-body]');
-  const draw = () => {
-    tabs.innerHTML = '';
+  // manifest editor — file tabs + Form (default) / YAML mode
+  let curFile = 'base.yaml', curMode = 'form';
+  const editor = h(`<div class="panel">
+    <div class="panel-h"><div class="tabs" data-tabs style="border:0;padding:0"></div><span class="grow"></span>
+      <div class="actions"><button class="btn ghost sm" data-mode="form">Form</button><button class="btn ghost sm" data-mode="yaml">YAML</button></div></div>
+    <div class="panel-b" data-body></div>
+  </div>`);
+  const tabsEl = editor.querySelector('[data-tabs]');
+
+  const drawTabs = () => {
+    tabsEl.innerHTML = '';
     for (const f of MANIFEST_FILES) {
-      const absent = state.bufs[f] === null;
-      const t = h(`<button class="tab ${f === state.file ? 'on' : ''}">${f}${absent ? ' <span style="color:var(--faint)">(new)</span>' : ''}</button>`);
-      t.onclick = () => { state.file = f; body.value = state.bufs[f] ?? ''; draw(); };
-      tabs.appendChild(t);
+      const absent = !files[f];
+      const t = h(`<button class="tab ${f === curFile ? 'on' : ''}">${f}${absent ? ' <span style="color:var(--faint)">(new)</span>' : ''}</button>`);
+      t.onclick = () => { curFile = f; drawTabs(); drawBody(); };
+      tabsEl.appendChild(t);
     }
-    body.value = state.bufs[state.file] ?? '';
   };
-  draw();
-  editor.querySelector('[data-save]').onclick = async (e) => {
-    const btn = e.target; btn.disabled = true;
-    try {
-      const msg = await api(`${BOT}/manifest/${encodeURIComponent(p.org)}/${encodeURIComponent(a.name)}/${state.file}`, { method: 'PUT', body: body.value, raw: true });
-      state.bufs[state.file] = body.value; toast(msg); draw();
-    } catch (err) { toast(err.message, true); } finally { btn.disabled = false; }
+  const drawBody = () => {
+    const bodyEl = editor.querySelector('[data-body]');
+    bodyEl.innerHTML = '';
+    editor.querySelectorAll('[data-mode]').forEach((b) => b.classList.toggle('primary', b.dataset.mode === curMode));
+    const fd = files[curFile]; // {yaml, data} or undefined (absent)
+
+    let payload; // () => ({ json }) | ({ body })
+    if (curMode === 'form') {
+      const form = manifestForm(a.name, curFile, fd?.data);
+      bodyEl.appendChild(form.el);
+      payload = () => ({ json: form.collect() });
+    } else {
+      const ta = h('<textarea spellcheck="false"></textarea>');
+      ta.value = fd?.yaml ?? '';
+      bodyEl.appendChild(ta);
+      payload = () => ({ body: ta.value });
+    }
+    const actions = h(`<div class="actions" style="margin-top:14px"><button class="btn primary sm" data-save>Save &amp; commit</button>
+      <span class="h">Validated + committed to ops main; a render PR follows. production.yaml requires admin. Switching Form/YAML reloads the last saved state.</span></div>`);
+    bodyEl.appendChild(actions);
+    actions.querySelector('[data-save]').onclick = async (e) => {
+      const btn = e.target; btn.disabled = true;
+      try {
+        toast(await api(`${BOT}/manifest/${encodeURIComponent(p.org)}/${encodeURIComponent(a.name)}/${curFile}`,
+          { method: 'PUT', raw: true, ...payload() }));
+        render('app', p, a); // reload from server so both modes reflect the commit
+      } catch (err) { toast(err.message, true); btn.disabled = false; }
+    };
   };
+  editor.querySelectorAll('[data-mode]').forEach((b) => (b.onclick = () => { curMode = b.dataset.mode; drawBody(); }));
+  drawTabs();
+  drawBody();
   view.appendChild(editor);
   main.innerHTML = ''; main.appendChild(view);
 };
