@@ -15,6 +15,7 @@ mod authz;
 mod cloudflare;
 mod config;
 mod dashboard_api;
+mod deploys;
 mod digest;
 mod ephemeral;
 mod git;
@@ -98,6 +99,9 @@ async fn main() -> Result<()> {
             get(dashboard_api::apps_get).post(dashboard_api::apps_post),
         )
         .route("/api/nodes", get(dashboard_api::nodes_get))
+        .route("/api/deploys/{org}", get(deploys::list))
+        .route("/api/deploys/{org}/{number}/merge", post(deploys::merge))
+        .route("/api/deploys/{org}/{number}/close", post(deploys::close))
         .with_state(state.clone());
 
     // Org reconciliation: hourly, plus webhook-triggered on config pushes (§11.2).

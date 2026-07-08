@@ -159,6 +159,12 @@ function deployStatus(ev) {
 }
 const statusPill = (st) =>
   `<span class="pill ${st.cls}" title="${esc(st.title)}">${st.cls === 'ok' ? '<span class="dot"></span>' : ''}${esc(st.label)}</span>`;
+// Colorize a unified-diff patch for the terminal block.
+const diffHtml = (patch) => String(patch || '').split('\n').map((line) => {
+  const c = line[0] === '+' ? 'var(--good)' : line[0] === '-' ? 'var(--bad)'
+    : line.startsWith('@@') ? 'var(--term-accent)' : 'var(--term-text)';
+  return `<span style="color:${c}">${esc(line)}</span>`;
+}).join('\n');
 
 let toastTimer;
 function toast(msg, bad) {
@@ -262,16 +268,18 @@ routes.newproject = async () => {
 
 // ── Project detail ───────────────────────────────────────────────────────────
 routes.project = async (p) => {
-  const [apps, events] = await Promise.all([
+  const [apps, events, deploys] = await Promise.all([
     api(`${BOT}/apps/${encodeURIComponent(p.org)}`),
     api(`${RECON}/events?limit=300`).catch(() => []),
+    api(`${BOT}/deploys/${encodeURIComponent(p.org)}`).catch(() => []),
   ]);
   const view = h('<div></div>');
   view.appendChild(h(`<div class="crumb"><a data-back>Projects</a> / ${esc(p.name)}</div>`));
   const head = h(`<div class="head"><h1>${esc(p.name)}</h1><span class="head sub" style="font-family:var(--mono)">${esc(p.org)}</span><span class="grow"></span></div>`);
+  const dep = h(`<button class="btn ghost sm">Deployments${deploys.length ? ` · ${deploys.length}` : ''}</button>`); dep.onclick = () => render('deploys', p);
   const mem = h(`<button class="btn ghost sm">Members</button>`); mem.onclick = () => render('members', p);
   const add = h(`<button class="btn primary">+ New app</button>`); add.onclick = () => render('newapp', p);
-  head.append(mem, add);
+  head.append(dep, mem, add);
   view.appendChild(head);
   view.querySelector('[data-back]').onclick = () => render('projects');
 
@@ -661,6 +669,53 @@ routes.members = async (p) => {
   addRow.append(add, h('<span class="h">Commits to project.yaml; teams + Tailscale ACLs sync automatically.</span>'));
   body.appendChild(addRow);
   view.appendChild(panel);
+  main.innerHTML = ''; main.appendChild(view);
+};
+
+// ── Deployments (render PRs on ops) ──────────────────────────────────────────
+routes.deploys = async (p) => {
+  const deploys = await api(`${BOT}/deploys/${encodeURIComponent(p.org)}`);
+  const view = h('<div></div>');
+  view.appendChild(h(`<div class="crumb"><a data-projects>Projects</a> / <a data-back>${esc(p.name)}</a> / Deployments</div>`));
+  view.appendChild(h(`<div class="head"><h1>Deployments</h1><span class="head sub">pending render PRs on ${esc(p.org)}/ops</span></div>`));
+  view.querySelector('[data-projects]').onclick = () => render('projects');
+  view.querySelector('[data-back]').onclick = () => render('project', p);
+
+  if (!deploys.length) {
+    view.appendChild(h(`<div class="empty">No pending deployment requests. Production changes appear here as render PRs awaiting review; stable auto-deploys.</div>`));
+  }
+  for (const d of deploys) {
+    const panel = h('<div class="panel"></div>');
+    const phead = h(`<div class="panel-h"><span class="pill cls">${esc(d.class)}</span><h2 style="font-weight:600">#${d.number} · ${esc(d.title)}</h2><span class="grow"></span></div>`);
+    const merge = h(`<button class="btn primary sm">${d.class === 'production' ? 'Approve &amp; deploy' : 'Merge &amp; deploy'}</button>`);
+    merge.onclick = async () => {
+      if (!confirm(`Merge PR #${d.number} and deploy env/${d.class}?`)) return;
+      merge.disabled = true;
+      try { toast(await api(`${BOT}/deploys/${encodeURIComponent(p.org)}/${d.number}/merge`, { method: 'POST', raw: true })); render('deploys', p); }
+      catch (e) { toast(e.message, true); merge.disabled = false; }
+    };
+    const close = h('<button class="btn danger sm">Close</button>');
+    close.onclick = async () => {
+      if (!confirm(`Close PR #${d.number} without deploying?`)) return;
+      close.disabled = true;
+      try { toast(await api(`${BOT}/deploys/${encodeURIComponent(p.org)}/${d.number}/close`, { method: 'POST', raw: true })); render('deploys', p); }
+      catch (e) { toast(e.message, true); close.disabled = false; }
+    };
+    phead.append(merge, close);
+    panel.appendChild(phead);
+
+    const body = h('<div class="panel-b"></div>');
+    if (!d.files.length) body.appendChild(h('<div class="h">No file changes.</div>'));
+    for (const f of d.files) {
+      const det = h(`<details><summary style="cursor:pointer;font-family:var(--mono);font-size:12.5px">
+        ${esc(f.filename)} <span style="color:var(--good)">+${f.additions}</span> <span style="color:var(--bad)">−${f.deletions}</span>
+        <span class="pill dim">${esc(f.status)}</span></summary></details>`);
+      if (f.patch) det.appendChild(h(`<div class="term" style="margin-top:8px"><pre><code>${diffHtml(f.patch)}</code></pre></div>`));
+      body.appendChild(det);
+    }
+    panel.appendChild(body);
+    view.appendChild(panel);
+  }
   main.innerHTML = ''; main.appendChild(view);
 };
 
