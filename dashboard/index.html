@@ -5,182 +5,495 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MajNet</title>
 <style>
-  :root { color-scheme: light dark; font-family: ui-monospace, monospace; }
-  body { margin: 2rem auto; max-width: 72rem; padding: 0 1rem; }
-  h1 { font-size: 1.2rem; } h1 small { opacity: .6; font-weight: normal; }
-  table { border-collapse: collapse; width: 100%; font-size: .85rem; }
-  th, td { text-align: left; padding: .3rem .6rem; border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent); }
-  .failed { color: #d33; }
-  form { display: inline-flex; gap: .4rem; margin: 1rem 1rem 1rem 0; }
-  input { font: inherit; width: 9rem; }
-  button { font: inherit; cursor: pointer; }
-  #msg { padding: .5rem 0; min-height: 1.5rem; opacity: .8; }
+  :root{
+    --bg:#f5f7fa;--surface:#fff;--surface-2:#eef1f6;--border:#d8dee8;--border-strong:#c3ccda;
+    --text:#18202e;--muted:#5c6676;--faint:#97a1b2;--accent:#2f63f6;--accent-soft:#e7eeff;--accent-ink:#fff;
+    --good:#16955f;--good-soft:#e0f2e9;--warn:#b3730a;--warn-soft:#fbefd8;--bad:#cf3b3b;--bad-soft:#fbe4e4;
+    --term-bg:#0d1424;--term-text:#c9d3e6;--term-accent:#7fa2ff;--radius:12px;--radius-sm:8px;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;
+    --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --shadow:0 1px 2px rgba(20,30,50,.04),0 8px 24px -12px rgba(20,30,50,.12);
+  }
+  @media (prefers-color-scheme:dark){:root{--bg:#0a0e16;--surface:#111826;--surface-2:#19212f;--border:#253044;
+    --border-strong:#33415a;--text:#e7ecf3;--muted:#93a0b4;--faint:#62708a;--accent:#5385ff;--accent-soft:#17233f;
+    --good:#35c184;--good-soft:#12291f;--warn:#e0a545;--warn-soft:#2a2113;--bad:#ef6f6f;--bad-soft:#2c1717;
+    --term-bg:#060a12;--term-text:#c2cde2;--term-accent:#86a6ff;--shadow:0 1px 2px rgba(0,0,0,.3),0 12px 32px -16px rgba(0,0,0,.6)}}
+  :root[data-theme="light"]{--bg:#f5f7fa;--surface:#fff;--surface-2:#eef1f6;--border:#d8dee8;--border-strong:#c3ccda;
+    --text:#18202e;--muted:#5c6676;--faint:#97a1b2;--accent:#2f63f6;--accent-soft:#e7eeff;--good:#16955f;--good-soft:#e0f2e9;
+    --warn:#b3730a;--warn-soft:#fbefd8;--bad:#cf3b3b;--bad-soft:#fbe4e4;--term-bg:#0d1424;--term-text:#c9d3e6}
+  :root[data-theme="dark"]{--bg:#0a0e16;--surface:#111826;--surface-2:#19212f;--border:#253044;--border-strong:#33415a;
+    --text:#e7ecf3;--muted:#93a0b4;--faint:#62708a;--accent:#5385ff;--accent-soft:#17233f;--good:#35c184;--good-soft:#12291f;
+    --warn:#e0a545;--warn-soft:#2a2113;--bad:#ef6f6f;--bad-soft:#2c1717;--term-bg:#060a12;--term-text:#c2cde2}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14.5px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  a{color:var(--accent)}
+  .app{display:grid;grid-template-columns:216px 1fr;min-height:100vh}
+  /* sidebar */
+  .side{border-right:1px solid var(--border);background:var(--surface);padding:16px 12px;display:flex;flex-direction:column;gap:4px}
+  .brand{display:flex;align-items:center;gap:10px;padding:6px 8px 16px}
+  .logo{width:30px;height:30px;border-radius:8px;border:1px solid var(--border-strong);flex:none;
+    background:radial-gradient(circle at 30% 30%,var(--accent) 0 3px,transparent 3.4px),
+    radial-gradient(circle at 72% 34%,var(--accent) 0 3px,transparent 3.4px),
+    radial-gradient(circle at 50% 74%,var(--accent) 0 3px,transparent 3.4px),var(--accent-soft)}
+  .brand b{font-size:15px;font-weight:680;letter-spacing:-.01em}
+  .nav{font:inherit;text-align:left;width:100%;border:0;background:transparent;color:var(--muted);cursor:pointer;
+    padding:8px 10px;border-radius:8px;display:flex;align-items:center;gap:9px;font-weight:530;font-size:13.5px}
+  .nav:hover{background:var(--surface-2);color:var(--text)}
+  .nav.on{background:var(--accent-soft);color:var(--accent)}
+  .nav svg{width:16px;height:16px}
+  .side .spacer{flex:1}
+  .side .who{border-top:1px solid var(--border);padding-top:12px;display:flex;align-items:center;gap:9px;font-size:12.5px;color:var(--muted)}
+  .avatar{width:26px;height:26px;border-radius:50%;background:var(--accent);color:#fff;display:grid;place-items:center;font-weight:600;font-size:12px;flex:none}
+  .role{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--good);font-weight:640}
+  /* main */
+  .main{padding:26px 30px 60px;max-width:1000px}
+  .crumb{font-size:12.5px;color:var(--muted);margin-bottom:6px}
+  .crumb a{color:var(--accent);cursor:pointer;text-decoration:none}
+  .head{display:flex;align-items:center;gap:12px;margin-bottom:22px}
+  .head h1{font-size:22px;font-weight:670;letter-spacing:-.02em;margin:0}
+  .head .sub{color:var(--muted);font-size:13px}
+  .head .grow{flex:1}
+  .btn{font:inherit;font-weight:560;font-size:13.5px;cursor:pointer;border-radius:var(--radius-sm);padding:8px 14px;
+    border:1px solid transparent;display:inline-flex;align-items:center;gap:7px;text-decoration:none}
+  .btn:disabled{opacity:.5;cursor:not-allowed}
+  .btn.primary{background:var(--accent);color:var(--accent-ink)}
+  .btn.primary:hover{background:color-mix(in srgb,var(--accent) 88%,#000)}
+  .btn.ghost{background:var(--surface);color:var(--text);border-color:var(--border-strong)}
+  .btn.ghost:hover{background:var(--surface-2)}
+  .btn.sm{padding:5px 10px;font-size:12.5px}
+  .btn.danger{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 40%,transparent);background:var(--surface)}
+  .btn.danger:hover{background:var(--bad-soft)}
+  /* cards grid */
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;box-shadow:var(--shadow);cursor:pointer;transition:border-color .15s}
+  .card:hover{border-color:var(--accent)}
+  .card h3{margin:0 0 3px;font-size:15.5px;font-weight:620}
+  .card .meta{font-size:12.5px;color:var(--muted);font-family:var(--mono)}
+  .card .foot{display:flex;gap:14px;margin-top:12px;font-size:12.5px;color:var(--muted)}
+  .card .foot b{color:var(--text);font-weight:600}
+  /* pills */
+  .pill{font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;white-space:nowrap;display:inline-flex;align-items:center;gap:5px}
+  .pill.ok{background:var(--good-soft);color:var(--good)} .pill.dep{background:var(--warn-soft);color:var(--warn)} .pill.err{background:var(--bad-soft);color:var(--bad)}
+  .pill.cls{background:var(--accent-soft);color:var(--accent)} .pill.dim{background:var(--surface-2);color:var(--muted)}
+  .dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+  /* table-ish app rows */
+  .rows{display:flex;flex-direction:column;gap:8px}
+  .row{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 16px}
+  .row.link{cursor:pointer}
+  .row.link:hover{border-color:var(--accent)}
+  .row .nm{font-weight:600;font-size:14.5px;display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+  .row .dm{font-family:var(--mono);font-size:12px;color:var(--muted);margin-top:3px}
+  .row .rt{display:flex;align-items:center;gap:8px}
+  .panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);margin-bottom:16px}
+  .panel-h{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
+  .panel-h h2{font-size:14px;font-weight:620;margin:0}.panel-h .grow{flex:1}
+  .panel-b{padding:16px 18px;display:flex;flex-direction:column;gap:14px}
+  .field{display:flex;flex-direction:column;gap:5px}
+  .field label{font-size:12.5px;font-weight:560}
+  .field .h{font-size:11.5px;color:var(--muted)}
+  input[type=text],input[type=number],select,textarea{font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--border-strong);border-radius:var(--radius-sm);padding:8px 10px;width:100%}
+  textarea{font-family:var(--mono);font-size:12.5px;min-height:150px;resize:vertical}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);padding:0 18px;flex-wrap:wrap}
+  .tab{font:inherit;font-size:13px;font-weight:540;color:var(--muted);background:transparent;border:0;border-bottom:2px solid transparent;padding:10px 10px;cursor:pointer;margin-bottom:-1px}
+  .tab.on{color:var(--accent);border-bottom-color:var(--accent)}
+  .kv{display:flex;gap:10px;font-size:13px;align-items:baseline}.kv .k{color:var(--muted);min-width:120px}.kv .v{font-family:var(--mono);font-size:12.5px;word-break:break-all}
+  .banner{display:flex;gap:10px;padding:11px 13px;border-radius:var(--radius-sm);font-size:13px;align-items:flex-start;background:var(--surface-2);border:1px solid var(--border);color:var(--muted)}
+  .banner svg{flex:none}
+  .term{background:var(--term-bg);border-radius:var(--radius-sm);overflow:hidden}
+  .term pre{margin:0;padding:12px 14px;overflow-x:auto}
+  .term code{font-family:var(--mono);font-size:12px;line-height:1.7;color:var(--term-text);white-space:pre}
+  .actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  table.ev{width:100%;border-collapse:collapse;font-size:12.5px}
+  table.ev th{text-align:left;color:var(--muted);font-weight:560;padding:7px 10px;border-bottom:1px solid var(--border);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+  table.ev td{padding:8px 10px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:12px;vertical-align:top}
+  .note{border:1px dashed var(--border-strong);border-radius:var(--radius);padding:12px 15px;margin-top:26px;background:var(--surface-2);font-size:12.5px;color:var(--muted)}
+  .empty{color:var(--muted);font-size:13px;padding:24px 4px}
+  .spin{color:var(--muted);font-size:13px;padding:24px 4px}
+  /* toast */
+  #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(120%);transition:transform .25s;
+    max-width:min(90vw,640px);background:var(--surface);border:1px solid var(--border-strong);box-shadow:var(--shadow);
+    border-radius:var(--radius-sm);padding:11px 15px;font-size:13px;z-index:50;display:flex;gap:10px;align-items:flex-start}
+  #toast.show{transform:translateX(-50%) translateY(0)}
+  #toast.bad{border-color:color-mix(in srgb,var(--bad) 55%,var(--border-strong))}
+  #toast .x{margin-left:auto;cursor:pointer;color:var(--muted);border:0;background:transparent;font:inherit}
+  #toast pre{margin:0;white-space:pre-wrap;word-break:break-word;font-family:var(--mono);font-size:12px}
+  @media (max-width:720px){.app{grid-template-columns:1fr}.side{flex-direction:row;overflow-x:auto;border-right:0;border-bottom:1px solid var(--border)}.side .spacer,.side .who{display:none}.row2{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
-<h1>MajNet <small>— GitOps dashboard (writes go through git, never around it)</small></h1>
-
-<div>
-  <form data-api="/api/bot/api/promote/{org}/{app}" data-fields="org,app"><b>promote</b>
-    <input name="org" placeholder="org" required><input name="app" placeholder="app" required>
-    <button>→ production</button>
-  </form>
-  <form data-api="/api/recon/api/restart/{project}/{class}/{app}" data-fields="project,class,app"><b>restart</b>
-    <input name="project" placeholder="project" required><input name="class" placeholder="class" value="stable" required>
-    <input name="app" placeholder="app" required><button>bounce</button>
-  </form>
-  <form data-api="/api/bot/api/rollback/{org}" data-fields="org"><b>rollback</b>
-    <input name="org" placeholder="org" required><button>revert last</button>
-  </form>
-  <form data-api="/api/recon/api/ephemeral/extend/{project}/{app}" data-fields="project,app"
-        data-json="days:number"><b>extend&nbsp;TTL</b>
-    <input name="project" placeholder="project" required><input name="app" placeholder="app-pr12" required>
-    <input name="days" type="number" value="2" min="1" max="7" style="width:4rem" required>
-    <button>+days</button>
-  </form>
+<div class="app">
+  <nav class="side">
+    <div class="brand"><div class="logo"></div><b>MajNet</b></div>
+    <button class="nav" data-nav="projects"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>Projects</button>
+    <button class="nav" data-nav="events"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h10"/></svg>Activity</button>
+    <button class="nav" data-nav="nodes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/></svg>Nodes</button>
+    <div class="spacer"></div>
+    <div class="who" id="who"></div>
+  </nav>
+  <main class="main" id="main"></main>
 </div>
-<div id="msg"></div>
-
-<details>
-  <summary><b>Manifest editor</b> — apps/&lt;app&gt;/*.yaml on ops main (validated, committed by the bot)</summary>
-  <form id="mload">
-    <input name="org" placeholder="org" required><input name="app" placeholder="app" required>
-    <button>load</button>
-  </form>
-  <form id="msave" hidden>
-    <select name="file"></select>
-    <button>validate + commit</button>
-  </form>
-  <textarea id="mbody" rows="16" style="width:100%;font:inherit" hidden></textarea>
-</details>
-
-<details>
-  <summary><b>Members</b> — project.yaml (admin-only; org sync propagates teams + ACLs)</summary>
-  <form id="mem-load"><input name="org" placeholder="org" required><button>load</button></form>
-  <table id="members" hidden><thead><tr><th>user</th><th>role</th><th></th></tr></thead><tbody></tbody></table>
-  <form id="mem-add" hidden>
-    <input name="user" placeholder="github user" required>
-    <select name="role"><option>developer</option><option>admin</option></select>
-    <button>upsert</button>
-  </form>
-</details>
-
-<h2 style="font-size:1rem">Events</h2>
-<table id="events"><thead><tr>
-  <th>at</th><th>project</th><th>node</th><th>action</th><th>result</th><th>commit</th>
-</tr></thead><tbody></tbody></table>
+<div id="toast"><pre id="toast-msg"></pre><button class="x" onclick="hideToast()">✕</button></div>
 
 <script>
-const msg = (t, bad) => { const el = document.getElementById('msg'); el.textContent = t; el.className = bad ? 'failed' : ''; };
-const call = async (url, opts) => {
-  msg('…');
+"use strict";
+// ── tiny helpers ─────────────────────────────────────────────────────────────
+const $ = (sel, root = document) => root.querySelector(sel);
+const h = (html) => { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; };
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const short = (img) => String(img ?? '').replace(/(@sha256:[0-9a-f]{8})[0-9a-f]+/, '$1…');
+
+let toastTimer;
+function toast(msg, bad) {
+  const t = $('#toast'); $('#toast-msg').textContent = msg;
+  t.classList.toggle('bad', !!bad); t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(hideToast, bad ? 9000 : 4500);
+}
+function hideToast() { $('#toast').classList.remove('show'); }
+
+const BOT = '/api/bot/api', RECON = '/api/recon/api';
+async function api(url, { method = 'GET', body, raw, json } = {}) {
+  const opts = { method, headers: {} };
+  if (json !== undefined) { opts.headers['content-type'] = 'application/json'; opts.body = JSON.stringify(json); }
+  else if (body !== undefined) { opts.body = body; }
   const r = await fetch(url, opts);
   const text = await r.text();
-  msg(`${r.status}: ${text}`, !r.ok);
-  loadEvents();
-  return r.ok ? text : Promise.reject(text);
-};
+  if (!r.ok) throw new Error(text || `${r.status} ${r.statusText}`);
+  if (raw) return text;
+  const ct = r.headers.get('content-type') || '';
+  return ct.includes('application/json') ? JSON.parse(text) : text;
+}
 
-for (const form of document.querySelectorAll('form[data-api]')) {
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    let url = form.dataset.api;
-    for (const f of form.dataset.fields.split(',')) url = url.replace(`{${f}}`, encodeURIComponent(form[f].value.trim()));
-    const opts = { method: 'POST' };
-    if (form.dataset.json) {              // e.g. "days:number"
-      const body = {};
-      for (const spec of form.dataset.json.split(',')) {
-        const [name, type] = spec.split(':');
-        body[name] = type === 'number' ? Number(form[name].value) : form[name].value;
-      }
-      opts.headers = { 'content-type': 'application/json' };
-      opts.body = JSON.stringify(body);
-    }
-    try { await call(url, opts); } catch {}
+// ── app state + router ───────────────────────────────────────────────────────
+let ME = { login: null, admin: false };
+const main = $('#main');
+const routes = {};
+function render(name, ...args) {
+  document.querySelectorAll('.nav').forEach((n) => n.classList.toggle('on', n.dataset.nav === name));
+  main.innerHTML = '';
+  main.appendChild(h('<div class="spin">Loading…</div>'));
+  Promise.resolve(routes[name](...args)).catch((e) => {
+    main.innerHTML = '';
+    main.appendChild(h(`<div class="empty">Failed to load: ${esc(e.message)}</div>`));
+    toast(e.message, true);
   });
 }
+document.querySelectorAll('.nav').forEach((n) => n.addEventListener('click', () => render(n.dataset.nav)));
 
-// ── manifest editor ────────────────────────────────────────────────────────
-const mfiles = {};
-const $ = (id) => document.getElementById(id);
-$('mload').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const org = e.target.org.value.trim(), app = e.target.app.value.trim();
-  try {
-    const files = JSON.parse(await call(`/api/bot/api/manifest/${org}/${app}`, {}));
-    Object.assign(mfiles, { org, app });
-    const sel = $('msave').file;
-    sel.innerHTML = '';
-    for (const f of ['base.yaml', 'stable.yaml', 'production.yaml', 'ephemeral.yaml']) {
-      sel.add(new Option(files[f] === undefined ? `${f} (new)` : f, f));
-      mfiles[f] = files[f] ?? '';
+// ── Projects ─────────────────────────────────────────────────────────────────
+routes.projects = async () => {
+  const projects = await api(`${BOT}/projects`);
+  const view = h('<div></div>');
+  const head = h(`<div class="head"><h1>Projects</h1><span class="grow"></span></div>`);
+  if (ME.admin) {
+    const btn = h(`<button class="btn primary">+ New project</button>`);
+    btn.onclick = () => render('newproject');
+    head.appendChild(btn);
+  }
+  view.appendChild(head);
+
+  const grid = h('<div class="grid"></div>');
+  if (!projects.length) grid.appendChild(h('<div class="empty">No projects registered yet.</div>'));
+  for (const p of projects) {
+    if (p.onboarded) {
+      const card = h(`<div class="card"><h3>${esc(p.name)}</h3><div class="meta">${esc(p.org)}</div>
+        <div class="foot"><span><b>${p.apps}</b> app${p.apps === 1 ? '' : 's'}</span>
+        <span class="pill ok"><span class="dot"></span>onboarded</span></div></div>`);
+      card.onclick = () => render('project', p);
+      grid.appendChild(card);
+    } else {
+      grid.appendChild(h(`<div class="card" style="opacity:.6;border-style:dashed;cursor:default">
+        <h3>${esc(p.name)}</h3><div class="meta">${esc(p.org)}</div>
+        <div class="foot"><span class="pill dim">registered · App not installed</span></div></div>`));
     }
-    $('msave').hidden = $('mbody').hidden = false;
-    $('mbody').value = mfiles[sel.value];
-    msg(`loaded ${Object.keys(files).length} file(s) for ${org}/${app}`);
-  } catch {}
-});
-$('msave').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const file = e.target.file.value;
-  try {
-    await call(`/api/bot/api/manifest/${mfiles.org}/${mfiles.app}/${file}`,
-      { method: 'PUT', body: $('mbody').value });
-    mfiles[file] = $('mbody').value;
-  } catch {}
-});
-$('msave').addEventListener('change', (e) => {
-  if (e.target.name === 'file') $('mbody').value = mfiles[e.target.value];
-});
+  }
+  view.appendChild(grid);
+  view.appendChild(h(`<div class="note">Projects map 1:1 to GitHub orgs. A project is live only when it is listed in
+    <code>projects.yaml</code> <b>and</b> the App is installed on the org. "New project" registers the org; org creation stays on GitHub.</div>`));
+  main.innerHTML = ''; main.appendChild(view);
+};
 
-// ── members ────────────────────────────────────────────────────────────────
-let memOrg = '';
-async function loadMembers() {
-  const members = JSON.parse(await call(`/api/bot/api/members/${memOrg}`, {}));
-  document.querySelector('#members tbody').innerHTML = members.map(m => `
-    <tr><td>${m.user}</td><td>${m.role}</td>
-    <td><button data-remove="${m.user}">remove</button></td></tr>`).join('');
-  $('members').hidden = $('mem-add').hidden = false;
-}
-$('mem-load').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  memOrg = e.target.org.value.trim();
-  try { await loadMembers(); } catch {}
-});
-$('members').addEventListener('click', async (e) => {
-  const user = e.target.dataset?.remove;
-  if (!user || !confirm(`Remove ${user}?`)) return;
-  try {
-    await call(`/api/bot/api/members/${memOrg}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ user, role: 'remove' }),
-    });
-    await loadMembers();
-  } catch {}
-});
-$('mem-add').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  try {
-    await call(`/api/bot/api/members/${memOrg}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ user: e.target.user.value.trim(), role: e.target.role.value }),
-    });
-    await loadMembers();
-  } catch {}
-});
+routes.newproject = async () => {
+  const view = h(`<div>
+    <div class="crumb"><a data-back>Projects</a> / New</div>
+    <div class="head"><h1>New project</h1></div>
+    <div class="panel"><div class="panel-b">
+      <div class="banner"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+        <div>Create the GitHub org yourself (GitHub has no org-creation API), then register it here. Discovery needs the org listed <b>and</b> the App installed.</div></div>
+      <div class="row2">
+        <div class="field"><label>Project name</label><input type="text" name="name" placeholder="blog"><span class="h">Lowercase slug, used in the dashboard.</span></div>
+        <div class="field"><label>GitHub org</label><input type="text" name="org" placeholder="majksa-projects"><span class="h">The org this project's repos live in.</span></div>
+      </div>
+      <div class="field"><label>1 · Install the App on the org</label>
+        <div class="term"><pre><code>https://github.com/apps/majnet-platform/installations/new</code></pre></div></div>
+      <div class="actions"><button class="btn primary" data-submit>Register project</button>
+        <span class="h">Commits to projects.yaml; the ops repo is created on the next org sync.</span></div>
+    </div></div></div>`);
+  view.querySelector('[data-back]').onclick = () => render('projects');
+  const btn = view.querySelector('[data-submit]');
+  btn.onclick = async () => {
+    const name = view.querySelector('[name=name]').value.trim();
+    const org = view.querySelector('[name=org]').value.trim();
+    if (!name || !org) return toast('name and org are required', true);
+    btn.disabled = true;
+    try { toast(await api(`${BOT}/projects`, { method: 'POST', json: { name, org }, raw: true })); render('projects'); }
+    catch (e) { toast(e.message, true); btn.disabled = false; }
+  };
+  main.innerHTML = ''; main.appendChild(view);
+};
 
-async function loadEvents() {
-  try {
-    const events = await (await fetch('/api/recon/api/events?limit=100')).json();
-    document.querySelector('#events tbody').innerHTML = events.map(e => `
-      <tr class="${e.result.startsWith('FAILED') ? 'failed' : ''}">
-        <td>${e.at}</td><td>${e.project}</td><td>${e.node}</td>
-        <td>${e.action}</td><td>${e.result}</td><td>${e.commit.slice(0, 12)}</td>
-      </tr>`).join('');
-  } catch (err) { msg(`events: ${err}`, true); }
-}
-loadEvents();
-setInterval(loadEvents, 15000);
+// ── Project detail ───────────────────────────────────────────────────────────
+routes.project = async (p) => {
+  const apps = await api(`${BOT}/apps/${encodeURIComponent(p.org)}`);
+  const view = h('<div></div>');
+  view.appendChild(h(`<div class="crumb"><a data-back>Projects</a> / ${esc(p.name)}</div>`));
+  const head = h(`<div class="head"><h1>${esc(p.name)}</h1><span class="head sub" style="font-family:var(--mono)">${esc(p.org)}</span><span class="grow"></span></div>`);
+  const mem = h(`<button class="btn ghost sm">Members</button>`); mem.onclick = () => render('members', p);
+  const add = h(`<button class="btn primary">+ New app</button>`); add.onclick = () => render('newapp', p);
+  head.append(mem, add);
+  view.appendChild(head);
+  view.querySelector('[data-back]').onclick = () => render('projects');
+
+  view.appendChild(h(`<div class="panel-h" style="border:0;padding:0 0 10px"><h2>Apps</h2></div>`));
+  const rows = h('<div class="rows"></div>');
+  if (!apps.length) rows.appendChild(h('<div class="empty">No apps yet — create one.</div>'));
+  for (const a of apps) {
+    const classes = a.classes.map((c) => `<span class="pill cls">${esc(c)}</span>`).join(' ');
+    const dm = [short(a.image), a.database].filter(Boolean).map(esc).join(' &nbsp;·&nbsp; ');
+    const host = a.host ? `<span style="font-family:var(--mono);font-size:12px;color:var(--muted)">${esc(a.host)}</span>` : '';
+    const row = h(`<div class="row link">
+      <div><div class="nm">${esc(a.name)} ${classes}</div><div class="dm">${dm || '—'}</div></div>
+      <div class="rt">${host}<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--faint)" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg></div></div>`);
+    row.onclick = () => render('app', p, a);
+    rows.appendChild(row);
+  }
+  view.appendChild(rows);
+  main.innerHTML = ''; main.appendChild(view);
+};
+
+routes.newapp = async (p) => {
+  const view = h(`<div>
+    <div class="crumb"><a data-projects>Projects</a> / <a data-back>${esc(p.name)}</a> / New app</div>
+    <div class="head"><h1>New app</h1></div>
+    <div class="panel"><div class="panel-b">
+      <div class="row2">
+        <div class="field"><label>App name</label><input type="text" name="name" placeholder="blog"><span class="h">Lowercase; its manifest directory.</span></div>
+        <div class="field"><label>Image</label><input type="text" name="image" placeholder="ghcr.io/org/app@sha256:…"><span class="h">Digest-pinned; tags are rejected.</span></div>
+      </div>
+      <div class="row2">
+        <div class="field"><label>Primary domain <span style="color:var(--faint)">— optional</span></label><input type="text" name="host" placeholder="blog.majksa.cz"><span class="h">Cloudflare + cert handled automatically for production.</span></div>
+        <div class="field"><label>Container port</label><input type="number" name="port" value="8080" min="1" max="65535"></div>
+      </div>
+      <div class="field"><label>Additional domains <span style="color:var(--faint)">— optional, one per line</span></label><textarea name="domains" style="min-height:60px" placeholder="www.majksa.cz"></textarea></div>
+      <div class="field"><label>Classes</label>
+        <div class="actions">
+          <label class="pill cls" style="cursor:pointer"><input type="checkbox" value="production" checked style="width:auto"> production</label>
+          <label class="pill dim" style="cursor:pointer"><input type="checkbox" value="stable" style="width:auto"> stable</label>
+          <label class="pill dim" style="cursor:pointer"><input type="checkbox" value="ephemeral" style="width:auto"> ephemeral (PR previews)</label></div>
+        <span class="h">Which environments this app deploys to. Production goes through the reviewed render PR.</span></div>
+      <div class="field"><label>Database <span style="color:var(--faint)">— optional</span></label>
+        <select name="database"><option value="">none</option><option>postgres</option><option>mariadb</option><option>valkey</option><option>mongodb</option></select></div>
+      <div class="actions"><button class="btn primary" data-submit>Create app</button><span class="h">Writes base.yaml + overlays to the ops repo.</span></div>
+    </div></div></div>`);
+  view.querySelector('[data-projects]').onclick = () => render('projects');
+  view.querySelector('[data-back]').onclick = () => render('project', p);
+  const btn = view.querySelector('[data-submit]');
+  btn.onclick = async () => {
+    const name = view.querySelector('[name=name]').value.trim();
+    const image = view.querySelector('[name=image]').value.trim();
+    const host = view.querySelector('[name=host]').value.trim();
+    const port = Number(view.querySelector('[name=port]').value);
+    const domains = view.querySelector('[name=domains]').value.split('\n').map((s) => s.trim()).filter(Boolean);
+    const database = view.querySelector('[name=database]').value || null;
+    const classes = [...view.querySelectorAll('input[type=checkbox]:checked')].map((c) => c.value);
+    if (!name || !image) return toast('name and image are required', true);
+    if (!classes.length) return toast('select at least one class', true);
+    btn.disabled = true;
+    try {
+      toast(await api(`${BOT}/apps/${encodeURIComponent(p.org)}`, { method: 'POST', raw: true, json: { name, image, host, port, domains, classes, database } }));
+      render('project', p);
+    } catch (e) { toast(e.message, true); btn.disabled = false; }
+  };
+  main.innerHTML = ''; main.appendChild(view);
+};
+
+// ── App detail: summary + manifest editor + actions ──────────────────────────
+const MANIFEST_FILES = ['base.yaml', 'stable.yaml', 'production.yaml', 'ephemeral.yaml'];
+routes.app = async (p, a) => {
+  const files = await api(`${BOT}/manifest/${encodeURIComponent(p.org)}/${encodeURIComponent(a.name)}`);
+  const state = { file: 'base.yaml', bufs: {} };
+  for (const f of MANIFEST_FILES) state.bufs[f] = files[f] ?? null; // null = absent
+
+  const view = h('<div></div>');
+  view.appendChild(h(`<div class="crumb"><a data-projects>Projects</a> / <a data-back>${esc(p.name)}</a> / ${esc(a.name)}</div>`));
+  const head = h(`<div class="head"><h1>${esc(a.name)}</h1><span class="grow"></span></div>`);
+
+  // actions: restart (per class), rollback, promote
+  const actions = h('<div class="actions"></div>');
+  if (a.classes.length) {
+    const sel = h('<select style="width:auto">' + a.classes.map((c) => `<option>${esc(c)}</option>`).join('') + '</select>');
+    const rs = h('<button class="btn ghost sm">Restart</button>');
+    rs.onclick = async () => {
+      rs.disabled = true;
+      try { toast(await api(`${RECON}/restart/${encodeURIComponent(p.org)}/${encodeURIComponent(sel.value)}/${encodeURIComponent(a.name)}`, { method: 'POST', raw: true })); }
+      catch (e) { toast(e.message, true); } finally { rs.disabled = false; }
+    };
+    actions.append(sel, rs);
+  }
+  const rb = h('<button class="btn ghost sm">Roll back</button>');
+  rb.onclick = async () => {
+    if (!confirm(`Revert the last change on ${p.org}/ops?`)) return;
+    rb.disabled = true;
+    try { toast(await api(`${BOT}/rollback/${encodeURIComponent(p.org)}`, { method: 'POST', raw: true })); }
+    catch (e) { toast(e.message, true); } finally { rb.disabled = false; }
+  };
+  const pr = h('<button class="btn primary sm">Promote → production</button>');
+  pr.onclick = async () => {
+    if (!confirm(`Promote ${a.name} to production? An admin still merges the render PR.`)) return;
+    pr.disabled = true;
+    try { toast(await api(`${BOT}/promote/${encodeURIComponent(p.org)}/${encodeURIComponent(a.name)}`, { method: 'POST', raw: true })); }
+    catch (e) { toast(e.message, true); } finally { pr.disabled = false; }
+  };
+  head.append(actions, rb, pr);
+  view.appendChild(head);
+  view.querySelector('[data-projects]').onclick = () => render('projects');
+  view.querySelector('[data-back]').onclick = () => render('project', p);
+
+  // summary
+  const dbrow = a.database ? `<div class="kv"><span class="k">Database</span><span class="v">${esc(a.database)}</span></div>` : '';
+  view.appendChild(h(`<div class="panel"><div class="panel-b" style="gap:10px">
+    <div class="kv"><span class="k">Classes</span><span class="v">${a.classes.map(esc).join(', ') || '—'}</span></div>
+    <div class="kv"><span class="k">Domains</span><span class="v">${a.domains.map(esc).join(', ') || '—'}</span></div>
+    <div class="kv"><span class="k">Image</span><span class="v">${esc(short(a.image))}</span></div>
+    ${dbrow}
+  </div></div>`));
+
+  // manifest editor
+  const editor = h(`<div class="panel"><div class="tabs"></div><div class="panel-b">
+    <textarea data-body spellcheck="false"></textarea>
+    <div class="actions"><button class="btn primary sm" data-save>Save &amp; commit</button>
+      <span class="h">Validated, committed to ops main; a render PR follows. production.yaml requires admin.</span></div>
+  </div></div>`);
+  const tabs = editor.querySelector('.tabs');
+  const body = editor.querySelector('[data-body]');
+  const draw = () => {
+    tabs.innerHTML = '';
+    for (const f of MANIFEST_FILES) {
+      const absent = state.bufs[f] === null;
+      const t = h(`<button class="tab ${f === state.file ? 'on' : ''}">${f}${absent ? ' <span style="color:var(--faint)">(new)</span>' : ''}</button>`);
+      t.onclick = () => { state.file = f; body.value = state.bufs[f] ?? ''; draw(); };
+      tabs.appendChild(t);
+    }
+    body.value = state.bufs[state.file] ?? '';
+  };
+  draw();
+  editor.querySelector('[data-save]').onclick = async (e) => {
+    const btn = e.target; btn.disabled = true;
+    try {
+      const msg = await api(`${BOT}/manifest/${encodeURIComponent(p.org)}/${encodeURIComponent(a.name)}/${state.file}`, { method: 'PUT', body: body.value, raw: true });
+      state.bufs[state.file] = body.value; toast(msg); draw();
+    } catch (err) { toast(err.message, true); } finally { btn.disabled = false; }
+  };
+  view.appendChild(editor);
+  main.innerHTML = ''; main.appendChild(view);
+};
+
+// ── Members ──────────────────────────────────────────────────────────────────
+routes.members = async (p) => {
+  const members = await api(`${BOT}/members/${encodeURIComponent(p.org)}`);
+  const view = h('<div></div>');
+  view.appendChild(h(`<div class="crumb"><a data-projects>Projects</a> / <a data-back>${esc(p.name)}</a> / Members</div>`));
+  view.appendChild(h(`<div class="head"><h1>Members</h1></div>`));
+  view.querySelector('[data-projects]').onclick = () => render('projects');
+  view.querySelector('[data-back]').onclick = () => render('project', p);
+
+  const panel = h('<div class="panel"><div class="panel-b"></div></div>');
+  const body = panel.querySelector('.panel-b');
+  const rows = h('<div class="rows"></div>');
+  if (!members.length) rows.appendChild(h('<div class="empty">No members.</div>'));
+  for (const m of members) {
+    const row = h(`<div class="row"><div><div class="nm">${esc(m.user)}</div><div class="dm">${esc(m.role)}</div></div><div class="rt"></div></div>`);
+    const rm = h('<button class="btn danger sm">Remove</button>');
+    rm.onclick = async () => {
+      if (!confirm(`Remove ${m.user}?`)) return;
+      try { toast(await api(`${BOT}/members/${encodeURIComponent(p.org)}`, { method: 'POST', raw: true, json: { user: m.user, role: 'remove' } })); render('members', p); }
+      catch (e) { toast(e.message, true); }
+    };
+    row.querySelector('.rt').appendChild(rm);
+    rows.appendChild(row);
+  }
+  body.appendChild(rows);
+  const form = h(`<div class="row2">
+    <div class="field"><label>GitHub username</label><input type="text" name="user" placeholder="octocat"></div>
+    <div class="field"><label>Role</label><select name="role"><option>developer</option><option>admin</option></select></div></div>`);
+  body.appendChild(form);
+  const addRow = h('<div class="actions"></div>');
+  const add = h('<button class="btn primary">Add / update member</button>');
+  add.onclick = async () => {
+    const user = form.querySelector('[name=user]').value.trim();
+    const role = form.querySelector('[name=role]').value;
+    if (!user) return toast('username required', true);
+    add.disabled = true;
+    try { toast(await api(`${BOT}/members/${encodeURIComponent(p.org)}`, { method: 'POST', raw: true, json: { user, role } })); render('members', p); }
+    catch (e) { toast(e.message, true); add.disabled = false; }
+  };
+  addRow.append(add, h('<span class="h">Commits to project.yaml; teams + Tailscale ACLs sync automatically.</span>'));
+  body.appendChild(addRow);
+  view.appendChild(panel);
+  main.innerHTML = ''; main.appendChild(view);
+};
+
+// ── Activity ─────────────────────────────────────────────────────────────────
+let eventsTimer;
+routes.events = async () => {
+  clearInterval(eventsTimer);
+  const view = h(`<div><div class="head"><h1>Activity</h1></div>
+    <div class="panel"><div class="panel-b" style="padding:6px 18px 14px">
+      <table class="ev"><thead><tr><th>time</th><th>project</th><th>node</th><th>action</th><th>result</th><th>commit</th></tr></thead><tbody></tbody></table>
+    </div></div></div>`);
+  const tbody = view.querySelector('tbody');
+  const load = async () => {
+    try {
+      const events = await api(`${RECON}/events?limit=100`);
+      tbody.innerHTML = events.map((e) => {
+        const bad = String(e.result).startsWith('FAILED');
+        return `<tr><td>${esc(e.at)}</td><td>${esc(e.project)}</td><td>${esc(e.node)}</td><td>${esc(e.action)}</td>
+          <td style="color:${bad ? 'var(--bad)' : 'inherit'}">${esc(e.result)}</td><td>${esc(String(e.commit).slice(0, 12))}</td></tr>`;
+      }).join('') || '<tr><td colspan="6" class="empty">No events yet.</td></tr>';
+    } catch (e) { toast(`events: ${e.message}`, true); }
+  };
+  main.innerHTML = ''; main.appendChild(view);
+  await load();
+  eventsTimer = setInterval(() => { if (document.body.contains(tbody)) load(); else clearInterval(eventsTimer); }, 15000);
+};
+
+// ── Nodes ────────────────────────────────────────────────────────────────────
+routes.nodes = async () => {
+  const nodes = await api(`${BOT}/nodes`);
+  const zone = { main: 'control plane', prod: 'public', private: 'internal' };
+  const view = h(`<div><div class="head"><h1>Nodes</h1></div></div>`);
+  const rows = h('<div class="rows"></div>');
+  if (!nodes.length) rows.appendChild(h('<div class="empty">No nodes enrolled.</div>'));
+  for (const n of nodes) {
+    const enrolled = !!n.wireguard_pubkey;
+    const ep = [n.wireguard_ip, n.public_endpoint].filter(Boolean).map(esc).join(' · ');
+    rows.appendChild(h(`<div class="row" style="${enrolled ? '' : 'opacity:.6'}">
+      <div><div class="nm">${esc(n.name)} <span class="pill dim">${esc(zone[n.role] || n.role)}</span></div><div class="dm">${ep || '—'}</div></div>
+      <span class="pill ${enrolled ? 'ok' : 'dim'}">${enrolled ? '<span class="dot"></span>enrolled' : 'pending'}</span></div>`));
+  }
+  view.appendChild(rows);
+  main.innerHTML = ''; main.appendChild(view);
+};
+
+// ── boot ─────────────────────────────────────────────────────────────────────
+(async () => {
+  try { ME = await api(`${BOT}/whoami`); } catch (e) { toast(`whoami: ${e.message}`, true); }
+  const initials = (ME.login || 'infra').slice(0, 1).toUpperCase();
+  $('#who').innerHTML = `<span class="avatar">${esc(initials)}</span>
+    <div><div>${esc(ME.login || 'infra')}</div><div class="role">${ME.admin ? 'admin' : 'member'}</div></div>`;
+  render('projects');
+})();
 </script>
 </body>
 </html>

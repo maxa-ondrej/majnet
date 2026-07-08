@@ -11,20 +11,16 @@ use majnet_common::project::{ProjectConfig, Role};
 
 use crate::AppState;
 
-/// Enforce `min_role` on `org` for this request; returns the audit label.
-pub async fn require(
-    state: &AppState,
-    headers: &HeaderMap,
-    org: &str,
-    min_role: Role,
-) -> Result<String> {
+/// Resolve the acting identity from the request header (no role check).
+/// `Infra` for a header-less WG-internal / break-glass request, otherwise the
+/// human mapped through `people.yaml`.
+pub async fn actor(state: &AppState, headers: &HeaderMap) -> Result<Actor> {
     let login = headers
         .get("tailscale-user-login")
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
-
-    let actor = match &login {
-        None => Actor::Infra,
+    match &login {
+        None => Ok(Actor::Infra),
         Some(login) => {
             let (_, tar) =
                 crate::proxy::fetch_snapshot(state, &state.config.root_org, "platform", "main")
@@ -36,9 +32,36 @@ pub async fn require(
                     .get("people.yaml")
                     .context("platform repo has no people.yaml")?,
             )?;
-            authz::identify(Some(login), &people)?
+            authz::identify(Some(login), &people)
         }
-    };
+    }
+}
+
+/// Platform-admin gate for platform-scoped writes (project registry). Infra
+/// (header-less WG requests) passes; humans must carry `admin: true` in
+/// `people.yaml`. Returns the audit label.
+pub async fn require_platform_admin(state: &AppState, headers: &HeaderMap) -> Result<String> {
+    let actor = actor(state, headers).await?;
+    match &actor {
+        Actor::Infra
+        | Actor::Human {
+            platform_admin: true,
+            ..
+        } => Ok(actor.label().to_string()),
+        Actor::Human { github, .. } => {
+            anyhow::bail!("{github} is not a platform admin")
+        }
+    }
+}
+
+/// Enforce `min_role` on `org` for this request; returns the audit label.
+pub async fn require(
+    state: &AppState,
+    headers: &HeaderMap,
+    org: &str,
+    min_role: Role,
+) -> Result<String> {
+    let actor = actor(state, headers).await?;
 
     // Only non-admin humans need the project config for the role check.
     let project: Option<ProjectConfig> = match &actor {

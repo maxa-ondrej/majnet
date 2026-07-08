@@ -88,6 +88,16 @@ async fn main() -> Result<()> {
             "/api/members/{org}",
             get(dashboard_api::members_get).post(dashboard_api::members_post),
         )
+        .route("/api/whoami", get(dashboard_api::whoami))
+        .route(
+            "/api/projects",
+            get(dashboard_api::projects_get).post(dashboard_api::projects_post),
+        )
+        .route(
+            "/api/apps/{org}",
+            get(dashboard_api::apps_get).post(dashboard_api::apps_post),
+        )
+        .route("/api/nodes", get(dashboard_api::nodes_get))
         .with_state(state.clone());
 
     // Org reconciliation: hourly, plus webhook-triggered on config pushes (§11.2).
