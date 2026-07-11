@@ -68,6 +68,25 @@ impl Ingress {
     }
 }
 
+/// Enforce `repo@sha256:<64 hex>` — images are pinned by digest, never by tag
+/// (§5). Shared by the manifest and the release descriptor (ADR 0009).
+pub fn validate_digest_pinned(image: &str) -> Result<()> {
+    let Some((repo, digest)) = image.split_once('@') else {
+        bail!("image '{image}' is not digest-pinned (expected repo@sha256:…)");
+    };
+    ensure!(
+        !repo.is_empty() && !repo.contains(' '),
+        "image repository '{repo}' is invalid"
+    );
+    ensure!(
+        digest
+            .strip_prefix("sha256:")
+            .is_some_and(|h| h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit())),
+        "image digest '{digest}' is not a valid sha256 digest"
+    );
+    Ok(())
+}
+
 fn is_valid_hostname(h: &str) -> bool {
     // A DNS name (labels of alphanumerics/hyphens). FQDN-ness is not required
     // here — stable/ephemeral tailnet ingress names can be single-label;
@@ -119,22 +138,7 @@ impl AppManifest {
             self.name
         );
         // Images are pinned by digest, never by tag (§5 decision log).
-        let Some((repo, digest)) = self.image.split_once('@') else {
-            bail!(
-                "image '{}' is not digest-pinned (expected repo@sha256:…)",
-                self.image
-            );
-        };
-        ensure!(
-            !repo.is_empty() && !repo.contains(' '),
-            "image repository '{repo}' is invalid"
-        );
-        ensure!(
-            digest
-                .strip_prefix("sha256:")
-                .is_some_and(|h| h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit())),
-            "image digest '{digest}' is not a valid sha256 digest"
-        );
+        validate_digest_pinned(&self.image)?;
         if let Some(ingress) = &self.ingress {
             for host in ingress.hosts() {
                 ensure!(

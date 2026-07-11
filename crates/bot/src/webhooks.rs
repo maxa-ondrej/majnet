@@ -1,12 +1,13 @@
 //! GitHub webhook intake (§11.3) — HMAC-verified, deduped, dispatched.
 //!
-//! Events handled in phase 1:
+//! Events handled:
 //! - `registry_package` (GHCR publish) → digest bump on the project ops repo
 //!   (ADR 0001: the native package webhook *is* the "GHA → bot" notification)
 //! - `push` to `env/<class>` branches of an ops repo, or to the root platform
-//!   repo → notify the reconciler
+//!   repo → notify the reconciler; `push` to ops `main` → render
+//! - `release` → record the app's release descriptor (ADR 0009)
+//! - `pull_request` → ephemeral preview lifecycle
 //! - `ping` → 200
-//! - `pull_request` → logged only (ephemeral lifecycle lands in phase 4)
 
 use axum::body::Bytes;
 use axum::extract::State;
@@ -94,6 +95,7 @@ async fn dispatch(state: &AppState, event: &str, payload: serde_json::Value) -> 
             crate::digest::on_package_published(state, &org, &payload).await?;
         }
         "push" => on_push(state, &org, &payload).await?,
+        "release" => crate::releases::on_release(state, &org, &payload).await?,
         "pull_request" => {
             let action = payload["action"].as_str().unwrap_or_default();
             let number = payload["number"].as_u64().unwrap_or_default();

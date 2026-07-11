@@ -27,6 +27,10 @@ export interface DeployPr {
 }
 export interface ManifestFile { yaml: string; data: unknown }
 export interface Member { user: string; role: string }
+export interface StoredRelease {
+  app: string; version: string; commit: string; app_image: string
+  migration_image: string | null; migration_command: string[] | null; published_at: string
+}
 
 /** Parse a reconciler event timestamp (SQLite `datetime('now')`, UTC). */
 export const parseAt = (at: string): number => Date.parse(at.replace(' ', 'T') + 'Z')
@@ -93,6 +97,7 @@ export const urls = {
   manifestFile: (org: string, app: string, file: string) =>
     `${BOT}/manifest/${encodeURIComponent(org)}/${encodeURIComponent(app)}/${file}`,
   members: (org: string) => `${BOT}/members/${encodeURIComponent(org)}`,
+  releases: (org: string, app: string) => `${BOT}/releases/${encodeURIComponent(org)}/${encodeURIComponent(app)}`,
   version: `${BOT}/platform/version`,
   setupEnroll: '/api/setup/enroll.json',
   promote: (org: string, app: string) => `${BOT}/promote/${encodeURIComponent(org)}/${encodeURIComponent(app)}`,
@@ -119,3 +124,5 @@ export const useMembers = (org: string) =>
   useQuery({ queryKey: ['members', org], queryFn: () => getJSON<Member[]>(urls.members(org)) })
 export const useVersion = () =>
   useQuery({ queryKey: ['version'], queryFn: () => getText(urls.version) })
+export const useReleases = (org: string, app: string) =>
+  useQuery({ queryKey: ['releases', org, app], queryFn: () => getJSON<StoredRelease[]>(urls.releases(org, app)) })

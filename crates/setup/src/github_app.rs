@@ -46,7 +46,7 @@ pub fn manifest(state: &SetupState, public_base: Option<&str>, nonce: &str) -> s
             "members": "write",
             "packages": "read",
         },
-        "default_events": ["push", "pull_request", "registry_package"],
+        "default_events": ["push", "pull_request", "registry_package", "release"],
     })
 }
 
