@@ -80,23 +80,40 @@ unchanged digest is a no-op pull.
 
 ## Apply (one-time cutover on main)
 
-1. Add swap (done) — belt-and-braces for the transitional native builds.
-2. `docker login ghcr.io` on main with a token that can pull the packages (or
-   make the two packages public — simplest for a single-tenant control plane).
-3. Confirm the bot's PEM path in `/etc/majnet/bot.env`
-   (`MAJNET_GITHUB_PRIVATE_KEY_PATH`) and align the bot mount in
-   `deploy/compose.yaml`.
-4. `systemctl disable --now majnet-bot majnet-reconciler` (stop the native
-   services) and the dashboard's old compose.
-5. `docker compose -f /opt/majnet/deploy/compose.yaml up -d` with the image env
-   vars set to the pinned digests.
-6. Flip `majnet-update` to v2 and repoint `version.yaml` at the digests.
+The **first** bring-up is manual, because the running (old) bot serves the
+ref-only `version.yaml` endpoint — v2 `majnet-update` can't read the image pins
+from it until the new bot is up. After this, the v2 timer maintains everything.
+
+Prereqs (done): swap added; GHCR packages made **public** (no `docker login`);
+PEM confirmed at `/etc/majnet/github-app.pem` (matches the compose mount).
+
+```sh
+NEWREF=<sha>
+IMG=ghcr.io/maxa-ondrej/majnet/control-plane@sha256:…
+DASH=ghcr.io/maxa-ondrej/majnet/dashboard@sha256:…
+
+# 1. Bring /opt/majnet to the new ref (compose file + v2 majnet-update).
+sudo git -C /opt/majnet fetch --depth 1 origin "$NEWREF" && sudo git -C /opt/majnet checkout "$NEWREF"
+sudo install -m0755 /opt/majnet/bootstrap/majnet-update /usr/local/bin/
+
+# 2. Retire the native services + the standalone dashboard.
+sudo systemctl disable --now majnet-bot majnet-reconciler
+sudo docker compose -f /opt/majnet/dashboard/compose.yaml down
+
+# 3. Bring up the control plane from the pinned images.
+sudo MAJNET_CONTROL_PLANE_IMAGE="$IMG" MAJNET_DASHBOARD_IMAGE="$DASH" \
+  docker compose -f /opt/majnet/deploy/compose.yaml up -d
+
+# 4. Hand off to the v2 timer: pin version.yaml to the ADR 0008 schema
+#    (ref + image + dashboard). From here, `majnet-update` just pulls.
+```
 
 ## Rollback
 
 The native binaries and systemd units remain on disk; `systemctl enable --now
-majnet-bot majnet-reconciler` restores the pre-cutover state. Keep both paths
-working until a couple of clean pull-based updates have landed.
+majnet-bot majnet-reconciler` + `docker compose -f deploy/compose.yaml down`
+restores the pre-cutover state. Keep both paths working until a couple of clean
+pull-based updates have landed.
 
 ## Open items
 
