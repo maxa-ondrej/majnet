@@ -8,6 +8,15 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+    # Only rebuild when something that lands IN an image changes — not docs or
+    # bootstrap scripts (those ship via the git ref, not the images).
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'Dockerfile'
+      - 'dashboard/**'
+      - '.github/workflows/images.yaml'
 
 permissions:
   contents: read

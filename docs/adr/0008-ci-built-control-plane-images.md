@@ -115,11 +115,23 @@ majnet-bot majnet-reconciler` + `docker compose -f deploy/compose.yaml down`
 restores the pre-cutover state. Keep both paths working until a couple of clean
 pull-based updates have landed.
 
-## Open items
+## Resolved follow-ups
 
-- **GHCR pull auth on the node** (the pre-existing "private GHCR" gap) — resolve
-  by `docker login` with a read:packages token, or publish the two control-plane
-  packages publicly (they contain no secrets).
-- **setup binary** — publish from CI as a release asset so *nothing* compiles on
-  the node; until then setup is still built by the installer.
+- **GHCR pull auth** — the two packages are **public** (set in the web UI; the
+  REST API / gh CLI have no visibility endpoint). No `docker login` on the node.
+- **setup binary** — `setup` now rides in the control-plane image and
+  `majnet-update` extracts it (`docker cp`); **nothing compiles on the node.**
+- **Fresh installs** — `install.sh` drops the Rust/build toolchain, pulls the
+  images, extracts setup, and runs the control plane as compose. The wizard's
+  `restart_bot` uses `docker compose up -d bot` (the bot's `env_file` is optional
+  so compose parses before the wizard writes creds). `70-dashboard.sh` uses
+  `deploy/compose.yaml`.
+- **Cleanup** — `bootstrap/majnet-cleanup` removes the dead Rust toolchain, C
+  build deps, cargo cache, and legacy native bot/reconciler units from a node
+  installed the old way (one-shot, idempotent).
+
+## Still open
+
 - **Multi-arch** — CI builds `amd64` only (the fleet is amd64).
+- **Fresh-install flow is untested on a real VPS** — only the live upgrade path
+  (via `majnet-update`) is verified. Validate on the next real install.
