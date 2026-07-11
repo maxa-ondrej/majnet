@@ -152,15 +152,19 @@ graph TB
 
 ## 8. Environment Classes
 
+The DEV→OPS delivery gradient (ADR 0009): builds (PR/main) are disposable image
+bumps; releases (tags `vX.Y.Z`) are immutable, versioned bundles.
+
 | Class | Node | Ingress | Deploy policy | Lifetime |
 |---|---|---|---|---|
-| `production` | prod | `edge-main` (public) | digest bump via **reviewed promote PR** | permanent |
-| `stable` | private | project ingress (VPN) | **auto-deploy** on merge to main | permanent |
-| `ephemeral` | private | project ingress (VPN) | per PR, generated from stable + patch | 48 h after PR close, 7 d hard TTL |
+| `production` | prod | `edge-main` (public) | a chosen **release**, via **reviewed promote PR** | permanent |
+| `stable` | private | project ingress (VPN) | **auto-deploy** from the latest tagged **release** (`vX.Y.Z`) | permanent |
+| `testing` | private | project ingress (VPN) | **auto-deploy** from the latest `main` build | permanent |
+| `ephemeral` | private | project ingress (VPN) | per PR, generated from testing/main + patch | 48 h after PR close, 7 d hard TTL |
 
-Config inheritance: `base.yaml` + thin class overlays; ephemeral manifests generated, never hand-written. Dedicated domains point only at production; non-prod lives at `<app>.<project>.majksa.net` / `<app>-pr<N>.<project>.majksa.net` via split DNS on the tailnet.
+Config inheritance: `base.yaml` + thin class overlays (`testing`/`stable`/`production`/`ephemeral`.yaml); ephemeral manifests generated, never hand-written. Dedicated domains point only at production; non-prod lives at `<app>.<project>.majksa.net` / `<app>-pr<N>.<project>.majksa.net` via split DNS on the tailnet.
 
-**Promotion:** merge → auto-deploy `stable` → bot opens promote PR in the project `ops` repo → review + merge → prod converges.
+**Promotion:** merge → `testing`; tag `vX.Y.Z` → `stable`; promote a release → bot opens the `env/production` render PR → review + merge → prod converges. See ADR 0009 for the release descriptor + CI.
 
 ## 9. Project `ops` Repo
 

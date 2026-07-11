@@ -26,8 +26,9 @@ fn bad_request(msg: impl Into<String>) -> ApiError {
     (StatusCode::BAD_REQUEST, msg.into())
 }
 
-const MANIFEST_FILES: [&str; 4] = [
+const MANIFEST_FILES: [&str; 5] = [
     "base.yaml",
+    "testing.yaml",
     "stable.yaml",
     "production.yaml",
     "ephemeral.yaml",
@@ -520,7 +521,7 @@ pub async fn apps_post(
     Json(req): Json<NewApp>,
 ) -> Result<String, ApiError> {
     check_name(&req.name)?;
-    let valid_classes = ["stable", "production", "ephemeral"];
+    let valid_classes = ["testing", "stable", "production", "ephemeral"];
     if req.classes.is_empty()
         || !req
             .classes
@@ -681,7 +682,7 @@ fn summarize_app(name: &str, text: &BTreeMap<String, String>) -> Result<AppSumma
         .get(&format!("{prefix}base.yaml"))
         .context("no base.yaml")?;
     let base: serde_yaml::Value = serde_yaml::from_str(base_str).context("base.yaml")?;
-    let mut classes: Vec<String> = ["stable", "production", "ephemeral"]
+    let mut classes: Vec<String> = ["testing", "stable", "production", "ephemeral"]
         .into_iter()
         .filter(|c| text.contains_key(&format!("{prefix}{c}.yaml")))
         .map(str::to_string)

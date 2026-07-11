@@ -58,7 +58,7 @@ export function NewProject() {
 }
 
 // ── New app ──────────────────────────────────────────────────────────────────
-const CLASSES = ['production', 'stable', 'ephemeral'] as const
+const CLASSES = ['production', 'stable', 'testing', 'ephemeral'] as const
 export function NewApp() {
   const { org } = useParams({ from: '/projects/$org/new-app' })
   const nav = useNavigate()

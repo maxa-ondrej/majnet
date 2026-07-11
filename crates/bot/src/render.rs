@@ -25,8 +25,9 @@ use std::collections::BTreeMap;
 
 use crate::AppState;
 
-/// Classes rendered from ops `main` in phase 2.
-const RENDERED_CLASSES: [EnvClass; 2] = [EnvClass::Stable, EnvClass::Production];
+/// The persistent classes rendered from ops `main` (ephemeral renders per-PR,
+/// separately). `testing` + `stable` auto-merge; `production` gates (§9).
+const RENDERED_CLASSES: [EnvClass; 3] = [EnvClass::Testing, EnvClass::Stable, EnvClass::Production];
 
 pub async fn on_ops_main_push(state: &AppState, org: &str, commit: &str) -> Result<()> {
     let (_, tarball) = crate::proxy::fetch_snapshot(state, org, "ops", "main").await?;

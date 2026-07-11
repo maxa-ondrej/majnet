@@ -23,7 +23,12 @@ use std::collections::BTreeMap;
 use crate::deploy::{self, DeployCtx};
 use crate::AppState;
 
-const CLASSES: [EnvClass; 3] = [EnvClass::Stable, EnvClass::Production, EnvClass::Ephemeral];
+const CLASSES: [EnvClass; 4] = [
+    EnvClass::Testing,
+    EnvClass::Stable,
+    EnvClass::Production,
+    EnvClass::Ephemeral,
+];
 
 pub async fn converge_all(state: &AppState) -> Result<()> {
     let platform = crate::snapshot::fetch(
