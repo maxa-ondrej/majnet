@@ -1,0 +1,45 @@
+# Control-plane compose (ADR 0008) — main node only.
+#
+# Runs the bot + reconciler + dashboard as containers from CI-built, digest-
+# pinned GHCR images (no on-box compilation). majnet-update sets the image refs
+# from platform/version.yaml and runs `docker compose pull && up -d`.
+#
+# Credential isolation (§6) is preserved by MOUNTS, not by separate images:
+#   - bot        mounts ONLY its GitHub App key + data dir
+#   - reconciler mounts ONLY the age keys + Docker mTLS certs + data dir
+# Neither can read the other's secrets. Both use host networking because they
+# bind the WireGuard IP (10.88.0.1); the dashboard does too (nginx on
+# 127.0.0.1:8090, reaching the APIs over lo — see dashboard/compose.yaml).
+name: majnet
+
+services:
+  bot:
+    image: ${MAJNET_CONTROL_PLANE_IMAGE:?set by majnet-update}
+    command: ["majnet-bot"]
+    container_name: majnet-bot
+    restart: unless-stopped
+    network_mode: host
+    env_file: /etc/majnet/bot.env
+    volumes:
+      # GitHub App PEM only. Path must match MAJNET_GITHUB_PRIVATE_KEY_PATH in
+      # bot.env; adjust the left side if the wizard wrote it elsewhere.
+      - /etc/majnet/github-app.pem:/etc/majnet/github-app.pem:ro
+      - /var/lib/majnet-bot:/var/lib/majnet-bot
+
+  reconciler:
+    image: ${MAJNET_CONTROL_PLANE_IMAGE:?set by majnet-update}
+    command: ["majnet-reconciler"]
+    container_name: majnet-reconciler
+    restart: unless-stopped
+    network_mode: host
+    env_file: /etc/majnet/reconciler.env
+    volumes:
+      - /etc/majnet/age:/etc/majnet/age:ro    # age keys + db-master.key
+      - /etc/majnet/pki:/etc/majnet/pki:ro    # Docker mTLS client certs
+      - /var/lib/majnet-reconciler:/var/lib/majnet-reconciler
+
+  dashboard:
+    image: ${MAJNET_DASHBOARD_IMAGE:?set by majnet-update}
+    container_name: majnet-dashboard
+    restart: unless-stopped
+    network_mode: host
