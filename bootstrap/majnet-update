@@ -52,8 +52,14 @@ main() {
     changed=1
   fi
 
-  # 3. Pull the pinned images FIRST — fails safe (nothing swapped yet).
+  # Persist the image refs next to the compose file so ad-hoc operator commands
+  # (`docker compose -f deploy/compose.yaml ps/logs/down`) interpolate without
+  # re-exporting — compose auto-loads deploy/.env from the compose file's dir.
   export MAJNET_CONTROL_PLANE_IMAGE="$image" MAJNET_DASHBOARD_IMAGE="$dashboard"
+  printf 'MAJNET_CONTROL_PLANE_IMAGE=%s\nMAJNET_DASHBOARD_IMAGE=%s\n' \
+    "$image" "$dashboard" > "$DIR/deploy/.env"
+
+  # 3. Pull the pinned images FIRST — fails safe (nothing swapped yet).
   log "pulling $image"
   docker compose -f "$COMPOSE" pull -q
 

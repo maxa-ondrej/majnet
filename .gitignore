@@ -5,3 +5,6 @@
 *.key
 .DS_Store
 HANDOVER.md
+
+# runtime image pins written by majnet-update
+deploy/.env
