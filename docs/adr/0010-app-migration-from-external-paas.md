@@ -86,17 +86,22 @@ task**; progress lands in the events feed. It:
 ### Data restore (reconciler, one-shot)
 
 Data is not git-shaped and is sensitive, so it bypasses the bot and git. The
-operator uploads the **data** part of the bundle to
-`POST /api/migrate/{project}/{app}` on the reconciler over WireGuard. The
-reconciler:
+operator uploads the DB dump (raw request body) to
+`POST /api/migrate/{project}/{app}?class=&engine=` on the reconciler over
+WireGuard — WG-trust-gated like the bot's snapshot API (operator-on-the-node,
+not a per-user dashboard action). The reconciler:
 
 1. provisions the engine if needed (existing `platform::ensure_engine`),
-2. restores `db.dump` into the class-appropriate DB,
-3. unpacks volume archives into the app's mounts,
-4. records completion so it is **idempotent** (runs once).
+2. provisions the app's DB + user (existing `db::ensure`),
+3. restores the dump into that DB with the engine's native client as superuser,
+4. records completion so it is **idempotent** (a re-upload is a no-op).
 
 This is the one imperative step; it is coordinated with the first production
 deploy and a cutover runbook (DNS handoff, maintenance window).
+
+**Volumes** are out of scope for now: the manifest has no `volumes` field — apps
+are stateless-except-DB — so a restored volume would have no mount target.
+Volume migration waits on first adding volume support to the core manifest.
 
 ## Phasing
 
@@ -105,7 +110,9 @@ deploy and a cutover runbook (DNS handoff, maintenance window).
 2. ✅ **Secrets import** — env (dotenv) → `sops --encrypt` (recipients from ops
    `.sops.yaml`) → `secrets.<class>.yaml` for the target class, declared in that
    class overlay. Delivered as tmpfs files, never env vars (§14). (bot)
-3. **Data restore** — reconciler one-shot DB/volume restore over WG. (reconciler)
+3. ✅ **Data restore** — `POST /api/migrate/{project}/{app}` restores a DB dump
+   into the provisioned engine (postgres + mariadb SQL dumps), idempotent.
+   Volumes deferred (no manifest volume support); Mongo/Valkey later. (reconciler)
 4. **Export helper + runbook** — `majnet-export` for the specific source PaaS;
    the cutover checklist.
 

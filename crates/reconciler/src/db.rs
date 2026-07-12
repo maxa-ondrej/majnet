@@ -113,8 +113,78 @@ valkey-cli -a "$AUTH" --no-auth-warning ACL SAVE"#
     Ok(env)
 }
 
+/// Restore a dump into the app's managed database (ADR 0010 phase 3). The DB +
+/// user must already exist (`ensure` first). Ships the dump into the engine
+/// container and runs the native client as the superuser, targeting the app's
+/// logical DB. Forward-only: a partial restore left behind is the operator's to
+/// reset (drop/recreate) before retrying.
+pub async fn restore(
+    docker: &Docker,
+    project: &str,
+    app: &str,
+    class: EnvClass,
+    engine: DbEngine,
+    dump: &[u8],
+) -> Result<()> {
+    let db = db_name(project, app, class);
+    let container = engine_container(engine);
+    let script = restore_script(engine, &db)?;
+
+    upload_dump(docker, container, dump)
+        .await
+        .with_context(|| format!("uploading dump to {container}"))?;
+    let result = exec(docker, container, &script)
+        .await
+        .with_context(|| format!("restoring dump into {db}"));
+    // The dump carries data — always remove it, success or not.
+    let _ = exec(docker, container, &format!("rm -f {RESTORE_PATH}")).await;
+    result
+}
+
+const RESTORE_PATH: &str = "/tmp/majnet-restore.dump";
+
+/// The superuser restore command per engine (SQL text dumps). Postgres and
+/// MariaDB only for v1; Mongo/Valkey return a clear error.
+fn restore_script(engine: DbEngine, db: &str) -> Result<String> {
+    Ok(match engine {
+        DbEngine::Postgres => {
+            format!(r#"psql -U postgres -v ON_ERROR_STOP=1 -d "{db}" -f {RESTORE_PATH}"#)
+        }
+        DbEngine::Mariadb => format!(
+            r#"mariadb -uroot -p"$(cat /run/secrets/mariadb-root)" "{db}" < {RESTORE_PATH}"#
+        ),
+        DbEngine::Mongodb | DbEngine::Valkey => anyhow::bail!(
+            "data restore for {engine:?} is not supported yet (v1: postgres + mariadb SQL dumps)"
+        ),
+    })
+}
+
+/// Ship `dump` into `container` at `RESTORE_PATH` via `put_archive`.
+async fn upload_dump(docker: &Docker, container: &str, dump: &[u8]) -> Result<()> {
+    let mut builder = tar::Builder::new(Vec::new());
+    let mut header = tar::Header::new_gnu();
+    header.set_size(dump.len() as u64);
+    header.set_mode(0o600);
+    header.set_cksum();
+    let name = RESTORE_PATH.trim_start_matches('/'); // tar paths are relative to /
+    builder.append_data(&mut header, name, dump)?;
+    let tarball = builder.into_inner()?;
+    docker
+        .upload_to_container(
+            container,
+            Some(qp::UploadToContainerOptions {
+                path: "/".into(),
+                ..Default::default()
+            }),
+            bollard::body_full(tarball.into()),
+        )
+        .await
+        .context("uploading dump archive")?;
+    Ok(())
+}
+
 /// `<project>_<app>_<class>` with `-` → `_` (identifier-safe, ≤63 chars for pg).
-fn db_name(project: &str, app: &str, class: EnvClass) -> String {
+pub fn db_name(project: &str, app: &str, class: EnvClass) -> String {
     let mut name = format!("{project}_{app}_{}", class.as_str()).replace('-', "_");
     name.truncate(63);
     name
@@ -259,6 +329,20 @@ mod tests {
             hmac16_with(b"a-different-master-key-32-bytes!", "root:Postgres")
         );
         assert_eq!(root_pg.len(), 32); // 16 bytes hex
+    }
+
+    #[test]
+    fn restore_script_targets_the_app_db_and_rejects_unsupported() {
+        use super::restore_script;
+        use majnet_common::manifest::DbEngine;
+        assert!(restore_script(DbEngine::Postgres, "proj_app_production")
+            .unwrap()
+            .contains(r#"-d "proj_app_production""#));
+        assert!(restore_script(DbEngine::Mariadb, "d")
+            .unwrap()
+            .contains("mariadb -uroot"));
+        assert!(restore_script(DbEngine::Mongodb, "d").is_err());
+        assert!(restore_script(DbEngine::Valkey, "d").is_err());
     }
 
     #[test]

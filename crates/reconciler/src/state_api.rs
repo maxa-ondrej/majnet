@@ -1,13 +1,19 @@
 //! WG-internal API (§12.8): the bot's deploy nudge + read-only state for the
 //! dashboard. The phase-5 restart escape hatch (§16) will live here too.
 
-use axum::extract::{Query, State};
+use axum::body::Bytes;
+use axum::extract::{DefaultBodyLimit, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use std::sync::Arc;
 
 use crate::AppState;
+
+/// Data-restore uploads carry a whole DB dump — allow up to 2 GiB (axum
+/// defaults to 2 MiB). WG-internal + operator-driven, so this is a ceiling, not
+/// an exposure.
+const MAX_DUMP_BYTES: usize = 2 * 1024 * 1024 * 1024;
 
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
@@ -16,7 +22,47 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/events", get(events))
         .route("/api/restart/{project}/{class}/{app}", post(restart))
         .route("/api/ephemeral/extend/{project}/{app}", post(extend))
+        .route(
+            "/api/migrate/{project}/{app}",
+            post(migrate).route_layer(DefaultBodyLimit::max(MAX_DUMP_BYTES)),
+        )
         .with_state(state)
+}
+
+#[derive(serde::Deserialize)]
+struct MigrateQuery {
+    /// Target env class (`production` | `stable` | `testing` | `ephemeral`).
+    class: String,
+    /// DB engine (`postgres` | `mariadb`).
+    engine: String,
+}
+
+/// `POST /api/migrate/{project}/{app}?class=&engine=` — restore a DB dump (raw
+/// request body) into the app's managed database (ADR 0010 phase 3). Trust is
+/// the WG bind, operator-driven, like the bot's snapshot API; the
+/// maintenance-window cutover coordinates it. Idempotent via the store.
+async fn migrate(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path((project, app)): axum::extract::Path<(String, String)>,
+    Query(q): Query<MigrateQuery>,
+    dump: Bytes,
+) -> Result<String, (StatusCode, String)> {
+    let class: majnet_common::EnvClass = serde_yaml::from_str(&q.class).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            "class must be production|stable|testing|ephemeral".into(),
+        )
+    })?;
+    let engine: majnet_common::manifest::DbEngine =
+        serde_yaml::from_str(&q.engine).map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                "engine must be postgres|mariadb (v1)".into(),
+            )
+        })?;
+    crate::migrate::restore_db(&state, &project, &app, class, engine, &dump)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e:#}")))
 }
 
 /// The one imperative escape hatch (§16): restart isn't a state change, so it

@@ -41,6 +41,13 @@ impl Store {
                  first_deployed TEXT NOT NULL DEFAULT (datetime('now')),
                  missing_since TEXT,
                  PRIMARY KEY (project, app)
+             );
+             CREATE TABLE IF NOT EXISTS data_migrations (
+                 project TEXT NOT NULL,
+                 app TEXT NOT NULL,
+                 class TEXT NOT NULL,
+                 done_at TEXT NOT NULL DEFAULT (datetime('now')),
+                 PRIMARY KEY (project, app, class)
              );",
         )?;
         // Phase-5 dashboard: TTL extension. Idempotent poor-man's migration.
@@ -65,6 +72,31 @@ impl Store {
         conn.execute(
             "INSERT INTO events (commit_sha, project, node, action, result) VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params![commit, project, node, action, result],
+        )?;
+        Ok(())
+    }
+
+    // ── Data migration idempotency (ADR 0010 phase 3) ─────────────────────
+
+    /// True if a data restore already completed for this stack — the guard that
+    /// keeps a re-upload from restoring twice into a live DB.
+    pub fn data_migration_done(&self, project: &str, app: &str, class: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM data_migrations WHERE project = ?1 AND app = ?2 AND class = ?3",
+            [project, app, class],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    /// Record a completed data restore (only after success, so a failed restore
+    /// stays retryable).
+    pub fn record_data_migration(&self, project: &str, app: &str, class: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO data_migrations (project, app, class) VALUES (?1, ?2, ?3)",
+            [project, app, class],
         )?;
         Ok(())
     }
