@@ -129,6 +129,9 @@ pub fn write_bot_config(
     if !state.tailnet.is_empty() {
         env.insert("MAJNET_TAILNET".into(), state.tailnet.clone());
     }
+    if !state.ghcr_token.is_empty() {
+        env.insert("MAJNET_GHCR_TOKEN".into(), state.ghcr_token.clone());
+    }
 
     let content: String = env.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
     std::fs::write(config.bot_env_path(), content)

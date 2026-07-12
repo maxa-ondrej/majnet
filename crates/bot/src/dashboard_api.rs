@@ -753,6 +753,54 @@ pub async fn imports_retry(
     Ok(format!("retrying import of {app} — watch its progress"))
 }
 
+// ── container registry (GHCR pull token, ADR 0012) ─────────────────────────────
+
+#[derive(Serialize)]
+pub struct RegistryStatus {
+    /// Whether a GHCR pull token is configured (via Settings or the env
+    /// bootstrap). Never reveals the token itself.
+    pub configured: bool,
+}
+
+#[derive(Deserialize)]
+pub struct GhcrTokenReq {
+    pub token: String,
+}
+
+/// `GET /api/platform/registry` — whether a GHCR pull token is set.
+pub async fn registry_status(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<RegistryStatus>, ApiError> {
+    let configured = state.store.get_config("ghcr_token").map_err(bad_gateway)?.is_some()
+        || state.config.ghcr_token.is_some();
+    Ok(Json(RegistryStatus { configured }))
+}
+
+/// `POST /api/platform/registry` — set the GHCR pull token (platform admin). A
+/// classic PAT with `read:packages`; lets nodes pull private app images.
+pub async fn registry_set(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<GhcrTokenReq>,
+) -> Result<String, ApiError> {
+    let actor = crate::authz::require_platform_admin(&state, &headers)
+        .await
+        .map_err(|e| (StatusCode::FORBIDDEN, format!("{e:#}")))?;
+    let token = req.token.trim();
+    if token.is_empty() {
+        return Err(bad_request("token is empty"));
+    }
+    state
+        .store
+        .set_config("ghcr_token", token)
+        .map_err(bad_gateway)?;
+    state
+        .store
+        .log_event("registry-token-set", None, &format!("by {actor}"))
+        .map_err(bad_gateway)?;
+    Ok("GHCR pull token saved — private app images can pull now".to_string())
+}
+
 // ── nodes ────────────────────────────────────────────────────────────────────
 
 /// `GET /api/nodes` — the platform's node registry (`nodes.yaml`).

@@ -112,8 +112,14 @@ pub async fn registry_auth(
     State(state): State<Arc<AppState>>,
     Path(org): Path<String>,
 ) -> Result<Json<RegistryAuth>, (StatusCode, String)> {
-    let password = match &state.config.ghcr_token {
-        Some(pat) => pat.clone(),
+    // Precedence: the token set at runtime in Settings (DB) > the bootstrap
+    // env var (onboarding) > the App installation token (public packages only).
+    let stored = state
+        .store
+        .get_config("ghcr_token")
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let password = match stored.or_else(|| state.config.ghcr_token.clone()) {
+        Some(pat) => pat,
         None => {
             let (_, token) = state
                 .github

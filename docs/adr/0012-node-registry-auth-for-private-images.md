@@ -29,10 +29,17 @@ registry auth.**
 > packages, which need no real auth anyway).
 
 - **Bot** exposes `GET /api/registry-auth/{org}` on the WG-internal listener,
-  returning `{ username: "x-access-token", password: <MAJNET_GHCR_TOKEN, or the
-  installation token if unset> }`. Trust is the WireGuard bind — same model as
-  the snapshot API. (`proxy.rs`.) `MAJNET_GHCR_TOKEN` lives in the bot's env
-  (`/etc/majnet/bot.env`), never on disk in the reconciler.
+  returning `{ username: "x-access-token", password: <the PAT, else the
+  installation token> }`. Trust is the WireGuard bind — same model as the
+  snapshot API. (`proxy.rs`.)
+
+The PAT is configured in two places (never on the reconciler):
+- **Onboarding** — the setup wizard has a "GHCR pull token" field → written to
+  `MAJNET_GHCR_TOKEN` in `/etc/majnet/bot.env`.
+- **Settings** — the dashboard's *Container registry* card sets it at runtime
+  (platform-admin), stored in the bot's `config` table (a `V2` schema migration,
+  the first real use of ADR 0011's migration system). Resolution precedence:
+  **DB config (Settings) > env (onboarding) > App token**.
 - **Reconciler**, before pulling a `ghcr.io/<org>/…` image, fetches that
   credential over WG and passes it to `create_image` as `DockerCredentials`
   (`deploy::ghcr_credentials` / `pull_image`). Non-GHCR images (public

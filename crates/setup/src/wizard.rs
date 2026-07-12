@@ -126,6 +126,8 @@ pub struct ConfigureForm {
     tailscale_api_key: String,
     #[serde(default)]
     admin_ssh_keys: String,
+    #[serde(default)]
+    ghcr_token: String,
 }
 
 pub async fn configure(
@@ -138,6 +140,9 @@ pub async fn configure(
     state.tailnet = form.tailnet.trim().to_string();
     if !form.tailscale_api_key.trim().is_empty() {
         state.tailscale_api_key = form.tailscale_api_key.trim().to_string();
+    }
+    if !form.ghcr_token.trim().is_empty() {
+        state.ghcr_token = form.ghcr_token.trim().to_string();
     }
     state.admin_ssh_keys = form.admin_ssh_keys.trim().to_string();
     state.save(&app.config.state_path()).map_err(fail)?;
@@ -329,6 +334,9 @@ fn panel_basics(s: &SetupState) -> String {
 <div class="field"><label for="f-key">Tailscale API key <span class="opt">— optional</span></label>
 <input id="f-key" name="tailscale_api_key" type="password" placeholder="{ts_hint}">
 <span class="hint">Stored only on this node.</span></div></div>
+<div class="field"><label for="f-ghcr">GHCR pull token <span class="opt">— optional</span></label>
+<input id="f-ghcr" name="ghcr_token" type="password" placeholder="ghp_… (read:packages)">
+<span class="hint">Classic PAT with read:packages so nodes can pull private app images. Also settable later in Settings.</span></div>
 <div class="field"><label for="f-ssh">Admin SSH public keys <span class="opt">— one per line</span></label>
 <textarea id="f-ssh" name="admin_ssh_keys" spellcheck="false" placeholder="ssh-ed25519 AAAA… you@laptop">{keys}</textarea>
 <span class="hint">Authorized for the <code>majnet</code> admin user on this and every enrolled node.</span></div>

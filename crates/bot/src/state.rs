@@ -55,6 +55,31 @@ impl Store {
         })
     }
 
+    /// Runtime config value (ADR 0012), e.g. the GHCR pull token.
+    pub fn get_config(&self, key: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        match conn.query_row(
+            "SELECT value FROM config WHERE key = ?1",
+            [key],
+            |row| row.get::<_, String>(0),
+        ) {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Set (or replace) a runtime config value.
+    pub fn set_config(&self, key: &str, value: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO config (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [key, value],
+        )?;
+        Ok(())
+    }
+
     /// Returns true if this delivery ID is new (and records it).
     pub fn record_delivery(&self, delivery_id: &str) -> Result<bool> {
         let conn = self.conn.lock().unwrap();

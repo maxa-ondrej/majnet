@@ -14,6 +14,10 @@ pub struct SetupState {
     pub tailnet: String,
     #[serde(default)]
     pub tailscale_api_key: String,
+    /// GHCR pull token (classic PAT, `read:packages`) → `MAJNET_GHCR_TOKEN` in
+    /// bot.env, so nodes can pull private app images (ADR 0012).
+    #[serde(default)]
+    pub ghcr_token: String,
     /// Public IP/hostname of the main node (webhook + wizard callbacks).
     #[serde(default)]
     pub public_host: String,

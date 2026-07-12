@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { ServerCog } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { enrollNode, useNodes, useVersion, useWhoami, type EnrollResult, type PlatformNode } from './api'
+import { enrollNode, send, urls, useNodes, useRegistry, useVersion, useWhoami, type EnrollResult, type PlatformNode } from './api'
 import { PageHead } from './views'
 import { QueryState, StatusBadge } from './ui'
 import { Button } from '@/components/ui/button'
@@ -37,6 +37,8 @@ export function Settings() {
         </CardContent>
       </Card>
 
+      {me?.admin && <RegistrySection />}
+
       <Card>
         <CardHeader><CardTitle className="text-base">Nodes</CardTitle></CardHeader>
         <CardContent className="flex flex-col gap-3">
@@ -51,6 +53,47 @@ export function Settings() {
         </CardContent>
       </Card>
     </>
+  )
+}
+
+// GHCR pull token — lets nodes pull private app images (ADR 0012).
+function RegistrySection() {
+  const reg = useRegistry()
+  const qc = useQueryClient()
+  const [token, setToken] = useState('')
+  const [busy, setBusy] = useState(false)
+  const save = async () => {
+    if (!token.trim()) return toast.error('paste a token')
+    setBusy(true)
+    try {
+      toast.success(await send(urls.registry, { json: { token: token.trim() } }))
+      setToken('')
+      qc.invalidateQueries({ queryKey: ['registry'] })
+    } catch (e) {
+      toast.error(String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <Card className="mb-4">
+      <CardHeader><CardTitle className="text-base">Container registry (GHCR)</CardTitle></CardHeader>
+      <CardContent className="flex flex-col gap-3 text-sm">
+        <Row k="Pull token">
+          {reg.isLoading ? '…'
+            : reg.data?.configured
+              ? <StatusBadge tone="success">configured</StatusBadge>
+              : <span className="text-muted-foreground">not set</span>}
+        </Row>
+        <p className="text-xs text-muted-foreground">
+          A classic PAT with <code className="font-mono">read:packages</code> so nodes can pull private app images. GitHub App tokens aren’t accepted by GHCR (ADR 0012). Stored by the bot; overrides the install-time value.
+        </p>
+        <div className="flex items-center gap-2">
+          <Input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="ghp_… (read:packages)" />
+          <Button disabled={busy} onClick={save}>Save</Button>
+        </div>
+      </CardContent>
+    </Card>
   )
 }
 

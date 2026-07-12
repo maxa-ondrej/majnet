@@ -104,6 +104,10 @@ async fn main() -> Result<()> {
         .route("/api/nodes", get(dashboard_api::nodes_get))
         .route("/api/imports/{org}", get(dashboard_api::imports_get))
         .route(
+            "/api/platform/registry",
+            get(dashboard_api::registry_status).post(dashboard_api::registry_set),
+        )
+        .route(
             "/api/imports/{org}/{app}/retry",
             post(dashboard_api::imports_retry),
         )

@@ -27,6 +27,7 @@ export interface DeployPr {
 }
 export interface ManifestFile { yaml: string; data: unknown }
 export interface Member { user: string; role: string }
+export interface RegistryStatus { configured: boolean }
 export interface ImportStatus {
   app: string; status: 'running' | 'failed'; step: string; detail: string; updated_at: string
 }
@@ -113,6 +114,7 @@ export const urls = {
   releasePromote: (org: string, app: string, version: string) =>
     `${BOT}/releases/${encodeURIComponent(org)}/${encodeURIComponent(app)}/promote/${encodeURIComponent(version)}`,
   version: `${BOT}/platform/version`,
+  registry: `${BOT}/platform/registry`,
   setupEnroll: '/api/setup/enroll.json',
   promote: (org: string, app: string) => `${BOT}/promote/${encodeURIComponent(org)}/${encodeURIComponent(app)}`,
   rollback: (org: string) => `${BOT}/rollback/${encodeURIComponent(org)}`,
@@ -145,5 +147,7 @@ export const useMembers = (org: string) =>
   useQuery({ queryKey: ['members', org], queryFn: () => getJSON<Member[]>(urls.members(org)) })
 export const useVersion = () =>
   useQuery({ queryKey: ['version'], queryFn: () => getText(urls.version) })
+export const useRegistry = () =>
+  useQuery({ queryKey: ['registry'], queryFn: () => getJSON<RegistryStatus>(urls.registry) })
 export const useReleases = (org: string, app: string) =>
   useQuery({ queryKey: ['releases', org, app], queryFn: () => getJSON<StoredRelease[]>(urls.releases(org, app)) })
