@@ -298,22 +298,35 @@ fn valid_secret_name(name: &str) -> bool {
 /// archived — a prior failed import can leave it undeclared, and org-sync
 /// archives undeclared repos (making it read-only for the retry).
 async fn ensure_repo(client: &octocrab::Octocrab, org: &str, app: &str) -> Result<()> {
+    // App repos merge PRs by squash only.
+    let squash_only = json!({
+        "allow_squash_merge": true,
+        "allow_merge_commit": false,
+        "allow_rebase_merge": false,
+    });
     match client
         .post(
             format!("/orgs/{org}/repos"),
-            Some(&json!({ "name": app, "private": true, "auto_init": false })),
+            Some(&json!({
+                "name": app,
+                "private": true,
+                "auto_init": false,
+                "allow_squash_merge": true,
+                "allow_merge_commit": false,
+                "allow_rebase_merge": false,
+            })),
         )
         .await
     {
         Ok::<serde_json::Value, _>(_) => Ok(()),
         Err(octocrab::Error::GitHub { source, .. }) if source.status_code == 422 => {
+            // Exists — ensure it's not archived and enforce squash-only merges.
+            let mut patch = squash_only;
+            patch["archived"] = json!(false);
             let _: serde_json::Value = client
-                .patch(
-                    format!("/repos/{org}/{app}"),
-                    Some(&json!({ "archived": false })),
-                )
+                .patch(format!("/repos/{org}/{app}"), Some(&patch))
                 .await
-                .with_context(|| format!("unarchiving existing repo {app}"))?;
+                .with_context(|| format!("reconciling existing repo {app}"))?;
             Ok(())
         }
         Err(e) => Err(e).with_context(|| format!("creating repo {app}")),

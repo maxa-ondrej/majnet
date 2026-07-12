@@ -255,7 +255,15 @@ async fn create_repo_from_template(
     let _: serde_json::Value = client
         .post(
             format!("/orgs/{org}/repos"),
-            Some(&json!({ "name": app, "private": true, "auto_init": false })),
+            Some(&json!({
+                "name": app,
+                "private": true,
+                "auto_init": false,
+                // App repos merge PRs by squash only — one commit per change.
+                "allow_squash_merge": true,
+                "allow_merge_commit": false,
+                "allow_rebase_merge": false,
+            })),
         )
         .await
         .with_context(|| format!("creating repo {app}"))?;
