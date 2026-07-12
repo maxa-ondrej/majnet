@@ -1,21 +1,23 @@
 //! App migration from an external PaaS (ADR 0010).
 //!
 //! Phase 1 — **repo + CI import**: seed a new app's source repo from an old
-//! GitHub repo via the GitHub **source-import API** (server-side, so it carries
-//! full history + binaries the git-data blob path can't), normalize the default
-//! branch to `main`, inject the MajNet CI workflows from the chosen template,
-//! then scaffold the manifest + declare the app in `project.yaml`.
+//! GitHub repo by snapshotting its default-branch **tarball** and writing it as
+//! one commit via the git-data API (blobs are base64-encoded, so binaries
+//! survive), alongside the MajNet CI workflows from the chosen template. Then
+//! scaffold the manifest + declare the app in `project.yaml`.
 //!
-//! Slow (source-import is async), so this runs as a background task off
-//! `apps_post`; progress is logged to the events feed. The optional read token
-//! for a private source is held only in memory here — never persisted, never
-//! committed to `project.yaml`.
+//! (GitHub's server-side source-import API — the obvious "copy a repo" path —
+//! was deprecated, so we snapshot instead: current tree only, no history, which
+//! is fine since the old repo keeps its history.)
+//!
+//! Runs as a background task off `apps_post`; progress is logged to the events
+//! feed. The optional read token for a private source is held only in memory
+//! here — never persisted, never committed to `project.yaml`.
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::BTreeMap;
-use std::time::Duration;
 
 use crate::dashboard_api::NewApp;
 use crate::AppState;
@@ -34,10 +36,7 @@ pub struct ImportSource {
     pub env: Option<String>,
 }
 
-const IMPORT_POLL: Duration = Duration::from_secs(5);
-const IMPORT_ATTEMPTS: u32 = 180; // ~15 min ceiling
-
-/// Import an app: create + seed the source repo, inject CI, then scaffold.
+/// Import an app: snapshot the source repo + CI into a new repo, then scaffold.
 pub async fn import_app(
     state: &AppState,
     org: &str,
@@ -49,16 +48,26 @@ pub async fn import_app(
     let client = state.github.org_client(org).await?;
     state
         .store
-        .log_event("app-import", Some(org), &format!("{app} ← {}", source.repo))?;
+        .log_event("app-import", Some(org), &format!("{app} <- {}", source.repo))?;
 
-    create_empty_repo(&client, org, app).await?;
-    run_source_import(&client, org, app, source).await?;
-    normalize_default_branch(&client, org, app).await?;
-
+    // Snapshot the source tree, add the MajNet CI workflows, and write it all as
+    // one commit onto the new repo's `main`.
+    let mut files = fetch_repo_snapshot(state, source).await?;
+    anyhow::ensure!(!files.is_empty(), "source repo snapshot is empty");
     let platform = crate::dashboard_api::read_platform(state).await?;
-    let workflows = ci_workflow_files(&platform, &req.template, org, app)?;
-    inject_files(&client, org, app, &workflows, "chore: add MajNet CI (build + release)").await?;
+    for (path, content) in ci_workflow_files(&platform, &req.template, org, app)? {
+        files.insert(path, content.into_bytes());
+    }
 
+    ensure_repo(&client, org, app).await?;
+    commit_snapshot(
+        &client,
+        org,
+        app,
+        &files,
+        &format!("chore: import {} + MajNet CI", source.repo),
+    )
+    .await?;
     crate::org_sync::protect_app_main(&client, org, app).await?;
 
     // The repo now exists → declaring it in project.yaml won't re-scaffold from
@@ -268,71 +277,100 @@ fn valid_secret_name(name: &str) -> bool {
     !name.is_empty() && !name.contains('/') && !name.contains("..")
 }
 
-/// The empty destination repo the source-import writes into.
-async fn create_empty_repo(client: &octocrab::Octocrab, org: &str, app: &str) -> Result<()> {
-    let _: serde_json::Value = client
+/// Create the destination repo (empty), tolerating "already exists" so a retry
+/// after a partial import reuses it.
+async fn ensure_repo(client: &octocrab::Octocrab, org: &str, app: &str) -> Result<()> {
+    match client
         .post(
             format!("/orgs/{org}/repos"),
             Some(&json!({ "name": app, "private": true, "auto_init": false })),
         )
         .await
-        .with_context(|| format!("creating repo {app}"))?;
-    Ok(())
+    {
+        Ok::<serde_json::Value, _>(_) => Ok(()),
+        Err(octocrab::Error::GitHub { source, .. }) if source.status_code == 422 => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("creating repo {app}")),
+    }
 }
 
-/// Start the GitHub source-import from `source.repo` and poll to completion.
-async fn run_source_import(
+/// Snapshot the source repo's default branch as `path → bytes` (no history).
+/// Public source: unauthenticated; private: the in-memory read token.
+async fn fetch_repo_snapshot(
+    state: &AppState,
+    source: &ImportSource,
+) -> Result<BTreeMap<String, Vec<u8>>> {
+    let (owner, repo) = parse_github_slug(&source.repo)?;
+    let url = format!("https://api.github.com/repos/{owner}/{repo}/tarball");
+    let mut req = state
+        .http
+        .get(&url)
+        .header(reqwest::header::USER_AGENT, "majnet-bot")
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json");
+    if let Some(token) = &source.token {
+        req = req.bearer_auth(token);
+    }
+    let bytes = req
+        .send()
+        .await?
+        .error_for_status()
+        .with_context(|| format!("fetching tarball for {owner}/{repo}"))?
+        .bytes()
+        .await?;
+    majnet_common::tarball::untar(&bytes).context("unpacking source tarball")
+}
+
+/// Write `files` as a single commit on the new repo's `main` (create the ref, or
+/// force-update it if a prior partial import left one).
+async fn commit_snapshot(
     client: &octocrab::Octocrab,
     org: &str,
     app: &str,
-    source: &ImportSource,
+    files: &BTreeMap<String, Vec<u8>>,
+    message: &str,
 ) -> Result<()> {
-    let mut body = json!({ "vcs": "git", "vcs_url": source.repo });
-    if let Some(token) = &source.token {
-        // For a GitHub source, any username + the PAT as the password works.
-        body["vcs_username"] = json!("x-access-token");
-        body["vcs_password"] = json!(token);
-    }
-    let _: serde_json::Value = client
-        .put(format!("/repos/{org}/{app}/import"), Some(&body))
-        .await
-        .context("starting source import")?;
-
-    for _ in 0..IMPORT_ATTEMPTS {
-        tokio::time::sleep(IMPORT_POLL).await;
-        let status: serde_json::Value = client
-            .get(format!("/repos/{org}/{app}/import"), None::<&()>)
+    let repo = format!("/repos/{org}/{app}");
+    let mut blobs = BTreeMap::new();
+    for (path, content) in files {
+        let sha = crate::git::create_blob(client, &repo, content)
             .await
-            .context("polling import status")?;
-        match status["status"].as_str().unwrap_or_default() {
-            "complete" => return Ok(()),
-            "error" | "detection_failed" | "auth_failed" => bail!(
-                "source import failed: {}",
-                status["status_text"].as_str().unwrap_or("unknown")
-            ),
-            other => tracing::info!(org, app, status = other, "source import in progress"),
+            .with_context(|| format!("blob for {path}"))?;
+        blobs.insert(path.clone(), sha);
+    }
+    let tree = crate::git::create_tree_from_blobs(client, &repo, &blobs).await?;
+    match crate::git::get_branch_head(client, &repo, "main").await? {
+        Some(head) => {
+            let commit = crate::git::create_commit(client, &repo, &tree, &[&head], message).await?;
+            crate::git::force_update_ref(client, &repo, "main", &commit).await
+        }
+        None => {
+            let commit = crate::git::create_commit(client, &repo, &tree, &[], message).await?;
+            crate::git::create_ref(client, &repo, "main", &commit).await
         }
     }
-    bail!("source import did not complete within the timeout");
 }
 
-/// MajNet assumes `main`; rename an imported `master`/other default to it.
-async fn normalize_default_branch(client: &octocrab::Octocrab, org: &str, app: &str) -> Result<()> {
-    let info: serde_json::Value = client
-        .get(format!("/repos/{org}/{app}"), None::<&()>)
-        .await
-        .context("reading imported repo")?;
-    let default = info["default_branch"].as_str().unwrap_or("main");
-    if default != "main" {
-        let _: serde_json::Value = client
-            .post(
-                format!("/repos/{org}/{app}/branches/{default}/rename"),
-                Some(&json!({ "new_name": "main" })),
-            )
-            .await
-            .with_context(|| format!("renaming default branch {default} → main"))?;
-    }
-    Ok(())
+/// `owner`, `repo` from a GitHub URL (`https://github.com/owner/repo[.git]`).
+fn parse_github_slug(url: &str) -> Result<(String, String)> {
+    let s = url.trim().trim_end_matches('/');
+    let s = s.strip_suffix(".git").unwrap_or(s);
+    let s = s
+        .strip_prefix("https://")
+        .or_else(|| s.strip_prefix("http://"))
+        .unwrap_or(s);
+    let s = s
+        .strip_prefix("github.com/")
+        .or_else(|| s.strip_prefix("github.com:"))
+        .unwrap_or(s);
+    let mut it = s.split('/');
+    let owner = it
+        .next()
+        .filter(|x| !x.is_empty())
+        .context("repo URL has no owner")?;
+    let repo = it
+        .next()
+        .filter(|x| !x.is_empty())
+        .context("repo URL has no repo")?;
+    Ok((owner.to_string(), repo.to_string()))
 }
 
 /// The template's `.github/workflows/*` as destination-path → content, with
@@ -366,33 +404,27 @@ fn ensure_ci(files: &BTreeMap<String, String>, template: &str) -> Result<()> {
     Ok(())
 }
 
-/// Commit a set of files onto the repo's `main` head (one commit).
-async fn inject_files(
-    client: &octocrab::Octocrab,
-    org: &str,
-    app: &str,
-    files: &BTreeMap<String, String>,
-    message: &str,
-) -> Result<()> {
-    let repo = format!("/repos/{org}/{app}");
-    let head = crate::git::get_branch_head(client, &repo, "main")
-        .await?
-        .context("imported repo has no main branch")?;
-    let base_tree = crate::git::commit_tree(client, &repo, &head).await?;
-    let changes: BTreeMap<String, Option<String>> = files
-        .iter()
-        .map(|(p, c)| (p.clone(), Some(c.clone())))
-        .collect();
-    let tree = crate::git::create_tree_incremental(client, &repo, &base_tree, &changes).await?;
-    let commit = crate::git::create_commit(client, &repo, &tree, &[&head], message).await?;
-    crate::git::force_update_ref(client, &repo, "main", &commit).await?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{ci_workflow_files, ImportSource};
+    use super::{ci_workflow_files, parse_github_slug, ImportSource};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn parses_github_slugs() {
+        for url in [
+            "https://github.com/maxa-ondrej/space-alert",
+            "https://github.com/maxa-ondrej/space-alert/",
+            "https://github.com/maxa-ondrej/space-alert.git",
+            "github.com/maxa-ondrej/space-alert",
+        ] {
+            assert_eq!(
+                parse_github_slug(url).unwrap(),
+                ("maxa-ondrej".to_string(), "space-alert".to_string()),
+                "{url}"
+            );
+        }
+        assert!(parse_github_slug("https://github.com/").is_err());
+    }
 
     #[test]
     fn import_source_token_optional() {

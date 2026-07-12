@@ -2,6 +2,7 @@
 //! and org reconciliation. All routes take `repo` as `"/repos/{org}/{name}"`.
 
 use anyhow::{Context, Result};
+use base64::Engine;
 use serde_json::json;
 use std::collections::BTreeMap;
 
@@ -76,6 +77,43 @@ pub async fn create_tree_incremental(
         )
         .await
         .context("creating incremental tree")?;
+    Ok(tree["sha"]
+        .as_str()
+        .context("tree response has no sha")?
+        .to_string())
+}
+
+/// Create a blob from raw bytes (base64-encoded, so binary content survives —
+/// unlike the inline-`content` tree items). Returns the blob SHA.
+pub async fn create_blob(client: &octocrab::Octocrab, repo: &str, content: &[u8]) -> Result<String> {
+    let encoded = base64::engine::general_purpose::STANDARD.encode(content);
+    let blob: serde_json::Value = client
+        .post(
+            format!("{repo}/git/blobs"),
+            Some(&json!({ "content": encoded, "encoding": "base64" })),
+        )
+        .await
+        .context("creating blob")?;
+    Ok(blob["sha"]
+        .as_str()
+        .context("blob response has no sha")?
+        .to_string())
+}
+
+/// Create a complete tree from `path → blob SHA` (no base tree — full snapshot).
+pub async fn create_tree_from_blobs(
+    client: &octocrab::Octocrab,
+    repo: &str,
+    blobs: &BTreeMap<String, String>,
+) -> Result<String> {
+    let items: Vec<_> = blobs
+        .iter()
+        .map(|(path, sha)| json!({ "path": path, "mode": "100644", "type": "blob", "sha": sha }))
+        .collect();
+    let tree: serde_json::Value = client
+        .post(format!("{repo}/git/trees"), Some(&json!({ "tree": items })))
+        .await
+        .context("creating tree from blobs")?;
     Ok(tree["sha"]
         .as_str()
         .context("tree response has no sha")?
