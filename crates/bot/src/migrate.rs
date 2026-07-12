@@ -284,7 +284,9 @@ fn valid_secret_name(name: &str) -> bool {
 }
 
 /// Create the destination repo (empty), tolerating "already exists" so a retry
-/// after a partial import reuses it.
+/// after a partial import reuses it. If it already exists, ensure it's not
+/// archived — a prior failed import can leave it undeclared, and org-sync
+/// archives undeclared repos (making it read-only for the retry).
 async fn ensure_repo(client: &octocrab::Octocrab, org: &str, app: &str) -> Result<()> {
     match client
         .post(
@@ -294,7 +296,16 @@ async fn ensure_repo(client: &octocrab::Octocrab, org: &str, app: &str) -> Resul
         .await
     {
         Ok::<serde_json::Value, _>(_) => Ok(()),
-        Err(octocrab::Error::GitHub { source, .. }) if source.status_code == 422 => Ok(()),
+        Err(octocrab::Error::GitHub { source, .. }) if source.status_code == 422 => {
+            let _: serde_json::Value = client
+                .patch(
+                    format!("/repos/{org}/{app}"),
+                    Some(&json!({ "archived": false })),
+                )
+                .await
+                .with_context(|| format!("unarchiving existing repo {app}"))?;
+            Ok(())
+        }
         Err(e) => Err(e).with_context(|| format!("creating repo {app}")),
     }
 }
