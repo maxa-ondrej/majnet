@@ -20,6 +20,7 @@ mod digest;
 mod ephemeral;
 mod git;
 mod github;
+mod migrate;
 mod notify;
 mod org_sync;
 mod platform_api;

@@ -518,6 +518,11 @@ pub struct NewApp {
     /// in the platform repo). The app is declared in `project.yaml`, and
     /// org-sync materializes the source repo from this template.
     pub template: String,
+    /// Migrate an existing app instead of scaffolding fresh (ADR 0010): seed the
+    /// source repo from an old GitHub repo + inject MajNet CI. `template` still
+    /// selects which CI workflows to inject.
+    #[serde(default)]
+    pub import: Option<crate::migrate::ImportSource>,
 }
 
 /// `POST /api/apps/{org}` — scaffold a new app's `base.yaml` + selected class
@@ -573,68 +578,40 @@ pub async fn apps_post(
         )));
     }
 
+    // Validate base ⊕ overlays as the render pipeline would (fast-fail on bad
+    // form input) before committing anything or kicking off an import.
     let base = scaffold_base(&req).map_err(|e| bad_request(format!("{e:#}")))?;
-    files.insert("base.yaml".to_string(), base.clone());
+    files.insert("base.yaml".to_string(), base);
     for class in &req.classes {
         files.insert(format!("{class}.yaml"), "{}\n".to_string());
     }
     validate_app_files(&req.name, &files).map_err(|e| bad_request(format!("{e:#}")))?;
 
-    // Commit base first, then each overlay, so the app renders atomically enough.
-    commit_file(
-        &state,
-        &org,
-        &format!("apps/{}/base.yaml", req.name),
-        &base,
-        &format!("manifest({}): scaffold via dashboard by {actor}", req.name),
-    )
-    .await
-    .map_err(bad_gateway)?;
-    for class in &req.classes {
-        commit_file(
-            &state,
-            &org,
-            &format!("apps/{}/{class}.yaml", req.name),
-            "{}\n",
-            &format!(
-                "manifest({}): add {class} overlay via dashboard by {actor}",
-                req.name
-            ),
-        )
-        .await
-        .map_err(bad_gateway)?;
-    }
-    // Declare the app in project.yaml — the canonical app list (AppDecl). This
-    // push triggers org-sync, which materializes the source repo from the
-    // template (and archives it if the app is later removed).
-    let mut project = read_project(&state, &org).await.map_err(bad_gateway)?;
-    if !project.apps.iter().any(|a| a.name == req.name) {
-        project.apps.push(AppDecl {
-            name: req.name.clone(),
-            template: req.template.clone(),
+    // Import mode (ADR 0010): seed the source repo from an old repo + inject CI,
+    // then scaffold. Slow (GitHub source-import is async) → run in the
+    // background and surface progress via the events feed.
+    if let Some(source) = req.import.clone() {
+        let app = req.name.clone();
+        let repo = source.repo.clone();
+        let st = state.clone();
+        let org2 = org.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::migrate::import_app(&st, &org2, &req, &actor, &source).await {
+                tracing::error!(org = org2, app = req.name, error = format!("{e:#}"), "app import failed");
+                let _ = st.store.log_event(
+                    "app-import-failed",
+                    Some(&org2),
+                    &format!("{}: {e:#}", req.name),
+                );
+            }
         });
-        let yaml = serde_yaml::to_string(&project).map_err(|e| bad_gateway(e.into()))?;
-        commit_file(
-            &state,
-            &org,
-            "project.yaml",
-            &yaml,
-            &format!(
-                "project({}): declare app (template {}) via dashboard by {actor}",
-                req.name, req.template
-            ),
-        )
-        .await
-        .map_err(bad_gateway)?;
+        return Ok(format!(
+            "importing {app} from {repo} — watch notifications; the app and its source repo appear once the import completes"
+        ));
     }
 
-    state
-        .store
-        .log_event(
-            "app-scaffolded",
-            Some(&org),
-            &format!("{} [{}] by {actor}", req.name, req.classes.join(",")),
-        )
+    scaffold_and_declare(&state, &org, &req, &actor)
+        .await
         .map_err(bad_gateway)?;
     Ok(format!(
         "{} scaffolded ({}); source repo from template {} + render PRs will propagate",
@@ -642,6 +619,62 @@ pub async fn apps_post(
         req.classes.join(", "),
         req.template
     ))
+}
+
+/// Commit `base.yaml` + the selected class overlays, then declare the app in
+/// `project.yaml` (the canonical app list). Shared by direct creation and the
+/// import background task. For imports, the source repo already exists by the
+/// time this runs, so org-sync sees it and skips its template-scaffold path.
+pub(crate) async fn scaffold_and_declare(
+    state: &AppState,
+    org: &str,
+    req: &NewApp,
+    actor: &str,
+) -> Result<()> {
+    let base = scaffold_base(req)?;
+    commit_file(
+        state,
+        org,
+        &format!("apps/{}/base.yaml", req.name),
+        &base,
+        &format!("manifest({}): scaffold via dashboard by {actor}", req.name),
+    )
+    .await?;
+    for class in &req.classes {
+        commit_file(
+            state,
+            org,
+            &format!("apps/{}/{class}.yaml", req.name),
+            "{}\n",
+            &format!("manifest({}): add {class} overlay via dashboard by {actor}", req.name),
+        )
+        .await?;
+    }
+    let mut project = read_project(state, org).await?;
+    if !project.apps.iter().any(|a| a.name == req.name) {
+        project.apps.push(AppDecl {
+            name: req.name.clone(),
+            template: req.template.clone(),
+        });
+        let yaml = serde_yaml::to_string(&project)?;
+        commit_file(
+            state,
+            org,
+            "project.yaml",
+            &yaml,
+            &format!(
+                "project({}): declare app (template {}) via dashboard by {actor}",
+                req.name, req.template
+            ),
+        )
+        .await?;
+    }
+    state.store.log_event(
+        "app-scaffolded",
+        Some(org),
+        &format!("{} [{}] by {actor}", req.name, req.classes.join(",")),
+    )?;
+    Ok(())
 }
 
 // ── nodes ────────────────────────────────────────────────────────────────────
@@ -659,7 +692,7 @@ pub async fn nodes_get(State(state): State<Arc<AppState>>) -> Result<Json<Vec<No
 // ── helpers (projects/apps/nodes) ─────────────────────────────────────────────
 
 /// Untarred platform-repo `main` snapshot, path → UTF-8 text.
-async fn read_platform(state: &AppState) -> Result<BTreeMap<String, String>> {
+pub(crate) async fn read_platform(state: &AppState) -> Result<BTreeMap<String, String>> {
     let (_, tar) =
         crate::proxy::fetch_snapshot(state, &state.config.root_org, "platform", "main").await?;
     let files = majnet_common::tarball::untar(&tar)?;
@@ -850,6 +883,7 @@ mod tests {
             classes: classes.iter().map(|s| s.to_string()).collect(),
             database: Some("postgres".into()),
             template: "web-app".into(),
+            import: None,
         }
     }
 

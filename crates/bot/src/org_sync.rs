@@ -294,7 +294,11 @@ async fn protect_ops_production(client: &octocrab::Octocrab, org: &str) -> Resul
     Ok(())
 }
 
-async fn protect_app_main(client: &octocrab::Octocrab, org: &str, app: &str) -> Result<()> {
+pub(crate) async fn protect_app_main(
+    client: &octocrab::Octocrab,
+    org: &str,
+    app: &str,
+) -> Result<()> {
     let _: serde_json::Value = client
         .put(
             format!("/repos/{org}/{app}/branches/main/protection"),

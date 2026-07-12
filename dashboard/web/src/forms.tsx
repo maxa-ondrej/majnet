@@ -71,6 +71,9 @@ export function NewApp() {
   const [database, setDatabase] = useState('none')
   const [template, setTemplate] = useState<string>('web-app')
   const [classes, setClasses] = useState<string[]>(['production'])
+  const [importing, setImporting] = useState(false)
+  const [importRepo, setImportRepo] = useState('')
+  const [importToken, setImportToken] = useState('')
   const m = useApiMutation({ invalidate: [['apps', org]], onDone: () => nav({ to: '/projects/$org', params: { org } }) })
   const toggle = (c: string) => setClasses((cs) => (cs.includes(c) ? cs.filter((x) => x !== c) : [...cs, c]))
 
@@ -98,7 +101,7 @@ export function NewApp() {
           </div>
         </Field>
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Source-repo template" hint="Scaffolds the app's GitHub repo (CI wired for the delivery pipeline).">
+          <Field label="Source-repo template" hint={importing ? 'Selects which MajNet CI workflows to inject into the imported repo.' : "Scaffolds the app's GitHub repo (CI wired for the delivery pipeline)."}>
             <Select value={template} onValueChange={setTemplate}>
               <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
               <SelectContent>
@@ -115,19 +118,41 @@ export function NewApp() {
             </Select>
           </Field>
         </div>
+        <div className="rounded-lg border p-3">
+          <label className="flex cursor-pointer items-center gap-2 text-sm font-medium">
+            <Checkbox checked={importing} onCheckedChange={(v) => setImporting(!!v)} />
+            Import an existing app (seed the source repo from an old GitHub repo + inject MajNet CI)
+          </label>
+          {importing && (
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <Field label="Old repo URL" hint="The existing GitHub repo to import (history preserved).">
+                <Input value={importRepo} onChange={(e) => setImportRepo(e.target.value)} placeholder="https://github.com/old-org/blog" />
+              </Field>
+              <Field label="Read token — optional" hint="A GitHub PAT if the source repo is private. Held in memory for the import; never stored.">
+                <Input type="password" value={importToken} onChange={(e) => setImportToken(e.target.value)} placeholder="ghp_…" />
+              </Field>
+            </div>
+          )}
+        </div>
         <div className="flex items-center gap-3">
           <Button disabled={m.isPending} onClick={() => {
             if (!name.trim() || !image.trim()) return toast.error('name and image are required')
             if (!classes.length) return toast.error('select at least one class')
+            if (importing && !importRepo.trim()) return toast.error('enter the old repo URL to import')
             m.mutate(() => send(urls.apps(org), {
               json: {
                 name: name.trim(), image: image.trim(), host: host.trim(), port: Number(port),
                 domains: domains.split('\n').map((s) => s.trim()).filter(Boolean),
                 classes, database: database === 'none' ? null : database, template,
+                ...(importing ? { import: { repo: importRepo.trim(), token: importToken.trim() || null } } : {}),
               },
             }))
-          }}>Create app</Button>
-          <span className="text-xs text-muted-foreground">Writes base.yaml + overlays and declares the app in project.yaml; the source repo is scaffolded on the next org sync.</span>
+          }}>{importing ? 'Import app' : 'Create app'}</Button>
+          <span className="text-xs text-muted-foreground">
+            {importing
+              ? 'Imports the repo + injects CI (runs in the background), then writes base.yaml + overlays and declares the app in project.yaml.'
+              : 'Writes base.yaml + overlays and declares the app in project.yaml; the source repo is scaffolded on the next org sync.'}
+          </span>
         </div>
       </CardContent></Card>
     </>
