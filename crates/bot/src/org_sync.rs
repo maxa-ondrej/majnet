@@ -122,6 +122,20 @@ pub async fn sync_org(
     protect_ops_production(&client, org).await?;
     sync_teams(&client, org, &project).await?;
 
+    // Release backfill (ADR 0009): the `release` webhook is the fast path; this
+    // recovers missed/out-of-order deliveries and heals stable drift. Non-fatal
+    // per app — a flaky release listing must not fail the whole org sync.
+    for app in &project.apps {
+        if let Err(e) = crate::releases::backfill_app(state, org, &app.name).await {
+            tracing::warn!(
+                org,
+                app = app.name,
+                error = format!("{e:#}"),
+                "release backfill failed"
+            );
+        }
+    }
+
     state.store.log_event("org-sync", Some(org), "ok")?;
     Ok(Some(project))
 }

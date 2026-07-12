@@ -100,7 +100,9 @@ The reconciler's existing §12 pre-rollout migration step runs `migration.image`
   releases per app) → event. `tag → stable` auto-bumps the overlay; `promote`
   writes a chosen release's app+migration digests into `production.yaml`
   (existing digest-bump + render-PR path). On `push` to main/PR branches:
-  build-tier digest bumps into `testing`/`ephemeral`.
+  build-tier digest bumps into `testing`/`ephemeral`. A periodic **release
+  backfill** (from the hourly org-sync) reconciles releases from GitHub so a
+  missed webhook still populates the store and heals stable drift.
 - **reconciler** — run `migration.image` (default app image) with `command`.
 - **dashboard** — per-app **Releases** tab: versions, artifacts, on-stable /
   on-prod markers, "Promote → production", and a diff vs the deployed release;
@@ -126,9 +128,6 @@ The reconciler's existing §12 pre-rollout migration step runs `migration.image`
 
 ## Open items
 
-- **Release backfill** — a periodic reconcile listing releases + assets from
-  GitHub, so a missed/out-of-order `release` webhook (e.g. asset attached just
-  after publish) still populates the store. The webhook is the fast path.
 - Production promote: allow any release, or only newer-than-current?
 - Descriptor provenance/signing (attestations) — later.
 - `ephemeral` still builds per-PR; confirm it stays digest-from-PR-build (yes).
