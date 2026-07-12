@@ -73,6 +73,13 @@ impl Store {
                  PRIMARY KEY (org, app)
              );",
         )?;
+        // Poor-man's migration: `request` was added to `imports` after its first
+        // release, and CREATE TABLE IF NOT EXISTS won't add it to a pre-existing
+        // table. ALTER errors (and is ignored) where the column already exists.
+        let _ = conn.execute(
+            "ALTER TABLE imports ADD COLUMN request TEXT NOT NULL DEFAULT '{}'",
+            [],
+        );
         Ok(Self {
             conn: Mutex::new(conn),
         })
