@@ -17,7 +17,7 @@
 //! covers every repo in every installed org.
 
 use anyhow::{Context, Result};
-use majnet_common::platform::ProjectsFile;
+use majnet_common::platform::{NodesFile, ProjectsFile};
 use majnet_common::project::{ProjectConfig, Role};
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -61,6 +61,27 @@ pub async fn sync_all(state: &AppState) -> Result<()> {
     if let Some(people_yaml) = platform.get("people.yaml") {
         let people = majnet_common::platform::PeopleFile::parse(people_yaml)?;
         crate::tailscale::sync_acl(state, &people, &synced).await?;
+    }
+
+    // Per-project VPN ingress wildcard cert (ADR 0013): issue/renew
+    // `*.{project}.{base_domain}` and commit it (age-encrypted key) for the
+    // reconciler. Non-fatal — a cert failure must not block org sync.
+    let base_domain = platform
+        .get("nodes.yaml")
+        .and_then(|y| NodesFile::parse(y).ok())
+        .map(|n| n.base_domain)
+        .unwrap_or_else(|| "majksa.net".to_string());
+    for (name, _) in &synced {
+        if let Err(e) = crate::acme::ensure_ingress_cert(state, name, &base_domain).await {
+            tracing::error!(
+                project = name,
+                error = format!("{e:#}"),
+                "ingress cert ensure failed"
+            );
+            state
+                .store
+                .log_event("ingress-cert", Some(name), &format!("FAILED: {e:#}"))?;
+        }
     }
     Ok(())
 }

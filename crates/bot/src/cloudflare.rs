@@ -135,7 +135,7 @@ async fn ensure_origin_cert(
 }
 
 /// Create-or-update a file on the platform repo's `main` via the Contents API.
-async fn put_platform_file(
+pub(crate) async fn put_platform_file(
     client: &octocrab::Octocrab,
     org: &str,
     path: &str,
@@ -172,7 +172,7 @@ async fn put_platform_file(
 }
 
 /// Encrypt `plaintext` to an age recipient (armored), via the `age` binary.
-async fn age_encrypt(recipient: &str, plaintext: &str) -> Result<String> {
+pub(crate) async fn age_encrypt(recipient: &str, plaintext: &str) -> Result<String> {
     use tokio::io::AsyncWriteExt;
     let mut child = tokio::process::Command::new("age")
         .args(["-a", "-r", recipient])

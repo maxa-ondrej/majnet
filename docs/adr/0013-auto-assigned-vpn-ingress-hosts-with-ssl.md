@@ -1,6 +1,6 @@
 # 0013 — Auto-assigned VPN ingress hosts with SSL
 
-**Status:** accepted · **Date:** 2026-07-13 · Phase 1 done; 2–4 pending the private node
+**Status:** accepted · **Date:** 2026-07-13 · Phases 1–2 done; 3–4 pending the private node
 
 ## Context
 
@@ -98,11 +98,15 @@ Reusing `cloudflare.rs::put_platform_file` + `age_encrypt`. The bot touches
 ACME + Cloudflare + git; the reconciler touches age + Docker. **Credential
 isolation (§6) holds** — nothing new crosses the boundary.
 
-DNS-01 needs a transient TXT record: add `Cloudflare::ensure_dns_txt` /
-`delete_dns_txt` (sibling to the existing `ensure_dns_a`) for
-`_acme-challenge.{project}.{base_domain}`. The ACME protocol itself needs a
-client — add `instant-acme` (async, rustls) to the bot; the CSR/keygen reuses
-the existing `generate_csr` path.
+The ACME flow (account, DNS-01 challenge, order/finalize, renewal) is run by
+shelling out to **`lego`** — a single Go binary with a native Cloudflare
+provider — rather than an in-process ACME crate. This matches the image's
+established "shell out to age/openssl/sops" pattern, keeps the fragile,
+here-untestable protocol logic out of the bot, and gives battle-tested renewal
+for free. `lego`'s account + cert state persists under the bot data volume; the
+Cloudflare token reaches it via `CF_DNS_API_TOKEN` (env) and never leaves the
+bot. `lego run` issues; `lego renew --days 30` (idempotent) renews inside the
+window; the bot re-commits only when the PEM actually changed.
 
 ### 3. The reconciler installs the wildcard on each project ingress
 
@@ -144,10 +148,12 @@ edits inside the bot's existing Cloudflare + Tailscale ownership.)*
    ingress; `promote` replaces only the `image:` line so it no longer clobbers
    production ingress/env; dashboard copy explains prod-custom vs non-prod-auto.
    Shipped without the private node — **removes the host-drift footgun today.**
-2. **Bot: wildcard cert.** `instant-acme`; `ensure_dns_txt`;
-   `ensure_ingress_cert(project)` issuing `*.{project}.{base_domain}` via
-   DNS-01; commit cert + age-encrypted key to the platform repo; hook into the
-   per-project reconcile (org-sync) with renew-before-expiry.
+2. ✅ **Bot: wildcard cert.** `acme.rs::ensure_ingress_cert(project)` shells to
+   `lego` (Cloudflare DNS-01) for `*.{project}.{base_domain}`, age-encrypts the
+   key to the production recipient, and commits cert+key to
+   `platform/ingress-certs/{project}.{crt,key.age}`; hooked into org-sync
+   per synced project (non-fatal), committing only on change, renewing inside a
+   30-day window. Config: `MAJNET_ACME_EMAIL` (+ `MAJNET_ACME_STAGING`).
 3. **Reconciler: install the cert.** `ensure_ingress` decrypts + delivers the
    wildcard + Traefik file-provider default-cert config; recreate on change.
 4. **Split DNS.** Bot ensures the `*.{project}.{base_domain}` → MagicDNS CNAME.

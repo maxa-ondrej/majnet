@@ -11,6 +11,7 @@
 //!
 //! Credentials held: GitHub App key + Tailscale API key. Nothing else.
 
+mod acme;
 mod authz;
 mod cloudflare;
 mod config;

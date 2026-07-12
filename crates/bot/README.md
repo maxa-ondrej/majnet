@@ -18,6 +18,8 @@ The liaison (design doc §11). Phase-1 MVP: GitHub App auth, webhook intake, dig
 | `MAJNET_TAILNET` | | — | tailnet name (e.g. `example.com`) |
 | `MAJNET_CLOUDFLARE_TOKEN` | | *(empty = custom domains manual)* | the bot's third credential (ADR 0007): Zone→DNS→Edit + Zone→Zone Settings→Edit + Zone→SSL and Certificates→Edit. Automates proxied DNS + Full-strict for production domains |
 | `MAJNET_AGE_PRODUCTION_RECIPIENT` | | *(empty = DNS-only, no origin certs)* | the `age-production` **public** recipient. The bot encrypts issued origin-cert keys to it before committing to git; the reconciler decrypts. Get it: `age-keygen -y /etc/majnet/age/age-production.key` (ADR 0007) |
+| `MAJNET_ACME_EMAIL` | | *(empty = no ingress certs)* | contact for the Let's Encrypt account used to issue per-project VPN ingress wildcard certs via `lego` (DNS-01 over Cloudflare). Needs `MAJNET_CLOUDFLARE_TOKEN` + `MAJNET_AGE_PRODUCTION_RECIPIENT` too (ADR 0013) |
+| `MAJNET_ACME_STAGING` | | `false` | use Let's Encrypt staging (untrusted certs, high rate limits) for shakedown testing |
 
 ## GitHub App settings
 

@@ -42,6 +42,14 @@ pub struct Config {
     /// GitHub App installation tokens are not honored by GHCR for package pulls,
     /// so a PAT is required. `None` = only public images pull.
     pub ghcr_token: Option<String>,
+    /// Contact email for the ACME (Let's Encrypt) account used to issue the
+    /// per-project VPN ingress wildcard certs (ADR 0013). `None` disables
+    /// ingress-cert issuance. Requires `cloudflare_token` (DNS-01) +
+    /// `age_production_recipient` (to encrypt the key for git) as well.
+    pub acme_email: Option<String>,
+    /// Use Let's Encrypt's staging directory (untrusted certs, high rate limits)
+    /// instead of production — for shakedown testing. `MAJNET_ACME_STAGING=1`.
+    pub acme_staging: bool,
 }
 
 impl Config {
@@ -75,6 +83,12 @@ impl Config {
             ghcr_token: std::env::var("MAJNET_GHCR_TOKEN")
                 .ok()
                 .filter(|v| !v.is_empty()),
+            acme_email: std::env::var("MAJNET_ACME_EMAIL")
+                .ok()
+                .filter(|v| !v.is_empty()),
+            acme_staging: std::env::var("MAJNET_ACME_STAGING")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false),
         })
     }
 }
