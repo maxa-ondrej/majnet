@@ -27,6 +27,17 @@ export interface DeployPr {
 }
 export interface ManifestFile { yaml: string; data: unknown }
 export interface Member { user: string; role: string }
+export interface ImportStatus {
+  app: string; status: 'running' | 'failed'; step: string; detail: string; updated_at: string
+}
+/** Canonical import step order + labels (mirrors migrate.rs). */
+export const IMPORT_STEPS: { key: string; label: string }[] = [
+  { key: 'snapshot', label: 'Fetching source repo' },
+  { key: 'repo', label: 'Creating app repo' },
+  { key: 'commit', label: 'Importing code + CI' },
+  { key: 'configure', label: 'Scaffolding manifest' },
+  { key: 'secrets', label: 'Importing secrets' },
+]
 export interface StoredRelease {
   app: string; version: string; commit: string; app_image: string; published_at: string
 }
@@ -87,6 +98,7 @@ export const urls = {
   whoami: `${BOT}/whoami`,
   projects: `${BOT}/projects`,
   apps: (org: string) => `${BOT}/apps/${encodeURIComponent(org)}`,
+  imports: (org: string) => `${BOT}/imports/${encodeURIComponent(org)}`,
   nodes: `${BOT}/nodes`,
   events: (limit = 300) => `${RECON}/events?limit=${limit}`,
   deploys: (org: string) => `${BOT}/deploys/${encodeURIComponent(org)}`,
@@ -113,6 +125,13 @@ export const useProjects = () =>
   useQuery({ queryKey: ['projects'], queryFn: () => getJSON<ProjectSummary[]>(urls.projects) })
 export const useApps = (org: string) =>
   useQuery({ queryKey: ['apps', org], queryFn: () => getJSON<AppSummary[]>(urls.apps(org)) })
+export const useImports = (org: string) =>
+  useQuery({
+    queryKey: ['imports', org],
+    queryFn: () => getJSON<ImportStatus[]>(urls.imports(org)),
+    // Poll while anything is still importing; back off once it's all settled.
+    refetchInterval: (q) => (q.state.data?.some((i) => i.status === 'running') ? 2500 : false),
+  })
 export const useNodes = () =>
   useQuery({ queryKey: ['nodes'], queryFn: () => getJSON<PlatformNode[]>(urls.nodes) })
 export const useEvents = (limit = 300) =>

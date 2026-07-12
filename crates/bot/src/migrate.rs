@@ -52,6 +52,7 @@ pub async fn import_app(
 
     // Snapshot the source tree, add the MajNet CI workflows, and write it all as
     // one commit onto the new repo's `main`.
+    state.store.set_import(org, app, "running", "snapshot", &source.repo)?;
     let mut files = fetch_repo_snapshot(state, source).await?;
     anyhow::ensure!(!files.is_empty(), "source repo snapshot is empty");
     let platform = crate::dashboard_api::read_platform(state).await?;
@@ -59,7 +60,9 @@ pub async fn import_app(
         files.insert(path, content.into_bytes());
     }
 
+    state.store.set_import(org, app, "running", "repo", &source.repo)?;
     ensure_repo(&client, org, app).await?;
+    state.store.set_import(org, app, "running", "commit", &source.repo)?;
     commit_snapshot(
         &client,
         org,
@@ -72,13 +75,16 @@ pub async fn import_app(
 
     // The repo now exists → declaring it in project.yaml won't re-scaffold from
     // the template (org-sync skips existing repos).
+    state.store.set_import(org, app, "running", "configure", &source.repo)?;
     crate::dashboard_api::scaffold_and_declare(state, org, req, actor).await?;
 
     // Phase 2: import env vars as SOPS-encrypted secrets for the target class.
     if let Some(env_text) = source.env.as_deref().filter(|s| !s.trim().is_empty()) {
+        state.store.set_import(org, app, "running", "secrets", &source.repo)?;
         import_secrets(state, org, req, env_text).await?;
     }
 
+    state.store.clear_import(org, app)?;
     state.store.log_event(
         "app-import-done",
         Some(org),

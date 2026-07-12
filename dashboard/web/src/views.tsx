@@ -1,10 +1,36 @@
 import { Link, useParams } from '@tanstack/react-router'
-import { ChevronRight, Plus } from 'lucide-react'
-import { useApps, useDeploys, useEvents, useNodes, useProjects, useWhoami } from './api'
+import { ChevronRight, Plus, Loader2, CheckCircle2, Circle, AlertCircle } from 'lucide-react'
+import { useApps, useDeploys, useEvents, useImports, useNodes, useProjects, useWhoami, IMPORT_STEPS, type ImportStatus } from './api'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { DeployStatus, Empty, latestEventFor, QueryState, short, StatusBadge } from './ui'
+
+/** Step-by-step progress of an in-flight (or failed) app import. */
+export function ImportSteps({ status }: { status: ImportStatus }) {
+  const current = IMPORT_STEPS.findIndex((s) => s.key === status.step)
+  return (
+    <div className="flex flex-col gap-1.5">
+      {IMPORT_STEPS.map((s, i) => {
+        const done = current > i
+        const active = current === i
+        const failed = active && status.status === 'failed'
+        return (
+          <div key={s.key} className={`flex items-center gap-2 text-sm ${done ? 'text-muted-foreground' : active ? 'font-medium' : 'text-muted-foreground/50'}`}>
+            {failed ? <AlertCircle className="size-4 text-destructive" />
+              : done ? <CheckCircle2 className="size-4 text-primary" />
+              : active ? <Loader2 className="size-4 animate-spin text-primary" />
+              : <Circle className="size-4" />}
+            {s.label}
+          </div>
+        )
+      })}
+      {status.status === 'failed' && (
+        <p className="mt-1 rounded-md border border-destructive/40 bg-destructive/10 p-2 font-mono text-xs text-destructive">{status.detail}</p>
+      )}
+    </div>
+  )
+}
 
 export function Crumbs({ children }: { children: React.ReactNode }) {
   return <div className="mb-1.5 text-xs text-muted-foreground [&_a]:text-primary [&_a]:hover:underline">{children}</div>
@@ -65,9 +91,12 @@ export function ProjectDetail() {
   const projects = useProjects()
   const name = projects.data?.find((x) => x.org === org)?.name ?? org
   const apps = useApps(org)
+  const imports = useImports(org)
   const events = useEvents()
   const deploys = useDeploys(org)
   const pending = deploys.data?.length ?? 0
+  // Importing apps not yet declared in the manifest — shown as skeletons.
+  const importing = (imports.data ?? []).filter((i) => !apps.data?.some((a) => a.name === i.app))
 
   return (
     <>
@@ -81,7 +110,27 @@ export function ProjectDetail() {
       <h2 className="mb-2.5 text-sm font-semibold">Apps</h2>
       <QueryState isLoading={apps.isLoading} error={apps.error}>
         <div className="flex flex-col gap-2">
-          {apps.data?.length === 0 && <Empty>No apps yet — create one.</Empty>}
+          {apps.data?.length === 0 && importing.length === 0 && <Empty>No apps yet — create one.</Empty>}
+          {importing.map((imp) => (
+            <Link key={imp.app} to="/projects/$org/apps/$app" params={{ org, app: imp.app }}
+              className="flex items-center gap-3 rounded-lg border border-dashed bg-card/50 px-4 py-3 transition-colors hover:border-primary">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2 font-semibold">
+                  {imp.app}
+                  <Badge variant="outline" className={imp.status === 'failed' ? 'text-destructive' : 'text-muted-foreground'}>
+                    {imp.status === 'failed' ? 'import failed' : 'importing…'}
+                  </Badge>
+                </div>
+                <div className="mt-0.5 truncate font-mono text-xs text-muted-foreground">
+                  {IMPORT_STEPS.find((s) => s.key === imp.step)?.label ?? imp.step} · {short(imp.detail)}
+                </div>
+              </div>
+              {imp.status === 'failed'
+                ? <AlertCircle className="size-4 text-destructive" />
+                : <Loader2 className="size-4 animate-spin text-muted-foreground" />}
+              <ChevronRight className="size-4 text-muted-foreground/50" />
+            </Link>
+          ))}
           {apps.data?.map((a) => {
             const dm = [short(a.image), a.database].filter(Boolean).join('  ·  ')
             return (

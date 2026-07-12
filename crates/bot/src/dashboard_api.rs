@@ -598,6 +598,7 @@ pub async fn apps_post(
         tokio::spawn(async move {
             if let Err(e) = crate::migrate::import_app(&st, &org2, &req, &actor, &source).await {
                 tracing::error!(org = org2, app = req.name, error = format!("{e:#}"), "app import failed");
+                let _ = st.store.fail_import(&org2, &req.name, &format!("{e:#}"));
                 let _ = st.store.log_event(
                     "app-import-failed",
                     Some(&org2),
@@ -675,6 +676,15 @@ pub(crate) async fn scaffold_and_declare(
         &format!("{} [{}] by {actor}", req.name, req.classes.join(",")),
     )?;
     Ok(())
+}
+
+/// `GET /api/imports/{org}` — in-progress + failed app imports (ADR 0010), for
+/// the dashboard's "importing…" skeletons + step progress.
+pub async fn imports_get(
+    State(state): State<Arc<AppState>>,
+    Path(org): Path<String>,
+) -> Result<Json<Vec<crate::state::ImportStatus>>, ApiError> {
+    state.store.imports(&org).map(Json).map_err(bad_gateway)
 }
 
 // ── nodes ────────────────────────────────────────────────────────────────────

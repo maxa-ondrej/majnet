@@ -22,6 +22,21 @@ pub struct StoredRelease {
     pub published_at: String,
 }
 
+/// Live status of an in-progress (or failed) app import (ADR 0010) — the
+/// dashboard renders a skeleton + step progress from this until the app lands.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ImportStatus {
+    pub app: String,
+    /// `running` | `failed`.
+    pub status: String,
+    /// Current (or failed) step key: `snapshot` | `repo` | `commit` |
+    /// `configure` | `secrets`.
+    pub step: String,
+    /// Human detail — the source repo while running, the error when failed.
+    pub detail: String,
+    pub updated_at: String,
+}
+
 impl Store {
     pub fn open(dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(dir)?;
@@ -46,6 +61,15 @@ impl Store {
                  app_image TEXT NOT NULL,
                  published_at TEXT NOT NULL DEFAULT (datetime('now')),
                  PRIMARY KEY (org, app, version)
+             );
+             CREATE TABLE IF NOT EXISTS imports (
+                 org TEXT NOT NULL,
+                 app TEXT NOT NULL,
+                 status TEXT NOT NULL,
+                 step TEXT NOT NULL,
+                 detail TEXT NOT NULL DEFAULT '',
+                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                 PRIMARY KEY (org, app)
              );",
         )?;
         Ok(Self {
@@ -93,6 +117,72 @@ impl Store {
             rusqlite::params![org, app, version, commit, app_image],
         )?;
         Ok(())
+    }
+
+    /// Upsert the live import status for `org/app` (ADR 0010).
+    pub fn set_import(
+        &self,
+        org: &str,
+        app: &str,
+        status: &str,
+        step: &str,
+        detail: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO imports (org, app, status, step, detail)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(org, app) DO UPDATE SET
+                 status = excluded.status,
+                 step = excluded.step,
+                 detail = excluded.detail,
+                 updated_at = datetime('now')",
+            rusqlite::params![org, app, status, step, detail],
+        )?;
+        Ok(())
+    }
+
+    /// Mark the import failed, keeping the step it reached (so the UI shows
+    /// which step failed + the error).
+    pub fn fail_import(&self, org: &str, app: &str, detail: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE imports SET status = 'failed', detail = ?3, updated_at = datetime('now')
+             WHERE org = ?1 AND app = ?2",
+            rusqlite::params![org, app, detail],
+        )?;
+        Ok(())
+    }
+
+    /// Drop the import record (on success — the real app now appears normally).
+    pub fn clear_import(&self, org: &str, app: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM imports WHERE org = ?1 AND app = ?2",
+            [org, app],
+        )?;
+        Ok(())
+    }
+
+    /// In-progress + failed imports for `org`, newest first.
+    pub fn imports(&self, org: &str) -> Result<Vec<ImportStatus>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT app, status, step, detail, updated_at
+             FROM imports WHERE org = ?1 ORDER BY updated_at DESC",
+        )?;
+        let rows = stmt
+            .query_map([org], |row| {
+                Ok(ImportStatus {
+                    app: row.get(0)?,
+                    status: row.get(1)?,
+                    step: row.get(2)?,
+                    detail: row.get(3)?,
+                    updated_at: row.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     /// Releases for `org/app`, newest first.

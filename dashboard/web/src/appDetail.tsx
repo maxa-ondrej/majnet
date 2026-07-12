@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
-import { send, urls, useApps, useEvents, useManifest, useReleases, type ManifestFile } from './api'
+import { send, urls, useApps, useEvents, useImports, useManifest, useReleases, type ManifestFile } from './api'
 import { useApiMutation } from './mutations'
 import { ConfirmButton, DeployStatus, QueryState, short, StatusBadge } from './ui'
-import { Crumbs, PageHead } from './views'
+import { Crumbs, PageHead, ImportSteps } from './views'
 import { fromData, ManifestForm, toManifest, type ManifestDraft } from './manifestForm'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -21,6 +21,8 @@ export function AppDetail() {
   const { org, app } = useParams({ from: '/projects/$org/apps/$app' })
   const apps = useApps(org)
   const a = apps.data?.find((x) => x.name === app)
+  const imports = useImports(org)
+  const imp = imports.data?.find((x) => x.app === app)
   const manifest = useManifest(org, app)
   const events = useEvents()
   const appEvents = (events.data ?? []).filter((e) => e.action.trim().split(/\s+/).pop() === app)
@@ -41,6 +43,15 @@ export function AppDetail() {
           confirmText="Promote" onConfirm={() => deploy.mutate(() => send(urls.promote(org, app)))}>Promote → production</ConfirmButton>
       </PageHead>
 
+      {imp && (
+        <Card className="mb-4"><CardContent className="pt-6">
+          <h2 className="mb-3 text-sm font-semibold">
+            {imp.status === 'failed' ? 'Import failed' : 'Importing…'}
+          </h2>
+          <ImportSteps status={imp} />
+        </CardContent></Card>
+      )}
+
       {a && (
         <Card className="mb-4"><CardContent className="flex flex-col gap-2.5 pt-6">
           <Kv k="Deploy status"><span className="inline-flex items-center gap-2"><DeployStatus ev={appEvents[0]} />{appEvents[0] && <span className="text-muted-foreground">{appEvents[0].result} · {appEvents[0].at}</span>}</span></Kv>
@@ -53,7 +64,7 @@ export function AppDetail() {
 
       <Releases org={org} app={app} prodImage={prodImage} />
 
-      <QueryState isLoading={manifest.isLoading} error={manifest.error}>
+      <QueryState isLoading={manifest.isLoading} error={imp && !manifest.data ? undefined : manifest.error}>
         {manifest.data && <ManifestEditor org={org} app={app} files={manifest.data} />}
       </QueryState>
 
