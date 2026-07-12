@@ -1,6 +1,6 @@
 # ADR 0010 — App migration: importing apps from an external PaaS
 
-**Status:** proposed
+**Status:** accepted (implemented; phases 1–4)
 **Date:** 2026-07-12
 
 ## Context
@@ -113,8 +113,10 @@ Volume migration waits on first adding volume support to the core manifest.
 3. ✅ **Data restore** — `POST /api/migrate/{project}/{app}` restores a DB dump
    into the provisioned engine (postgres + mariadb SQL dumps), idempotent.
    Volumes deferred (no manifest volume support); Mongo/Valkey later. (reconciler)
-4. **Export helper + runbook** — `majnet-export` for the specific source PaaS;
-   the cutover checklist.
+4. ✅ **Export helper + runbook** — `bootstrap/majnet-export` (Docker-based, so
+   version-independent: exports app env via `docker inspect` + a `pg_dump` /
+   `mariadb-dump` of the DB container) and `docs/runbooks/app-migration.md` (the
+   maintenance-window cutover).
 
 ## Resolved
 

@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# majnet-export (ADR 0010 phase 4) — export an app's env + database from an
+# existing Coolify (or any plain-Docker) host into a MajNet migration bundle.
+#
+# Run this ON the old host: it talks to the local Docker daemon (Coolify runs
+# everything as Docker containers, so this is version-independent). It produces:
+#   <out>/<app>.env    the app's environment as dotenv — REVIEW before import
+#   <out>/<app>.dump   a SQL dump of the app's database (postgres | mariadb)
+#
+# Then in MajNet (see docs/runbooks/app-migration.md):
+#   1. New app -> "Import existing": paste <app>.env, give the old repo URL.
+#   2. After it deploys, restore the data during a maintenance window:
+#        curl -fsS -X POST \
+#          "http://10.88.0.1:9090/api/migrate/<project>/<app>?class=production&engine=postgres" \
+#          --data-binary @<out>/<app>.dump
+
+set -euo pipefail
+
+app="" app_container="" db_container="" engine="" out="."
+
+usage() {
+  cat <<'USAGE'
+Usage: majnet-export --app <name> --engine postgres|mariadb --db-container <name> \
+                     [--app-container <name>] [--out <dir>]
+
+  --app            app name (used for the output filenames)
+  --engine         postgres | mariadb
+  --db-container   Docker container running the app's database
+  --app-container  the app's container, to export its env vars (optional)
+  --out            output directory (default: current directory)
+USAGE
+  exit 1
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --app)           app="$2"; shift 2;;
+    --engine)        engine="$2"; shift 2;;
+    --db-container)  db_container="$2"; shift 2;;
+    --app-container) app_container="$2"; shift 2;;
+    --out)           out="$2"; shift 2;;
+    -h|--help)       usage;;
+    *) echo "unknown arg: $1" >&2; usage;;
+  esac
+done
+
+[ -n "$app" ] && [ -n "$engine" ] && [ -n "$db_container" ] || usage
+command -v docker >/dev/null 2>&1 || { echo "docker not found on PATH" >&2; exit 1; }
+mkdir -p "$out"
+
+# ── env ───────────────────────────────────────────────────────────────────────
+if [ -n "$app_container" ]; then
+  env_file="$out/$app.env"
+  echo "[majnet-export] exporting env from container '$app_container'"
+  {
+    echo "# Exported from $app_container by majnet-export."
+    echo "# REVIEW before importing: prune base-image defaults (PATH, LANG, HOME,"
+    echo "# container-runtime vars); keep app config + secrets. Everything left"
+    echo "# here is imported into MajNet as SOPS-encrypted secrets."
+    docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$app_container"
+  } > "$env_file"
+  echo "[majnet-export] wrote $env_file  (review + prune it)"
+else
+  echo "[majnet-export] no --app-container given; skipping env export"
+fi
+
+# ── database dump ──────────────────────────────────────────────────────────────
+dump_file="$out/$app.dump"
+echo "[majnet-export] dumping $engine from container '$db_container'"
+case "$engine" in
+  postgres)
+    # Uses the DB container's own POSTGRES_USER/DB so no credentials are passed.
+    # --clean --if-exists makes the dump safe to load into a fresh database.
+    docker exec "$db_container" sh -c \
+      'pg_dump --clean --if-exists -U "${POSTGRES_USER:-postgres}" "${POSTGRES_DB:-postgres}"' \
+      > "$dump_file"
+    ;;
+  mariadb|mysql)
+    docker exec "$db_container" sh -c \
+      'mariadb-dump -uroot -p"${MARIADB_ROOT_PASSWORD:-${MYSQL_ROOT_PASSWORD:-}}" "${MARIADB_DATABASE:-${MYSQL_DATABASE:-}}"' \
+      > "$dump_file"
+    ;;
+  *)
+    echo "unsupported engine '$engine' (postgres | mariadb)" >&2
+    exit 1
+    ;;
+esac
+echo "[majnet-export] wrote $dump_file  ($(wc -c < "$dump_file" | tr -d ' ') bytes)"
+
+cat <<EOF
+
+[majnet-export] done. Next steps:
+  1. MajNet dashboard -> New app -> "Import existing":
+       - Old repo URL: the app's GitHub repo (+ a read token if private)
+       - Environment variables: paste the reviewed contents of ${env_file:-<app>.env}
+  2. After it deploys, restore the data during a maintenance window, from a
+     WireGuard-connected host (e.g. the main node):
+       curl -fsS -X POST \\
+         "http://10.88.0.1:9090/api/migrate/<project>/$app?class=production&engine=$engine" \\
+         --data-binary @$dump_file
+  See docs/runbooks/app-migration.md for the full cutover.
+EOF
