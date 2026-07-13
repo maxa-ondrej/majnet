@@ -82,7 +82,7 @@ pub async fn on_package_published(
 
 /// A `vX.Y.Z` release tag: `v` followed by a digit (excludes `latest`, `valkey`,
 /// `sha-…`). The full semver shape is validated downstream by the git tag.
-fn is_version_tag(tag: &str) -> bool {
+pub(crate) fn is_version_tag(tag: &str) -> bool {
     tag.strip_prefix('v')
         .and_then(|rest| rest.chars().next())
         .is_some_and(|c| c.is_ascii_digit())

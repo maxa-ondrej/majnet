@@ -114,6 +114,10 @@ async fn main() -> Result<()> {
         )
         .route("/api/releases/{org}/{app}", get(releases::list))
         .route(
+            "/api/releases/{org}/{app}/backfill",
+            post(releases::backfill_post),
+        )
+        .route(
             "/api/releases/{org}/{app}/promote/{version}",
             post(releases::promote),
         )

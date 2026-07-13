@@ -102,10 +102,17 @@ function Releases({ org, app, prodImage }: { org: string; app: string; prodImage
 
   return (
     <Card className="mb-4"><CardContent className="pt-6">
-      <h2 className="mb-2 text-sm font-semibold">Releases</h2>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold">Releases</h2>
+        <Button variant="outline" size="sm" disabled={m.isPending}
+          title="Recover any vX.Y.Z publishes the registry_package webhook missed"
+          onClick={() => m.mutate(() => send(urls.releaseBackfill(org, app)))}>
+          Backfill from registry
+        </Button>
+      </div>
       {releases.length === 0 && (
         <p className="text-sm text-muted-foreground">
-          No releases yet. Tag <code className="font-mono">vX.Y.Z</code> in the app repo to publish one.
+          No releases yet. Tag <code className="font-mono">vX.Y.Z</code> in the app repo to publish one, or Backfill from the registry.
         </p>
       )}
       <div className="flex flex-col gap-2">

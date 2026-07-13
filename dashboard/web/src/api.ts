@@ -113,6 +113,8 @@ export const urls = {
   releases: (org: string, app: string) => `${BOT}/releases/${encodeURIComponent(org)}/${encodeURIComponent(app)}`,
   releasePromote: (org: string, app: string, version: string) =>
     `${BOT}/releases/${encodeURIComponent(org)}/${encodeURIComponent(app)}/promote/${encodeURIComponent(version)}`,
+  releaseBackfill: (org: string, app: string) =>
+    `${BOT}/releases/${encodeURIComponent(org)}/${encodeURIComponent(app)}/backfill`,
   version: `${BOT}/platform/version`,
   registry: `${BOT}/platform/registry`,
   setupEnroll: '/api/setup/enroll.json',

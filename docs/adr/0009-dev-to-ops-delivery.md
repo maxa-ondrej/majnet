@@ -136,10 +136,12 @@ inside the app image**: `promote vX.Y.Z` pins that image, and the reconciler's
 
 ## Open items
 
-- **Release backfill** — a missed `registry_package` for a `vX.Y.Z` tag leaves
-  the store (and stable) unaware of that release, with no self-heal. A periodic
-  reconcile from **GHCR package versions** (tag→digest is authoritative there)
-  would recover it. Deferred: needs `packages:read` on the installation token,
-  and version-tag publishes are rare + operator-visible.
+- ✅ **Release backfill** — a missed `registry_package` for a `vX.Y.Z` tag left
+  the store (and stable) unaware of that release with no self-heal. Recovered
+  on demand: `releases::backfill` enumerates **GHCR package versions**
+  (tag→digest is authoritative there) and records any missing version-tagged
+  one; exposed as `POST /api/releases/{org}/{app}/backfill` (Developer-gated)
+  with a "Backfill from registry" button on the app's Releases panel. Needs
+  `packages:read` on the installation token (already requested).
 - Production promote: allow any release, or only newer-than-current?
 - `ephemeral` still builds per-PR; confirm it stays digest-from-PR-build (yes).

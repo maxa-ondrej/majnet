@@ -75,6 +75,76 @@ async fn track_stable(state: &AppState, org: &str, app: &str) -> Result<()> {
     Ok(())
 }
 
+/// Backfill releases for `org/app` from GHCR package versions (ADR 0009 open
+/// item). The `registry_package` webhook is the fast path, but a missed
+/// delivery leaves the store (and stable) unaware of a `vX.Y.Z` publish with no
+/// self-heal. The tag→digest map on the registry is authoritative, so this
+/// enumerates every container version, and records each version-tagged one that
+/// isn't already known (idempotent — `record` upserts + re-tracks stable).
+/// Returns how many *new* releases were recorded. Needs `packages:read` on the
+/// installation token.
+pub async fn backfill(state: &AppState, org: &str, app: &str) -> Result<usize> {
+    let mut known: std::collections::HashSet<String> = state
+        .store
+        .releases(org, app)?
+        .into_iter()
+        .map(|r| r.version)
+        .collect();
+    let client = state.github.org_client(org).await?;
+    let mut recorded = 0;
+    // Paginate defensively (cap at 10×100 versions) so a huge package can't spin
+    // forever; a break on a short page ends it early.
+    for page in 1..=10u32 {
+        let versions: Vec<serde_json::Value> = client
+            .get(
+                format!(
+                    "/orgs/{org}/packages/container/{app}/versions?per_page=100&page={page}"
+                ),
+                None::<&()>,
+            )
+            .await
+            .context("listing GHCR package versions (needs packages:read)")?;
+        let count = versions.len();
+        for v in &versions {
+            let Some(digest) = v["name"].as_str().filter(|d| d.starts_with("sha256:")) else {
+                continue;
+            };
+            let Some(tags) = v["metadata"]["container"]["tags"].as_array() else {
+                continue;
+            };
+            for tag in tags.iter().filter_map(|t| t.as_str()) {
+                if crate::digest::is_version_tag(tag) && known.insert(tag.to_string()) {
+                    let image = format!("ghcr.io/{org}/{app}@{digest}");
+                    record(state, org, app, tag, &image).await?;
+                    recorded += 1;
+                }
+            }
+        }
+        if count < 100 {
+            break;
+        }
+    }
+    tracing::info!(org, app, recorded, "release backfill complete");
+    Ok(recorded)
+}
+
+/// `POST /api/releases/{org}/{app}/backfill` — recover missed releases from the
+/// registry (ADR 0009 open item). Developer-gated (a stable-class recovery, not
+/// a production change — production still moves only via promote).
+pub async fn backfill_post(
+    State(state): State<Arc<AppState>>,
+    Path((org, app)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<String, ApiError> {
+    crate::authz::require(&state, &headers, &org, Role::Developer)
+        .await
+        .map_err(|e| (StatusCode::FORBIDDEN, format!("{e:#}")))?;
+    let n = backfill(&state, &org, &app)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
+    Ok(format!("backfilled {n} release(s) for {app} from the registry"))
+}
+
 /// `GET /api/releases/{org}/{app}` — recorded releases, newest first.
 pub async fn list(
     State(state): State<Arc<AppState>>,
