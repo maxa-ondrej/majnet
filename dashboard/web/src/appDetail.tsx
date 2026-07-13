@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
 import { send, urls, useApps, useAppSecrets, useEvents, useImports, useManifest, useProjects, useReleases, type ManifestFile } from './api'
 import { useApiMutation } from './mutations'
-import { ConfirmButton, DeployStatus, QueryState, short, StatusBadge } from './ui'
+import { ConfirmButton, DeployStatus, ExtLink, QueryState, short, StatusBadge } from './ui'
 import { Crumbs, PageHead, ImportSteps } from './views'
 import { fromData, ManifestForm, toManifest, type ManifestDraft } from './manifestForm'
 import { Button } from '@/components/ui/button'
@@ -74,7 +74,11 @@ export function AppDetail() {
         <Card className="mb-4"><CardContent className="flex flex-col gap-2.5 pt-6">
           <Kv k="Deploy status"><span className="inline-flex items-center gap-2"><DeployStatus ev={appEvents[0]} />{appEvents[0] && <span className="text-muted-foreground">{appEvents[0].result} · {appEvents[0].at}</span>}</span></Kv>
           <Kv k="Classes">{a.classes.join(', ') || '—'}</Kv>
-          <Kv k="Domains">{a.domains.join(', ') || '—'}</Kv>
+          <Kv k="Domains">
+            {a.domains.length
+              ? a.domains.map((d, i) => <span key={d}>{i > 0 && ', '}<ExtLink to={d} /></span>)
+              : '—'}
+          </Kv>
           <Kv k="Image">{short(a.image)}</Kv>
           {a.database && (
             <Kv k="Database">

@@ -4,7 +4,7 @@ import { useApps, useDeploys, useEvents, useImports, useNodes, useProjects, useW
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { DeployStatus, Empty, latestEventFor, QueryState, short, StatusBadge } from './ui'
+import { DeployStatus, Empty, ExtLink, latestEventFor, QueryState, short, StatusBadge } from './ui'
 
 /** Step-by-step progress of an in-flight (or failed) app import. */
 export function ImportSteps({ status }: { status: ImportStatus }) {
@@ -134,19 +134,21 @@ export function ProjectDetail() {
           {apps.data?.map((a) => {
             const dm = [short(a.image), a.database].filter(Boolean).join('  ·  ')
             return (
-              <Link key={a.name} to="/projects/$org/apps/$app" params={{ org, app: a.name }}
+              <div key={a.name}
                 className="flex items-center gap-3 rounded-lg border bg-card px-4 py-3 transition-colors hover:border-primary">
-                <div className="min-w-0 flex-1">
+                <Link to="/projects/$org/apps/$app" params={{ org, app: a.name }} className="flex min-w-0 flex-1 flex-col">
                   <div className="flex flex-wrap items-center gap-2 font-semibold">
                     {a.name}
                     {a.classes.map((c) => <Badge key={c} variant="secondary" className="text-primary bg-accent">{c}</Badge>)}
                   </div>
                   <div className="mt-0.5 truncate font-mono text-xs text-muted-foreground">{dm || '—'}</div>
-                </div>
-                {a.host && <span className="font-mono text-xs text-muted-foreground max-sm:hidden">{a.host}</span>}
+                </Link>
+                {a.host && <ExtLink to={a.host} className="font-mono text-xs max-sm:hidden">{a.host}</ExtLink>}
                 <DeployStatus ev={latestEventFor(events.data, name, a.name)} />
-                <ChevronRight className="size-4 text-muted-foreground/50" />
-              </Link>
+                <Link to="/projects/$org/apps/$app" params={{ org, app: a.name }} aria-label={`Open ${a.name}`}>
+                  <ChevronRight className="size-4 text-muted-foreground/50" />
+                </Link>
+              </div>
             )
           })}
         </div>

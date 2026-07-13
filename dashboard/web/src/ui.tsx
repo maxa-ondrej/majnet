@@ -12,6 +12,19 @@ import type { Event } from './api'
 export const short = (img: string | null | undefined) =>
   String(img ?? '').replace(/(@sha256:[0-9a-f]{8})[0-9a-f]+/, '$1…')
 
+/// A hostname/URL rendered as a link that opens the site in a new tab. A bare
+/// host (`app.example.com`) gets an `https://` scheme; anything already a URL is
+/// used as-is. Shows a `↗` affordance.
+export function ExtLink({ to, children, className }: { to: string; children?: ReactNode; className?: string }) {
+  const href = /^https?:\/\//.test(to) ? to : `https://${to}`
+  return (
+    <a href={href} target="_blank" rel="noreferrer"
+      className={cn('text-primary underline-offset-2 hover:underline', className)}>
+      {children ?? to}<span aria-hidden className="ml-0.5 opacity-60">↗</span>
+    </a>
+  )
+}
+
 export const latestEventFor = (events: Event[] | undefined, project: string, app: string) =>
   (events ?? []).find((e) => e.project === project && e.action.trim().split(/\s+/).pop() === app)
 
