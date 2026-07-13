@@ -1,0 +1,47 @@
+---
+title: MajNet
+description: A self-hosted, GitOps-driven deployment platform built on plain Docker.
+template: splash
+hero:
+  tagline: Ship apps to your own hardware the way a PaaS should feel — git is the source of truth, and every deploy is a commit.
+  actions:
+    - text: Read the overview
+      link: /overview/
+      icon: right-arrow
+    - text: View on GitHub
+      link: https://github.com/maxa-ondrej/majnet
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## Why MajNet
+
+<CardGrid stagger>
+	<Card title="GitOps by default" icon="git-pull-request">
+		Every state change is a commit or PR on a git repo. `git log` *is* your
+		deploy history — no imperative drift, no clicking around a UI to change prod.
+	</Card>
+	<Card title="Plain Docker, no scheduler" icon="docker">
+		Static placement by trust zone — each workload has exactly one home node.
+		No Swarm, no Kubernetes, no quorum. A single reconciler drives each node's
+		Docker API directly.
+	</Card>
+	<Card title="A project = a GitHub org" icon="github">
+		Repos, teams, members, webhooks, and app scaffolding are fully bot-managed
+		and declarative. Declare an app; the platform materializes the rest.
+	</Card>
+	<Card title="Environment classes" icon="list-format">
+		`production` (public, review-gated), `stable`/`testing` (VPN, auto-deploy),
+		and `ephemeral` (per-PR previews with a TTL) — placement follows the class.
+	</Card>
+	<Card title="Secrets & managed databases" icon="approve-check">
+		SOPS + age secrets that rendering never decrypts, and managed Postgres /
+		MariaDB / Valkey / MongoDB with per-project logical DBs and backups.
+	</Card>
+	<Card title="Credential isolation" icon="setting">
+		The GitHub/Tailscale liaison and the node/secrets orchestrator hold
+		strictly separate credentials — neither can read the other's.
+	</Card>
+</CardGrid>
