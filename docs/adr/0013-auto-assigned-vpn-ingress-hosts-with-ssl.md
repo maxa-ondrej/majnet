@@ -1,6 +1,6 @@
 # 0013 — Auto-assigned VPN ingress hosts with SSL
 
-**Status:** accepted · **Date:** 2026-07-13 · Phases 1–2 done; 3–4 pending the private node
+**Status:** accepted · **Date:** 2026-07-13 · Phases 1–3 coded; 4 next. 3 unverified until the private node is enrolled
 
 ## Context
 
@@ -154,8 +154,14 @@ edits inside the bot's existing Cloudflare + Tailscale ownership.)*
    `platform/ingress-certs/{project}.{crt,key.age}`; hooked into org-sync
    per synced project (non-fatal), committing only on change, renewing inside a
    30-day window. Config: `MAJNET_ACME_EMAIL` (+ `MAJNET_ACME_STAGING`).
-3. **Reconciler: install the cert.** `ensure_ingress` decrypts + delivers the
-   wildcard + Traefik file-provider default-cert config; recreate on change.
+3. ✅ **Reconciler: install the cert.** `ensure_ingress` decrypts
+   `{project}.key.age` (age-production key), delivers `wildcard.{crt,key}` +
+   a Traefik file-provider config setting `tls.stores.default.defaultCertificate`
+   into per-project host dirs (via the `platform::deliver_files` helper), adds
+   the file provider + mounts to the ingress Traefik, and recreates it on a
+   cert-hash change (`majnet.config-hash` label). No committed cert → Traefik
+   still comes up on its self-signed default (untrusted). *Code-complete;
+   unverified until the private node runs it.*
 4. **Split DNS.** Bot ensures the `*.{project}.{base_domain}` → MagicDNS CNAME.
 
 ## Consequences

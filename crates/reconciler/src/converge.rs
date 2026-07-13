@@ -62,7 +62,8 @@ pub async fn converge_all(state: &AppState) -> Result<()> {
     for project in &projects.projects {
         for class in CLASSES {
             if let Err(e) =
-                converge_project_class(state, &nodes, &project.name, &project.org, class).await
+                converge_project_class(state, &nodes, &platform, &project.name, &project.org, class)
+                    .await
             {
                 tracing::error!(
                     project = project.name,
@@ -79,6 +80,7 @@ pub async fn converge_all(state: &AppState) -> Result<()> {
 async fn converge_project_class(
     state: &AppState,
     nodes: &NodesFile,
+    platform: &crate::snapshot::Snapshot,
     project: &str,
     org: &str,
     class: EnvClass,
@@ -99,7 +101,7 @@ async fn converge_project_class(
     // VPN-only classes are served through the project's tailnet ingress (§7).
     // Local smoke tests have no tailnet — skip.
     if class.node_role() == "private" && !state.config.docker_local {
-        if let Err(e) = crate::ingress::ensure_ingress(state, &docker, project).await {
+        if let Err(e) = crate::ingress::ensure_ingress(state, &docker, project, platform).await {
             // Ingress trouble must not block app convergence — apps still
             // deploy; access returns when the ingress recovers.
             tracing::error!(project, error = format!("{e:#}"), "ingress ensure failed");

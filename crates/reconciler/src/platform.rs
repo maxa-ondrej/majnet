@@ -411,7 +411,7 @@ fn config_hash(config: &BTreeMap<String, Vec<u8>>, certs: &BTreeMap<String, Vec<
 }
 
 /// Decrypt an age ciphertext with the `age-production` key via the `age` binary.
-async fn age_decrypt(age_key_dir: &Path, ciphertext: &[u8]) -> Result<String> {
+pub(crate) async fn age_decrypt(age_key_dir: &Path, ciphertext: &[u8]) -> Result<String> {
     use tokio::io::AsyncWriteExt;
     let key = age_key_dir.join("age-production.key");
     let mut child = tokio::process::Command::new("age")
@@ -498,7 +498,7 @@ async fn ensure_image(docker: &Docker, image: &str) -> Result<()> {
 
 /// Deliver `files` (relative paths, may include subdirs) into host `dir` on the
 /// node via a short-lived helper container (same mechanism as secrets).
-async fn deliver_files(
+pub(crate) async fn deliver_files(
     docker: &Docker,
     dir: &str,
     files: &BTreeMap<String, Vec<u8>>,
