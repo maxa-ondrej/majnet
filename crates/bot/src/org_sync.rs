@@ -133,10 +133,7 @@ pub async fn sync_org(
         protect_app_main(&client, org, &app.name).await?;
     }
     for (repo, archived) in &existing {
-        // Never touch the ops repo or the platform config repo (the latter is
-        // only present when the root org is mistakenly registered as a project —
-        // archiving it takes the whole platform read-only).
-        if repo == "ops" || repo == "platform" {
+        if is_reserved_repo(repo, org) {
             continue;
         }
         let declared = project.apps.iter().any(|a| &a.name == repo);
@@ -479,4 +476,39 @@ async fn list_org_repos(client: &octocrab::Octocrab, org: &str) -> Result<BTreeM
         }
     }
     Ok(repos)
+}
+
+/// Repos in a project org that org-sync must never manage as apps (and so must
+/// never archive). Archiving any of these is destructive:
+/// - `ops`: the project's own config repo (the source of truth this loop reads).
+/// - `platform`: present only if the root org is mistakenly registered as a
+///   project — archiving it takes the whole platform read-only.
+/// - `<org>` (the org's eponymous repo): MajNet dogfooding itself keeps the
+///   control-plane source at `<org>/<org>` (e.g. `majnet/majnet`) inside the
+///   same org that is also a registered project. It is not an app.
+fn is_reserved_repo(repo: &str, org: &str) -> bool {
+    repo == "ops" || repo == "platform" || repo == org
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_reserved_repo;
+
+    #[test]
+    fn reserves_ops_platform_and_eponymous_source_repo() {
+        // Never archived, regardless of project.yaml.
+        assert!(is_reserved_repo("ops", "majnet"));
+        assert!(is_reserved_repo("platform", "majnet"));
+        assert!(is_reserved_repo("majnet", "majnet")); // the dogfood source repo
+    }
+
+    #[test]
+    fn ordinary_app_repos_are_managed() {
+        // These are archived when absent from project.yaml.
+        assert!(!is_reserved_repo("website", "majnet"));
+        assert!(!is_reserved_repo("space-alert", "majksa-projects"));
+        // The eponymous carve-out is org-specific: a repo named after a
+        // different org is still an ordinary app.
+        assert!(!is_reserved_repo("majnet", "majksa-projects"));
+    }
 }
