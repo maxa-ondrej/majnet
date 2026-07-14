@@ -69,8 +69,11 @@ pub async fn gather(state: &AppState) -> Result<Vec<NodeMetrics>> {
             kernel: String::new(),
             apps: Vec::new(),
         };
-        match tokio::time::timeout(Duration::from_secs(8), collect(state, &nodes, node, &mut m))
-            .await
+        match tokio::time::timeout(
+            Duration::from_secs(20),
+            collect(state, &nodes, node, &mut m),
+        )
+        .await
         {
             Ok(Ok(())) => m.reachable = true,
             Ok(Err(e)) => m.error = Some(format!("{e:#}")),
@@ -123,43 +126,49 @@ async fn collect(
             ..Default::default()
         }))
         .await?;
-    for c in list {
-        let name = c
-            .names
-            .as_ref()
-            .and_then(|n| n.first())
-            .map(|s| s.trim_start_matches('/').to_string())
-            .unwrap_or_default();
-        let mut cm = ContainerMetric {
-            name,
-            image: c.image.clone().unwrap_or_default(),
-            state: c
-                .state
-                .map(|s| format!("{s:?}").to_lowercase())
-                .unwrap_or_default(),
-            cpu_pct: 0.0,
-            mem_used: 0,
-            mem_limit: 0,
-        };
-        if let Some(id) = &c.id {
-            let mut s = docker.stats(
-                id,
-                Some(bollard::query_parameters::StatsOptions {
-                    stream: false,
-                    one_shot: false,
-                }),
-            );
-            if let Ok(Some(Ok(stat))) = tokio::time::timeout(Duration::from_secs(3), s.next()).await
-            {
-                if let Ok(v) = serde_json::to_value(&stat) {
-                    cm.cpu_pct = cpu_percent(&v);
-                    cm.mem_used = v["memory_stats"]["usage"].as_u64().unwrap_or(0);
-                    cm.mem_limit = v["memory_stats"]["limit"].as_u64().unwrap_or(0);
+    // Per-container stats concurrently — a one-shot `stats` read blocks ~1s each,
+    // so serially over many containers would blow the node budget.
+    m.apps = futures_util::future::join_all(list.into_iter().map(|c| {
+        let docker = docker.clone();
+        async move {
+            let mut cm = ContainerMetric {
+                name: c
+                    .names
+                    .as_ref()
+                    .and_then(|n| n.first())
+                    .map(|s| s.trim_start_matches('/').to_string())
+                    .unwrap_or_default(),
+                image: c.image.clone().unwrap_or_default(),
+                state: c
+                    .state
+                    .map(|s| format!("{s:?}").to_lowercase())
+                    .unwrap_or_default(),
+                cpu_pct: 0.0,
+                mem_used: 0,
+                mem_limit: 0,
+            };
+            if let Some(id) = &c.id {
+                let mut s = docker.stats(
+                    id,
+                    Some(bollard::query_parameters::StatsOptions {
+                        stream: false,
+                        one_shot: false,
+                    }),
+                );
+                if let Ok(Some(Ok(stat))) =
+                    tokio::time::timeout(Duration::from_secs(4), s.next()).await
+                {
+                    if let Ok(v) = serde_json::to_value(&stat) {
+                        cm.cpu_pct = cpu_percent(&v);
+                        cm.mem_used = v["memory_stats"]["usage"].as_u64().unwrap_or(0);
+                        cm.mem_limit = v["memory_stats"]["limit"].as_u64().unwrap_or(0);
+                    }
                 }
             }
+            cm
         }
-        m.apps.push(cm);
-    }
+    }))
+    .await;
     Ok(())
 }
 

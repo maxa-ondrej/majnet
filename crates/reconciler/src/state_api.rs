@@ -173,10 +173,20 @@ async fn logs_inner(
         .context("no node for class")?;
     let docker = state.nodes(&nodes).client_for(node).await?;
 
+    // Container labels use the project NAME; the dashboard passes the org (they
+    // differ, e.g. org majksa-projects → project demo). Resolve via projects.yaml.
+    let proj_name = platform
+        .files
+        .get("projects.yaml")
+        .and_then(|b| serde_yaml::from_slice::<majnet_common::platform::ProjectsFile>(b).ok())
+        .and_then(|pf| pf.projects.into_iter().find(|p| p.org == project))
+        .map(|p| p.name)
+        .unwrap_or_else(|| project.to_string());
+
     let filters = std::collections::HashMap::from([(
         "label".to_string(),
         vec![
-            format!("{}={}", crate::deploy::LABEL_PROJECT, project),
+            format!("{}={}", crate::deploy::LABEL_PROJECT, proj_name),
             format!("{}={}", crate::deploy::LABEL_APP, app),
             format!("{}={}", crate::deploy::LABEL_CLASS, class.as_str()),
         ],
