@@ -1194,15 +1194,14 @@ pub async fn app_rename_post(
         );
     }
     let message = format!("rename app {app} → {new} via dashboard by {actor}");
-    let commit = commit_ops_tree(&state, &org, &changes, &message)
+    commit_ops_tree(&state, &org, &changes, &message)
         .await
         .map_err(bad_gateway)?;
 
-    // 3. Render now (auto-merges non-production) + merge the production render
-    //    PR(s) for the app's classes — the admin authorized by renaming.
-    crate::render::on_ops_main_push(&state, &org, &commit)
-        .await
-        .map_err(bad_gateway)?;
+    // 3. The ops-main push drives the render pipeline (the push webhook renders +
+    //    org-syncs, exactly like a manifest edit): non-production auto-merges;
+    //    wait for the production render PR(s) to appear and merge them — the
+    //    admin authorized this by initiating the rename.
     let merged = merge_render_prs(&state, &org, &app_classes(&manifests))
         .await
         .map_err(bad_gateway)?;
@@ -1297,7 +1296,10 @@ async fn commit_ops_tree(
 }
 
 /// Merge the open production render PR(s) for the given classes (non-production
-/// classes auto-merge at render). Returns the classes actually deployed.
+/// classes auto-merge at render). The render runs asynchronously off the ops
+/// push, so poll for each class's PR to appear before merging. Returns the
+/// classes actually deployed; a class whose PR never appears is left for the
+/// operator to merge in Deployments (rather than failing the whole rename).
 async fn merge_render_prs(state: &AppState, org: &str, classes: &[EnvClass]) -> Result<Vec<String>> {
     let client = state.github.org_client(org).await?;
     let repo = format!("/repos/{org}/ops");
@@ -1306,8 +1308,37 @@ async fn merge_render_prs(state: &AppState, org: &str, classes: &[EnvClass]) -> 
         if class.auto_merges() {
             continue;
         }
-        let env_branch = class.env_branch();
-        let render_branch = format!("render/{}", class.as_str());
+        match find_open_render_pr(&client, &repo, org, *class).await? {
+            Some(number) => {
+                merge_pr_with_retry(&client, &repo, number).await?;
+                merged.push(class.as_str().to_string());
+            }
+            None => tracing::warn!(
+                org,
+                class = class.as_str(),
+                "render PR did not appear in time — merge it in Deployments to finish the deploy"
+            ),
+        }
+    }
+    Ok(merged)
+}
+
+/// Poll for the open render PR of a class (`render/<class>` → `env/<class>`).
+/// The render is triggered asynchronously by the ops-main push webhook, so the
+/// PR appears a beat later, and GitHub's PR list is eventually consistent right
+/// after creation — hence the retry.
+async fn find_open_render_pr(
+    client: &octocrab::Octocrab,
+    repo: &str,
+    org: &str,
+    class: EnvClass,
+) -> Result<Option<u64>> {
+    let env_branch = class.env_branch();
+    let render_branch = format!("render/{}", class.as_str());
+    for attempt in 0..20 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
         let open: serde_json::Value = client
             .get(
                 format!("{repo}/pulls?state=open&base={env_branch}&head={org}:{render_branch}"),
@@ -1315,12 +1346,10 @@ async fn merge_render_prs(state: &AppState, org: &str, classes: &[EnvClass]) -> 
             )
             .await?;
         if let Some(pr) = open.as_array().and_then(|p| p.first()) {
-            let number = pr["number"].as_u64().context("render PR has no number")?;
-            merge_pr_with_retry(&client, &repo, number).await?;
-            merged.push(class.as_str().to_string());
+            return Ok(Some(pr["number"].as_u64().context("render PR has no number")?));
         }
     }
-    Ok(merged)
+    Ok(None)
 }
 
 /// Merge a render PR, retrying while GitHub computes mergeability. A merge
