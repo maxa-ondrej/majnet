@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, useParams } from '@tanstack/react-router'
+import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { send, urls, useApps, useAppLogs, useAppSecrets, useEvents, useImports, useManifest, useProjects, useReleases, type ManifestFile } from './api'
 import { useApiMutation } from './mutations'
 import { ConfirmButton, DeployStatus, ExtLink, QueryState, short, StatusBadge } from './ui'
@@ -52,6 +52,7 @@ export function AppDetail() {
           confirmText="Roll back" onConfirm={() => deploy.mutate(() => send(urls.rollback(org)))}>Roll back</ConfirmButton>
         <ConfirmButton size="sm" title={`Promote ${app} to production?`} description="An admin still merges the render PR in Deployments."
           confirmText="Promote" onConfirm={() => deploy.mutate(() => send(urls.promote(org, app)))}>Promote → production</ConfirmButton>
+        <RenameControl org={org} app={app} stateful={!!a?.database} />
       </PageHead>
 
       {imp && (
@@ -171,6 +172,31 @@ function Releases({ org, app, prodImage }: { org: string; app: string; prodImage
         })}
       </div>
     </CardContent></Card>
+  )
+}
+
+// ── rename an app (repo + manifests in one commit, then deploy) ───────────────
+function RenameControl({ org, app, stateful }: { org: string; app: string; stateful: boolean }) {
+  const [name, setName] = useState('')
+  const navigate = useNavigate()
+  const m = useApiMutation({
+    invalidate: [['apps', org], ['projects'], ['deploys', org], ['events']],
+    onDone: () => navigate({ to: '/projects/$org/apps/$app', params: { org, app: name } }),
+  })
+  const valid = /^[a-z0-9-]+$/.test(name) && name !== app
+  return (
+    <div className="flex items-center gap-2">
+      <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="new-name" className="h-8 w-40" aria-label="new app name" />
+      <ConfirmButton variant="outline" size="sm" disabled={!valid || m.isPending}
+        title={`Rename ${app} → ${name}?`}
+        description={stateful
+          ? 'This app has a managed database — data-preserving rename for stateful apps is not enabled yet, so this will be refused.'
+          : 'Renames the source repo and moves the app’s manifests in one ops commit, then re-renders. Non-production deploys immediately; production merges its render PR.'}
+        confirmText="Rename"
+        onConfirm={() => m.mutate(() => send(urls.appRename(org, app), { json: { new: name } }))}>
+        Rename
+      </ConfirmButton>
+    </div>
   )
 }
 

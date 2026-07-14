@@ -141,6 +141,8 @@ export const urls = {
   rollback: (org: string) => `${BOT}/rollback/${encodeURIComponent(org)}`,
   restart: (org: string, cls: string, app: string) =>
     `${RECON}/restart/${encodeURIComponent(org)}/${encodeURIComponent(cls)}/${encodeURIComponent(app)}`,
+  appRename: (org: string, app: string) =>
+    `${BOT}/apps/${encodeURIComponent(org)}/${encodeURIComponent(app)}/rename`,
 }
 
 // ── query hooks ──────────────────────────────────────────────────────────────

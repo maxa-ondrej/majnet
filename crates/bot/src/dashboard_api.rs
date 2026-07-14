@@ -11,6 +11,7 @@ use majnet_common::manifest::AppManifest;
 use majnet_common::merge::merge;
 use majnet_common::platform::{Node, NodesFile, ProjectRegistryEntry, ProjectsFile};
 use majnet_common::project::{AppDecl, Member, ProjectConfig, Role};
+use majnet_common::EnvClass;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -1098,6 +1099,236 @@ pub async fn secrets_post(
     ))
 }
 
+// ── rename ─────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct RenameReq {
+    pub new: String,
+}
+
+/// `POST /api/apps/{org}/{app}/rename` — rename an app in place (admin). Renames
+/// the GitHub source repo (if any), moves `apps/<old>/*` → `apps/<new>/*` and
+/// rewrites `project.yaml` in one ops-`main` commit, then renders + merges the
+/// production render PR(s). Stateful apps (persistent volume or managed DB) are
+/// refused here — their data-preserving rename is a separate step (M2).
+pub async fn app_rename_post(
+    State(state): State<Arc<AppState>>,
+    Path((org, app)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(req): Json<RenameReq>,
+) -> Result<String, ApiError> {
+    check_name(&app)?;
+    let new = req.new.trim().to_string();
+    check_name(&new)?;
+    if new == app {
+        return Err(bad_request("new name is the same as the current name"));
+    }
+    let actor = crate::authz::require(&state, &headers, &org, Role::Admin)
+        .await
+        .map_err(|e| (StatusCode::FORBIDDEN, format!("{e:#}")))?;
+
+    // Current app files (manifests + secrets), keyed by path relative to
+    // `apps/<app>/`. Refuse if the app is missing or the target already exists.
+    let dir = app_dir_files(&state, &org, &app).await.map_err(bad_gateway)?;
+    if dir.is_empty() {
+        return Err(bad_request(format!("app {app} not found")));
+    }
+    if !app_dir_files(&state, &org, &new)
+        .await
+        .map(|d| d.is_empty())
+        .unwrap_or(true)
+    {
+        return Err(bad_request(format!("app {new} already exists")));
+    }
+
+    // M1 guard: refuse stateful apps rather than orphan their volume/DB data —
+    // data-preserving rename ships separately.
+    let manifests: BTreeMap<String, String> = dir
+        .iter()
+        .filter(|(p, _)| MANIFEST_FILES.contains(&p.as_str()))
+        .map(|(p, b)| Ok((p.clone(), String::from_utf8(b.clone())?)))
+        .collect::<Result<_>>()
+        .map_err(bad_gateway)?;
+    let manifest = merged_manifest(&app, &manifests).map_err(|e| bad_request(format!("{e:#}")))?;
+    if !manifest.volumes.is_empty() || manifest.database.is_some() {
+        return Err(bad_request(
+            "this app has a persistent volume or managed database — data-preserving rename for stateful apps is not enabled yet",
+        ));
+    }
+
+    // Declared in project.yaml ⇒ it has a source repo to rename.
+    let mut project = read_project(&state, &org).await.map_err(bad_gateway)?;
+    let declared = project.apps.iter().any(|a| a.name == app);
+    let client = state.github.org_client(&org).await.map_err(bad_gateway)?;
+
+    // 1. Rename the source repo FIRST — before the ops commit flips
+    //    project.yaml — so org-sync never sees the old repo undeclared.
+    if declared {
+        crate::org_sync::rename_repo(&client, &org, &app, &new)
+            .await
+            .map_err(bad_gateway)?;
+    }
+
+    // 2. One atomic ops-main commit: move the app dir (rewriting the manifest
+    //    `name`; secrets move verbatim) + rewrite project.yaml apps[].name.
+    let mut changes: BTreeMap<String, Option<String>> = BTreeMap::new();
+    for (rel, bytes) in &dir {
+        let content = String::from_utf8(bytes.clone()).map_err(|e| bad_gateway(e.into()))?;
+        let content = if MANIFEST_FILES.contains(&rel.as_str()) {
+            set_manifest_name(&content, &new).map_err(bad_gateway)?
+        } else {
+            content
+        };
+        changes.insert(format!("apps/{new}/{rel}"), Some(content));
+        changes.insert(format!("apps/{app}/{rel}"), None);
+    }
+    if declared {
+        for a in &mut project.apps {
+            if a.name == app {
+                a.name = new.clone();
+            }
+        }
+        changes.insert(
+            "project.yaml".to_string(),
+            Some(serde_yaml::to_string(&project).map_err(|e| bad_gateway(e.into()))?),
+        );
+    }
+    let message = format!("rename app {app} → {new} via dashboard by {actor}");
+    let commit = commit_ops_tree(&state, &org, &changes, &message)
+        .await
+        .map_err(bad_gateway)?;
+
+    // 3. Render now (auto-merges non-production) + merge the production render
+    //    PR(s) for the app's classes — the admin authorized by renaming.
+    crate::render::on_ops_main_push(&state, &org, &commit)
+        .await
+        .map_err(bad_gateway)?;
+    let merged = merge_render_prs(&state, &org, &app_classes(&manifests))
+        .await
+        .map_err(bad_gateway)?;
+
+    state
+        .store
+        .log_event("app-renamed", Some(&org), &format!("{app} → {new} by {actor}"))
+        .map_err(bad_gateway)?;
+    Ok(format!(
+        "renamed {app} → {new}{}; render propagated{}",
+        if declared { " (source repo renamed)" } else { "" },
+        if merged.is_empty() {
+            String::new()
+        } else {
+            format!("; deployed: {}", merged.join(", "))
+        }
+    ))
+}
+
+/// Every file under `apps/<app>/` on ops `main`, keyed by path relative to that
+/// prefix (manifests *and* SOPS secrets, unlike `app_files`).
+async fn app_dir_files(state: &AppState, org: &str, app: &str) -> Result<BTreeMap<String, Vec<u8>>> {
+    let (_, tar) = crate::proxy::fetch_snapshot(state, org, "ops", "main").await?;
+    let sources = majnet_common::tarball::untar(&tar)?;
+    let prefix = format!("apps/{app}/");
+    Ok(sources
+        .into_iter()
+        .filter_map(|(p, b)| p.strip_prefix(&prefix).map(|rel| (rel.to_string(), b)))
+        .collect())
+}
+
+/// Merge base ⊕ (first present overlay) into a full manifest — for inspecting
+/// derived fields (volumes/database) the way render/converge would see them.
+fn merged_manifest(app: &str, files: &BTreeMap<String, String>) -> Result<AppManifest> {
+    let base_str = files.get("base.yaml").context("the app has no base.yaml")?;
+    let base: serde_yaml::Value = serde_yaml::from_str(base_str).context("base.yaml")?;
+    let overlay: serde_yaml::Value = match files.keys().find(|f| f.as_str() != "base.yaml") {
+        Some(f) => serde_yaml::from_str(&files[f]).with_context(|| f.clone())?,
+        None => serde_yaml::Value::Mapping(Default::default()),
+    };
+    let mut merged = merge(base, overlay);
+    if let serde_yaml::Value::Mapping(map) = &mut merged {
+        let key = serde_yaml::Value::from("name");
+        if map.get(&key).is_none() {
+            map.insert(key, serde_yaml::Value::from(app));
+        }
+    }
+    AppManifest::parse(&serde_yaml::to_string(&merged)?)
+}
+
+/// Rewrite an existing top-level `name:` in a manifest YAML file. Sparse
+/// overlays without a `name` are left untouched (render injects it from the
+/// directory), and non-mapping/SOPS files must not be passed here.
+fn set_manifest_name(yaml: &str, new: &str) -> Result<String> {
+    let mut v: serde_yaml::Value = serde_yaml::from_str(yaml)?;
+    if let serde_yaml::Value::Mapping(map) = &mut v {
+        let key = serde_yaml::Value::from("name");
+        if map.contains_key(&key) {
+            map.insert(key, serde_yaml::Value::from(new));
+        }
+    }
+    Ok(serde_yaml::to_string(&v)?)
+}
+
+/// The env classes an app renders into (which overlay files it has).
+fn app_classes(manifests: &BTreeMap<String, String>) -> Vec<EnvClass> {
+    EnvClass::ALL
+        .iter()
+        .copied()
+        .filter(|c| manifests.contains_key(&format!("{}.yaml", c.as_str())))
+        .collect()
+}
+
+/// One atomic commit on ops `main` from a set of path changes (`Some` = write,
+/// `None` = delete). Returns the new commit SHA.
+async fn commit_ops_tree(
+    state: &AppState,
+    org: &str,
+    changes: &BTreeMap<String, Option<String>>,
+    message: &str,
+) -> Result<String> {
+    let client = state.github.org_client(org).await?;
+    let repo = format!("/repos/{org}/ops");
+    let head = crate::git::get_branch_head(&client, &repo, "main")
+        .await?
+        .context("ops has no main branch")?;
+    let base_tree = crate::git::commit_tree(&client, &repo, &head).await?;
+    let tree = crate::git::create_tree_incremental(&client, &repo, &base_tree, changes).await?;
+    let commit = crate::git::create_commit(&client, &repo, &tree, &[&head], message).await?;
+    crate::git::force_update_ref(&client, &repo, "main", &commit).await?;
+    Ok(commit)
+}
+
+/// Merge the open production render PR(s) for the given classes (non-production
+/// classes auto-merge at render). Returns the classes actually deployed.
+async fn merge_render_prs(state: &AppState, org: &str, classes: &[EnvClass]) -> Result<Vec<String>> {
+    let client = state.github.org_client(org).await?;
+    let repo = format!("/repos/{org}/ops");
+    let mut merged = Vec::new();
+    for class in classes {
+        if class.auto_merges() {
+            continue;
+        }
+        let env_branch = class.env_branch();
+        let render_branch = format!("render/{}", class.as_str());
+        let open: serde_json::Value = client
+            .get(
+                format!("{repo}/pulls?state=open&base={env_branch}&head={org}:{render_branch}"),
+                None::<&()>,
+            )
+            .await?;
+        if let Some(pr) = open.as_array().and_then(|p| p.first()) {
+            let number = pr["number"].as_u64().context("render PR has no number")?;
+            let _: serde_json::Value = client
+                .put(
+                    format!("{repo}/pulls/{number}/merge"),
+                    Some(&serde_json::json!({ "merge_method": "merge" })),
+                )
+                .await
+                .with_context(|| format!("merging render PR #{number}"))?;
+            merged.push(class.as_str().to_string());
+        }
+    }
+    Ok(merged)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1202,6 +1433,46 @@ mod tests {
         let mut req = new_app(&["stable"]);
         req.image = "ghcr.io/x/blog:latest".into();
         assert!(scaffold_base(&req).is_err());
+    }
+
+    #[test]
+    fn set_manifest_name_rewrites_only_existing_name() {
+        // base.yaml carries a name → rewritten, order + other keys preserved.
+        let out = set_manifest_name("name: old\nimage: x\n", "new").unwrap();
+        let v: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(v["name"], serde_yaml::Value::from("new"));
+        assert_eq!(v["image"], serde_yaml::Value::from("x"));
+        // A sparse overlay with no name is left without one (render injects it).
+        let empty = set_manifest_name("{}\n", "new").unwrap();
+        let ev: serde_yaml::Value = serde_yaml::from_str(&empty).unwrap();
+        assert!(ev.get("name").is_none());
+    }
+
+    #[test]
+    fn app_classes_reads_overlays_present() {
+        let files = BTreeMap::from([
+            ("base.yaml".to_string(), BASE.to_string()),
+            ("production.yaml".to_string(), "{}\n".to_string()),
+            ("stable.yaml".to_string(), "{}\n".to_string()),
+        ]);
+        let classes = app_classes(&files);
+        assert!(classes.contains(&EnvClass::Production));
+        assert!(classes.contains(&EnvClass::Stable));
+        assert!(!classes.contains(&EnvClass::Ephemeral));
+    }
+
+    #[test]
+    fn merged_manifest_surfaces_volumes_and_database() {
+        let files = BTreeMap::from([
+            (
+                "base.yaml".to_string(),
+                format!("{BASE}volumes:\n  - name: data\n    path: /d\ndatabase:\n  engine: postgres\n"),
+            ),
+            ("production.yaml".to_string(), "{}\n".to_string()),
+        ]);
+        let m = merged_manifest("app", &files).unwrap();
+        assert!(!m.volumes.is_empty());
+        assert!(m.database.is_some());
     }
 
     #[test]

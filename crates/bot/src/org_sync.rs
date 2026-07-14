@@ -175,6 +175,27 @@ pub async fn sync_org(
     Ok(Some(project))
 }
 
+/// Rename a source repo in place (`<org>/<old>` → `<org>/<new>`). GitHub
+/// preserves history and redirects the old name/clone URLs. Used by the app
+/// rename flow — the repo must be renamed *before* the ops commit that changes
+/// `project.yaml`, or the next org-sync would archive the (now-undeclared) old
+/// repo and materialize a fresh empty one under the new name.
+pub(crate) async fn rename_repo(
+    client: &octocrab::Octocrab,
+    org: &str,
+    old: &str,
+    new: &str,
+) -> Result<()> {
+    let _: serde_json::Value = client
+        .patch(
+            format!("/repos/{org}/{old}"),
+            Some(&json!({ "name": new })),
+        )
+        .await
+        .with_context(|| format!("renaming repo {org}/{old} → {new}"))?;
+    Ok(())
+}
+
 async fn ensure_ops_repo(state: &AppState, client: &octocrab::Octocrab, org: &str) -> Result<()> {
     // Attempt creation and tolerate 422 ("already exists"). A 422 means the
     // repo is already there and scaffolded, so we're done; only a freshly
