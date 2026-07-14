@@ -192,8 +192,8 @@ export function Nodes() {
                 {mm?.reachable && (
                   <>
                     <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-2 text-xs sm:grid-cols-4">
-                      <Stat label="CPUs" value={String(mm.cpus)} />
-                      <Stat label="Memory" value={gb(mm.mem_total)} />
+                      <Stat label="CPU" value={`${mm.host_cpu_pct.toFixed(0)}% of ${mm.cpus}`} />
+                      <Stat label="Memory" value={`${gb(mm.mem_used)} / ${gb(mm.mem_total)}${mm.mem_total ? ` (${Math.round((mm.mem_used / mm.mem_total) * 100)}%)` : ''}`} />
                       <Stat label="Image disk" value={gb(mm.disk_images)} />
                       <Stat label="Containers" value={`${mm.containers_running}/${mm.containers}`} />
                       <Stat label="Docker" value={mm.server_version} />

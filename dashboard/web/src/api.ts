@@ -22,7 +22,7 @@ export interface ContainerMetric {
 }
 export interface NodeMetrics {
   name: string; role: string; reachable: boolean; error: string | null
-  cpus: number; mem_total: number; disk_images: number
+  cpus: number; host_cpu_pct: number; mem_total: number; mem_used: number; disk_images: number
   containers: number; containers_running: number
   server_version: string; os: string; kernel: string
   apps: ContainerMetric[]
@@ -155,7 +155,7 @@ export const useImports = (org: string) =>
     refetchInterval: (q) => (q.state.data?.some((i) => i.status === 'running') ? 2500 : false),
   })
 export const useNodeMetrics = () =>
-  useQuery({ queryKey: ['metrics'], queryFn: () => getJSON<NodeMetrics[]>(urls.metrics), refetchInterval: 5000 })
+  useQuery({ queryKey: ['metrics'], queryFn: () => getJSON<NodeMetrics[]>(urls.metrics), refetchInterval: 10000 })
 export const useAppLogs = (org: string, cls: string, app: string, enabled: boolean) =>
   useQuery({ queryKey: ['logs', org, cls, app], queryFn: () => getText(urls.appLogs(org, cls, app)), enabled, refetchInterval: 5000 })
 export const useNodes = () =>

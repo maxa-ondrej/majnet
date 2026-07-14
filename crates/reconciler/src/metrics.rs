@@ -17,7 +17,9 @@ pub struct NodeMetrics {
     pub reachable: bool,
     pub error: Option<String>,
     pub cpus: i64,
+    pub host_cpu_pct: f64,
     pub mem_total: i64,
+    pub mem_used: i64,
     pub disk_images: i64,
     pub containers: i64,
     pub containers_running: i64,
@@ -60,7 +62,9 @@ pub async fn gather(state: &AppState) -> Result<Vec<NodeMetrics>> {
             reachable: false,
             error: None,
             cpus: 0,
+            host_cpu_pct: 0.0,
             mem_total: 0,
+            mem_used: 0,
             disk_images: 0,
             containers: 0,
             containers_running: 0,
@@ -127,8 +131,9 @@ async fn collect(
         }))
         .await?;
     // Per-container stats concurrently — a one-shot `stats` read blocks ~1s each,
-    // so serially over many containers would blow the node budget.
-    m.apps = futures_util::future::join_all(list.into_iter().map(|c| {
+    // so serially over many containers would blow the node budget. Run the host
+    // /proc probe alongside them.
+    let apps_fut = futures_util::future::join_all(list.into_iter().map(|c| {
         let docker = docker.clone();
         async move {
             let mut cm = ContainerMetric {
@@ -167,9 +172,129 @@ async fn collect(
             }
             cm
         }
-    }))
-    .await;
+    }));
+    let (apps, host) = tokio::join!(apps_fut, host_probe(&docker));
+    m.apps = apps;
+    if let Some((cpu, total, used)) = host {
+        m.host_cpu_pct = cpu;
+        m.mem_used = used;
+        if m.mem_total == 0 {
+            m.mem_total = total;
+        }
+    }
     Ok(())
+}
+
+/// Host CPU% + memory, read from `/proc` inside a throwaway busybox container.
+/// On plain Docker (no lxcfs) `/proc/stat` and `/proc/meminfo` reflect the host,
+/// so this needs no host shell, agent, or privileges — just the Docker API.
+/// Returns (cpu_pct, mem_total_bytes, mem_used_bytes).
+async fn host_probe(docker: &bollard::Docker) -> Option<(f64, i64, i64)> {
+    use bollard::query_parameters as qp;
+    if docker
+        .inspect_image(crate::secrets::HELPER_IMAGE)
+        .await
+        .is_err()
+    {
+        let _ = docker
+            .create_image(
+                Some(qp::CreateImageOptions {
+                    from_image: Some(crate::secrets::HELPER_IMAGE.into()),
+                    ..Default::default()
+                }),
+                None,
+                None,
+            )
+            .collect::<Vec<_>>()
+            .await;
+    }
+    let script = "grep -E '^MemTotal|^MemAvailable' /proc/meminfo; echo ---; \
+                  grep '^cpu ' /proc/stat; sleep 1; grep '^cpu ' /proc/stat";
+    let helper = docker
+        .create_container(
+            None::<qp::CreateContainerOptions>,
+            bollard::models::ContainerCreateBody {
+                image: Some(crate::secrets::HELPER_IMAGE.into()),
+                cmd: Some(vec!["sh".into(), "-c".into(), script.into()]),
+                labels: Some([("majnet.helper".to_string(), "metrics".to_string())].into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .ok()?;
+
+    let out = async {
+        docker
+            .start_container(&helper.id, None::<qp::StartContainerOptions>)
+            .await?;
+        // follow:true streams until the (short-lived) container exits.
+        let mut logs = docker.logs(
+            &helper.id,
+            Some(qp::LogsOptions {
+                stdout: true,
+                stderr: false,
+                follow: true,
+                ..Default::default()
+            }),
+        );
+        let mut buf = String::new();
+        while let Some(Ok(chunk)) = logs.next().await {
+            buf.push_str(&chunk.to_string());
+        }
+        Ok::<_, anyhow::Error>(buf)
+    }
+    .await;
+
+    let _ = docker
+        .remove_container(
+            &helper.id,
+            Some(qp::RemoveContainerOptions {
+                force: true,
+                ..Default::default()
+            }),
+        )
+        .await;
+
+    parse_proc(&out.ok()?)
+}
+
+fn parse_proc(s: &str) -> Option<(f64, i64, i64)> {
+    let (mem, cpu) = s.split_once("---")?;
+    let kb = |key: &str| -> Option<i64> {
+        mem.lines()
+            .find(|l| l.starts_with(key))?
+            .split_whitespace()
+            .nth(1)?
+            .parse::<i64>()
+            .ok()
+            .map(|v| v * 1024)
+    };
+    let mem_total = kb("MemTotal")?;
+    let mem_used = mem_total - kb("MemAvailable").unwrap_or(0);
+
+    // Two `cpu ...` samples → busy fraction over the interval.
+    let sample = |line: &str| -> Option<(f64, f64)> {
+        let n: Vec<f64> = line
+            .split_whitespace()
+            .skip(1)
+            .filter_map(|x| x.parse::<f64>().ok())
+            .collect();
+        if n.len() < 5 {
+            return None;
+        }
+        let idle = n[3] + n[4]; // idle + iowait
+        Some((n.iter().sum(), idle))
+    };
+    let mut cpu_lines = cpu.lines().filter(|l| l.starts_with("cpu "));
+    let (t1, i1) = sample(cpu_lines.next()?)?;
+    let (t2, i2) = sample(cpu_lines.next()?)?;
+    let td = t2 - t1;
+    let cpu_pct = if td > 0.0 {
+        (((1.0 - (i2 - i1) / td) * 100.0 * 100.0).round() / 100.0).clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+    Some((cpu_pct, mem_total, mem_used))
 }
 
 /// Docker's container CPU% — the same formula `docker stats` uses, read from the
@@ -195,5 +320,21 @@ fn cpu_percent(v: &serde_json::Value) -> f64 {
         ((cpu_delta / sys_delta) * online * 100.0 * 100.0).round() / 100.0
     } else {
         0.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_proc;
+
+    #[test]
+    fn parses_meminfo_and_cpu_delta() {
+        // idle goes 100→160 (Δ60) out of total 200→300 (Δ100) → 40% busy.
+        let s = "MemTotal:       1000 kB\nMemAvailable:    400 kB\n---\n\
+                 cpu  50 0 50 100 0 0 0 0\ncpu  90 0 50 160 0 0 0 0\n";
+        let (cpu, total, used) = parse_proc(s).unwrap();
+        assert_eq!(total, 1000 * 1024);
+        assert_eq!(used, 600 * 1024);
+        assert!((cpu - 40.0).abs() < 0.01, "cpu={cpu}");
     }
 }
