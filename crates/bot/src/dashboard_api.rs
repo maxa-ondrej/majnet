@@ -1316,17 +1316,39 @@ async fn merge_render_prs(state: &AppState, org: &str, classes: &[EnvClass]) -> 
             .await?;
         if let Some(pr) = open.as_array().and_then(|p| p.first()) {
             let number = pr["number"].as_u64().context("render PR has no number")?;
-            let _: serde_json::Value = client
-                .put(
-                    format!("{repo}/pulls/{number}/merge"),
-                    Some(&serde_json::json!({ "merge_method": "merge" })),
-                )
-                .await
-                .with_context(|| format!("merging render PR #{number}"))?;
+            merge_pr_with_retry(&client, &repo, number).await?;
             merged.push(class.as_str().to_string());
         }
     }
     Ok(merged)
+}
+
+/// Merge a render PR, retrying while GitHub computes mergeability. A merge
+/// attempted immediately after the PR is opened/updated can 405 with "not
+/// mergeable" because the `mergeable` flag is still `null` (computed async);
+/// the render branch is built from the env head so there's never a real
+/// conflict, so we back off and retry a few times.
+async fn merge_pr_with_retry(client: &octocrab::Octocrab, repo: &str, number: u64) -> Result<()> {
+    let mut last: Option<octocrab::Error> = None;
+    for attempt in 0..6 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+        let res: Result<serde_json::Value, octocrab::Error> = client
+            .put(
+                format!("{repo}/pulls/{number}/merge"),
+                Some(&serde_json::json!({ "merge_method": "merge" })),
+            )
+            .await;
+        match res {
+            Ok(_) => return Ok(()),
+            // Retry only the transient "mergeability not yet computed" case.
+            Err(e) if format!("{e}").to_lowercase().contains("mergeable") => last = Some(e),
+            Err(e) => return Err(e).with_context(|| format!("merging render PR #{number}")),
+        }
+    }
+    Err(last.expect("loop set an error"))
+        .with_context(|| format!("render PR #{number} still not mergeable after retries"))
 }
 
 #[cfg(test)]
