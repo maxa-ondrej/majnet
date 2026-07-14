@@ -39,6 +39,28 @@ impl Store {
         })
     }
 
+    /// Operational key/value config (Discord webhook, alert thresholds, firing
+    /// set). Not git-managed — same class as the bot's ghcr_token.
+    pub fn get_config(&self, key: &str) -> Result<Option<String>> {
+        use rusqlite::OptionalExtension;
+        let conn = self.conn.lock().unwrap();
+        conn.query_row("SELECT value FROM config WHERE key = ?1", [key], |r| {
+            r.get(0)
+        })
+        .optional()
+        .context("reading config")
+    }
+
+    pub fn set_config(&self, key: &str, value: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO config (key, value) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value = ?2",
+            rusqlite::params![key, value],
+        )?;
+        Ok(())
+    }
+
     pub fn record(
         &self,
         commit: &str,

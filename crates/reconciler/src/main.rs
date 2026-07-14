@@ -15,6 +15,7 @@
 //!
 //! Credentials held: age keys + Docker API mTLS certs. Nothing else.
 
+mod alerts;
 mod authz;
 mod config;
 mod converge;
@@ -77,6 +78,9 @@ async fn main() -> Result<()> {
             tracing::error!(error = %e, "state API server died");
         }
     });
+
+    // Alert evaluator: metrics + site health → Discord on state transitions.
+    tokio::spawn(alerts::run_loop(state.clone()));
 
     // The event loop (§12): converge now, then on every nudge or poll tick.
     let poll = std::time::Duration::from_secs(state.config.poll_interval_secs);

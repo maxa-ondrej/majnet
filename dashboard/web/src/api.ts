@@ -114,6 +114,8 @@ export const urls = {
   importRetry: (org: string, app: string) => `${BOT}/imports/${encodeURIComponent(org)}/${encodeURIComponent(app)}/retry`,
   nodes: `${BOT}/nodes`,
   metrics: `${RECON}/metrics`,
+  alertSettings: `${RECON}/settings/alerts`,
+  alertTest: `${RECON}/settings/alerts/test`,
   appLogs: (org: string, cls: string, app: string, tail = 300) =>
     `${RECON}/logs/${encodeURIComponent(org)}/${encodeURIComponent(cls)}/${encodeURIComponent(app)}?tail=${tail}`,
   events: (limit = 300) => `${RECON}/events?limit=${limit}`,
@@ -168,6 +170,9 @@ export const useManifest = (org: string, app: string) =>
   useQuery({ queryKey: ['manifest', org, app], queryFn: () => getJSON<Record<string, ManifestFile>>(urls.manifest(org, app)) })
 export const useMembers = (org: string) =>
   useQuery({ queryKey: ['members', org], queryFn: () => getJSON<Member[]>(urls.members(org)) })
+export interface AlertSettings { webhook_set: boolean; cpu_pct: number; mem_pct: number }
+export const useAlertSettings = () =>
+  useQuery({ queryKey: ['alert-settings'], queryFn: () => getJSON<AlertSettings>(urls.alertSettings) })
 export const useAppSecrets = (org: string, cls: string, app: string) =>
   useQuery({ queryKey: ['secrets', org, cls, app], queryFn: () => getJSON<Record<string, string>>(urls.appSecretValues(org, cls, app)) })
 export const useVersion = () =>

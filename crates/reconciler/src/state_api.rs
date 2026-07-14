@@ -25,6 +25,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/secrets/{project}/{class}/{app}", get(secrets_get))
         .route("/api/metrics", get(metrics_get))
         .route("/api/logs/{project}/{class}/{app}", get(logs_get))
+        .route("/api/settings/alerts", get(alerts_get).post(alerts_set))
+        .route("/api/settings/alerts/test", post(alerts_test))
         .route("/api/ephemeral/extend/{project}/{app}", post(extend))
         .route(
             "/api/migrate/{project}/{app}",
@@ -93,6 +95,92 @@ async fn restart(
         .map_err(|e| (StatusCode::FORBIDDEN, format!("{e:#}")))?;
     do_restart(&state, &project, class, &app, &actor)
         .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e:#}")))
+}
+
+#[derive(serde::Serialize)]
+struct AlertSettings {
+    webhook_set: bool,
+    cpu_pct: f64,
+    mem_pct: f64,
+}
+
+async fn alerts_get(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<AlertSettings>, (StatusCode, String)> {
+    let cfg = |k: &str, d: f64| {
+        state
+            .store
+            .get_config(k)
+            .ok()
+            .flatten()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(d)
+    };
+    let webhook_set = state
+        .store
+        .get_config("alert_webhook")
+        .ok()
+        .flatten()
+        .is_some_and(|s| !s.trim().is_empty());
+    Ok(Json(AlertSettings {
+        webhook_set,
+        cpu_pct: cfg("alert_cpu_pct", 90.0),
+        mem_pct: cfg("alert_mem_pct", 90.0),
+    }))
+}
+
+#[derive(serde::Deserialize)]
+struct AlertSettingsReq {
+    /// Discord webhook URL. Omitted = leave unchanged; empty string = disable.
+    webhook: Option<String>,
+    cpu_pct: Option<f64>,
+    mem_pct: Option<f64>,
+}
+
+async fn alerts_set(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<AlertSettingsReq>,
+) -> Result<String, (StatusCode, String)> {
+    crate::authz::require_platform_admin(&state, &headers)
+        .await
+        .map_err(|e| (StatusCode::FORBIDDEN, format!("{e:#}")))?;
+    let set = |k: &str, v: &str| {
+        state
+            .store
+            .set_config(k, v)
+            .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e:#}")))
+    };
+    if let Some(w) = req.webhook {
+        let w = w.trim();
+        if !w.is_empty() && !w.starts_with("https://") {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "webhook must be an https URL".into(),
+            ));
+        }
+        set("alert_webhook", w)?;
+    }
+    if let Some(c) = req.cpu_pct {
+        set("alert_cpu_pct", &c.to_string())?;
+    }
+    if let Some(m) = req.mem_pct {
+        set("alert_mem_pct", &m.to_string())?;
+    }
+    Ok("alert settings saved".into())
+}
+
+async fn alerts_test(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<String, (StatusCode, String)> {
+    crate::authz::require_platform_admin(&state, &headers)
+        .await
+        .map_err(|e| (StatusCode::FORBIDDEN, format!("{e:#}")))?;
+    crate::alerts::send_test(&state)
+        .await
+        .map(|_| "test message sent".into())
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e:#}")))
 }
 

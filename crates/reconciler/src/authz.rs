@@ -11,6 +11,39 @@ use majnet_common::project::{ProjectConfig, Role};
 
 use crate::AppState;
 
+/// Enforce that the caller is a platform admin (or WG-mesh infra when there's
+/// no identity header). For platform-level writes like alert settings.
+pub async fn require_platform_admin(state: &AppState, headers: &HeaderMap) -> Result<String> {
+    let Some(login) = headers
+        .get("tailscale-user-login")
+        .and_then(|v| v.to_str().ok())
+    else {
+        return Ok("infra".into());
+    };
+    let platform = crate::snapshot::fetch(
+        &state.http,
+        &state.config,
+        &state.config.root_org,
+        "platform",
+        "main",
+    )
+    .await?
+    .context("platform snapshot unavailable for authz")?;
+    let people = PeopleFile::parse(
+        platform
+            .files
+            .get("people.yaml")
+            .context("platform repo has no people.yaml")?,
+    )?;
+    match authz::identify(Some(login), &people)? {
+        Actor::Human {
+            github,
+            platform_admin: true,
+        } => Ok(github),
+        _ => anyhow::bail!("platform admin required"),
+    }
+}
+
 /// Enforce `min_role` on `project` for this request; returns the audit label.
 pub async fn require(
     state: &AppState,

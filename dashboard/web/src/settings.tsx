@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { ServerCog } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { enrollNode, send, urls, useNodes, useRegistry, useVersion, useWhoami, type EnrollResult, type PlatformNode } from './api'
+import { enrollNode, send, urls, useAlertSettings, useNodes, useRegistry, useVersion, useWhoami, type EnrollResult, type PlatformNode } from './api'
 import { PageHead } from './views'
 import { QueryState, StatusBadge } from './ui'
 import { Button } from '@/components/ui/button'
@@ -38,6 +38,7 @@ export function Settings() {
       </Card>
 
       {me?.admin && <RegistrySection />}
+      {me?.admin && <AlertsSection />}
 
       <Card>
         <CardHeader><CardTitle className="text-base">Nodes</CardTitle></CardHeader>
@@ -91,6 +92,56 @@ function RegistrySection() {
         <div className="flex items-center gap-2">
           <Input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="ghp_… (read:packages)" />
           <Button disabled={busy} onClick={save}>Save</Button>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function AlertsSection() {
+  const q = useAlertSettings()
+  const qc = useQueryClient()
+  const [webhook, setWebhook] = useState('')
+  const [cpu, setCpu] = useState('')
+  const [mem, setMem] = useState('')
+  const [busy, setBusy] = useState(false)
+  const save = async () => {
+    setBusy(true)
+    try {
+      const body: Record<string, unknown> = {}
+      if (webhook.trim()) body.webhook = webhook.trim()
+      if (cpu.trim()) body.cpu_pct = Number(cpu)
+      if (mem.trim()) body.mem_pct = Number(mem)
+      toast.success(await send(urls.alertSettings, { json: body }))
+      setWebhook('')
+      qc.invalidateQueries({ queryKey: ['alert-settings'] })
+    } catch (e) { toast.error(String(e)) } finally { setBusy(false) }
+  }
+  const test = async () => {
+    try { toast.success(await send(urls.alertTest)) } catch (e) { toast.error(String(e)) }
+  }
+  return (
+    <Card className="mb-4">
+      <CardHeader><CardTitle className="text-base">Alerts (Discord)</CardTitle></CardHeader>
+      <CardContent className="flex flex-col gap-3 text-sm">
+        <Row k="Webhook">
+          {q.isLoading ? '…' : q.data?.webhook_set
+            ? <StatusBadge tone="success">configured</StatusBadge>
+            : <span className="text-muted-foreground">not set</span>}
+        </Row>
+        <p className="text-xs text-muted-foreground">
+          The reconciler checks node/host metrics + site health every minute and posts up/down transitions to this Discord webhook. Thresholds default to {q.data?.cpu_pct ?? 90}% CPU / {q.data?.mem_pct ?? 90}% memory.
+        </p>
+        <div className="flex items-center gap-2">
+          <Input type="password" value={webhook} onChange={(e) => setWebhook(e.target.value)} placeholder="https://discord.com/api/webhooks/… (blank = keep; clear to disable)" />
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <div><Label className="text-xs text-muted-foreground">CPU alert %</Label><Input type="number" value={cpu} onChange={(e) => setCpu(e.target.value)} placeholder={String(q.data?.cpu_pct ?? 90)} /></div>
+          <div><Label className="text-xs text-muted-foreground">Memory alert %</Label><Input type="number" value={mem} onChange={(e) => setMem(e.target.value)} placeholder={String(q.data?.mem_pct ?? 90)} /></div>
+        </div>
+        <div className="flex gap-2">
+          <Button disabled={busy} onClick={save}>Save</Button>
+          <Button variant="outline" disabled={!q.data?.webhook_set} onClick={test}>Send test</Button>
         </div>
       </CardContent>
     </Card>
