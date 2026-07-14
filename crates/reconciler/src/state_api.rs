@@ -23,6 +23,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/events", get(events))
         .route("/api/restart/{project}/{class}/{app}", post(restart))
         .route("/api/secrets/{project}/{class}/{app}", get(secrets_get))
+        .route("/api/metrics", get(metrics_get))
+        .route("/api/logs/{project}/{class}/{app}", get(logs_get))
         .route("/api/ephemeral/extend/{project}/{app}", post(extend))
         .route(
             "/api/migrate/{project}/{app}",
@@ -92,6 +94,123 @@ async fn restart(
     do_restart(&state, &project, class, &app, &actor)
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e:#}")))
+}
+
+/// `GET /api/metrics` — node + container metrics for every node, gathered live
+/// over the per-node Docker API. Read-only, VPN-gated (like `/api/events`).
+async fn metrics_get(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<crate::metrics::NodeMetrics>>, (StatusCode, String)> {
+    crate::metrics::gather(&state)
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e:#}")))
+}
+
+#[derive(serde::Deserialize)]
+struct LogsQuery {
+    tail: Option<String>,
+}
+
+/// `GET /api/logs/{project}/{class}/{app}?tail=N` — recent container logs for an
+/// app, fetched over the node's Docker API. Production is admin-gated (logs can
+/// contain sensitive output); other classes developer-gated.
+async fn logs_get(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path((project, class, app)): axum::extract::Path<(String, String, String)>,
+    Query(q): Query<LogsQuery>,
+    headers: axum::http::HeaderMap,
+) -> Result<String, (StatusCode, String)> {
+    let class_e: majnet_common::EnvClass = serde_yaml::from_str(&class).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            "class must be production|stable|testing|ephemeral".into(),
+        )
+    })?;
+    let min_role = if class_e == majnet_common::EnvClass::Production {
+        majnet_common::project::Role::Admin
+    } else {
+        majnet_common::project::Role::Developer
+    };
+    crate::authz::require(&state, &headers, &project, min_role)
+        .await
+        .map_err(|e| (StatusCode::FORBIDDEN, format!("{e:#}")))?;
+
+    logs_inner(
+        &state,
+        &project,
+        class_e,
+        &app,
+        q.tail.as_deref().unwrap_or("300"),
+    )
+    .await
+    .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e:#}")))
+}
+
+async fn logs_inner(
+    state: &AppState,
+    project: &str,
+    class: majnet_common::EnvClass,
+    app: &str,
+    tail: &str,
+) -> anyhow::Result<String> {
+    use anyhow::Context;
+    use futures_util::StreamExt;
+    let platform = crate::snapshot::fetch(
+        &state.http,
+        &state.config,
+        &state.config.root_org,
+        "platform",
+        "main",
+    )
+    .await?
+    .context("platform snapshot unavailable")?;
+    let nodes = majnet_common::platform::NodesFile::parse(
+        platform.files.get("nodes.yaml").context("no nodes.yaml")?,
+    )?;
+    let node = nodes
+        .by_role(class.node_role())
+        .context("no node for class")?;
+    let docker = state.nodes(&nodes).client_for(node).await?;
+
+    let filters = std::collections::HashMap::from([(
+        "label".to_string(),
+        vec![
+            format!("{}={}", crate::deploy::LABEL_PROJECT, project),
+            format!("{}={}", crate::deploy::LABEL_APP, app),
+            format!("{}={}", crate::deploy::LABEL_CLASS, class.as_str()),
+        ],
+    )]);
+    let list = docker
+        .list_containers(Some(bollard::query_parameters::ListContainersOptions {
+            all: true,
+            filters: Some(filters),
+            ..Default::default()
+        }))
+        .await?;
+    let container = list
+        .into_iter()
+        .find_map(|c| c.id)
+        .context("no container found for this app/class")?;
+
+    let mut stream = docker.logs(
+        &container,
+        Some(bollard::query_parameters::LogsOptions {
+            stdout: true,
+            stderr: true,
+            tail: tail.to_string(),
+            timestamps: true,
+            follow: false,
+            ..Default::default()
+        }),
+    );
+    let mut buf = String::new();
+    while let Some(item) = stream.next().await {
+        if let Ok(out) = item {
+            buf.push_str(&out.to_string());
+        }
+    }
+    Ok(buf)
 }
 
 /// `GET /api/secrets/{project}/{class}/{app}` — decrypt and return an app's

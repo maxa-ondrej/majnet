@@ -16,6 +16,17 @@ export interface PlatformNode {
   name: string; role: string; wireguard_ip: string
   public_endpoint: string; wireguard_pubkey: string
 }
+export interface ContainerMetric {
+  name: string; image: string; state: string
+  cpu_pct: number; mem_used: number; mem_limit: number
+}
+export interface NodeMetrics {
+  name: string; role: string; reachable: boolean; error: string | null
+  cpus: number; mem_total: number; disk_images: number
+  containers: number; containers_running: number
+  server_version: string; os: string; kernel: string
+  apps: ContainerMetric[]
+}
 export interface Event {
   at: string; commit: string; project: string; node: string; action: string; result: string
 }
@@ -102,6 +113,9 @@ export const urls = {
   imports: (org: string) => `${BOT}/imports/${encodeURIComponent(org)}`,
   importRetry: (org: string, app: string) => `${BOT}/imports/${encodeURIComponent(org)}/${encodeURIComponent(app)}/retry`,
   nodes: `${BOT}/nodes`,
+  metrics: `${RECON}/metrics`,
+  appLogs: (org: string, cls: string, app: string, tail = 300) =>
+    `${RECON}/logs/${encodeURIComponent(org)}/${encodeURIComponent(cls)}/${encodeURIComponent(app)}?tail=${tail}`,
   events: (limit = 300) => `${RECON}/events?limit=${limit}`,
   deploys: (org: string) => `${BOT}/deploys/${encodeURIComponent(org)}`,
   deployMerge: (org: string, n: number) => `${BOT}/deploys/${encodeURIComponent(org)}/${n}/merge`,
@@ -140,6 +154,10 @@ export const useImports = (org: string) =>
     // Poll while anything is still importing; back off once it's all settled.
     refetchInterval: (q) => (q.state.data?.some((i) => i.status === 'running') ? 2500 : false),
   })
+export const useNodeMetrics = () =>
+  useQuery({ queryKey: ['metrics'], queryFn: () => getJSON<NodeMetrics[]>(urls.metrics), refetchInterval: 5000 })
+export const useAppLogs = (org: string, cls: string, app: string, enabled: boolean) =>
+  useQuery({ queryKey: ['logs', org, cls, app], queryFn: () => getText(urls.appLogs(org, cls, app)), enabled, refetchInterval: 5000 })
 export const useNodes = () =>
   useQuery({ queryKey: ['nodes'], queryFn: () => getJSON<PlatformNode[]>(urls.nodes) })
 export const useEvents = (limit = 300) =>

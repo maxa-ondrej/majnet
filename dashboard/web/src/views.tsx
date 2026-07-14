@@ -1,6 +1,6 @@
 import { Link, useParams } from '@tanstack/react-router'
 import { ChevronRight, Plus, Loader2, CheckCircle2, Circle, AlertCircle } from 'lucide-react'
-import { useApps, useDeploys, useEvents, useImports, useNodes, useProjects, useWhoami, IMPORT_STEPS, type ImportStatus } from './api'
+import { useApps, useDeploys, useEvents, useImports, useNodeMetrics, useNodes, useProjects, useWhoami, IMPORT_STEPS, type ImportStatus } from './api'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -159,29 +159,71 @@ export function ProjectDetail() {
 
 // ── Nodes ────────────────────────────────────────────────────────────────────
 const ZONE: Record<string, string> = { main: 'control plane', prod: 'public', private: 'internal' }
+const gb = (b: number) => `${(b / 1e9).toFixed(1)} GB`
+const mb = (b: number) => `${Math.round(b / 1e6)} MB`
+function Stat({ label, value }: { label: string; value: string }) {
+  return <div><div className="text-muted-foreground">{label}</div><div className="font-mono">{value || '—'}</div></div>
+}
+
 export function Nodes() {
   const q = useNodes()
+  const m = useNodeMetrics()
   return (
     <>
       <PageHead title="Nodes" />
       <QueryState isLoading={q.isLoading} error={q.error}>
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-3">
           {q.data?.length === 0 && <Empty>No nodes enrolled.</Empty>}
           {q.data?.map((n) => {
             const enrolled = !!n.wireguard_pubkey
             const ep = [n.wireguard_ip, n.public_endpoint].filter(Boolean).join(' · ')
+            const mm = m.data?.find((x) => x.name === n.name)
             return (
-              <div key={n.role} className={`flex items-center gap-3 rounded-lg border bg-card px-4 py-3 ${enrolled ? '' : 'opacity-60'}`}>
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 font-semibold">{n.name} <Badge variant="secondary">{ZONE[n.role] ?? n.role}</Badge></div>
-                  <div className="mt-0.5 font-mono text-xs text-muted-foreground">{ep || '—'}</div>
+              <div key={n.role} className={`rounded-lg border bg-card px-4 py-3 ${enrolled ? '' : 'opacity-60'}`}>
+                <div className="flex items-center gap-3">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 font-semibold">{n.name} <Badge variant="secondary">{ZONE[n.role] ?? n.role}</Badge></div>
+                    <div className="mt-0.5 font-mono text-xs text-muted-foreground">{ep || '—'}</div>
+                  </div>
+                  {!enrolled ? <StatusBadge tone="muted">pending</StatusBadge>
+                    : mm?.reachable ? <StatusBadge tone="success" dot>online</StatusBadge>
+                    : <StatusBadge tone="danger" dot>unreachable</StatusBadge>}
                 </div>
-                {enrolled ? <StatusBadge tone="success" dot>enrolled</StatusBadge> : <StatusBadge tone="muted">pending</StatusBadge>}
+                {mm?.reachable && (
+                  <>
+                    <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-2 text-xs sm:grid-cols-4">
+                      <Stat label="CPUs" value={String(mm.cpus)} />
+                      <Stat label="Memory" value={gb(mm.mem_total)} />
+                      <Stat label="Image disk" value={gb(mm.disk_images)} />
+                      <Stat label="Containers" value={`${mm.containers_running}/${mm.containers}`} />
+                      <Stat label="Docker" value={mm.server_version} />
+                      <Stat label="OS" value={mm.os} />
+                    </div>
+                    {mm.apps.length > 0 && (
+                      <div className="mt-3 overflow-x-auto">
+                        <table className="w-full text-xs">
+                          <thead><tr className="text-left text-muted-foreground"><th className="py-1 pr-3 font-medium">container</th><th className="py-1 pr-3 font-medium">state</th><th className="py-1 pr-3 font-medium">cpu</th><th className="py-1 font-medium">mem</th></tr></thead>
+                          <tbody className="font-mono">
+                            {mm.apps.map((a) => (
+                              <tr key={a.name} className="border-t">
+                                <td className="py-1 pr-3">{a.name}</td>
+                                <td className="py-1 pr-3">{a.state}</td>
+                                <td className="py-1 pr-3">{a.cpu_pct.toFixed(1)}%</td>
+                                <td className="py-1">{mb(a.mem_used)}{a.mem_limit ? ` / ${gb(a.mem_limit)}` : ''}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </>
+                )}
+                {enrolled && mm && !mm.reachable && <div className="mt-2 text-xs text-destructive">{mm.error ?? 'unreachable'}</div>}
               </div>
             )
           })}
         </div>
-        <p className="mt-4 text-xs text-muted-foreground">Enroll a pending node from <Link to="/settings" className="text-primary hover:underline">Settings → Nodes</Link>.</p>
+        <p className="mt-4 text-xs text-muted-foreground">Metrics read live over each node's Docker API (no agents). Enroll a pending node from <Link to="/settings" className="text-primary hover:underline">Settings → Nodes</Link>.</p>
       </QueryState>
     </>
   )

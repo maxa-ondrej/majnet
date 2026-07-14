@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
-import { send, urls, useApps, useAppSecrets, useEvents, useImports, useManifest, useProjects, useReleases, type ManifestFile } from './api'
+import { send, urls, useApps, useAppLogs, useAppSecrets, useEvents, useImports, useManifest, useProjects, useReleases, type ManifestFile } from './api'
 import { useApiMutation } from './mutations'
 import { ConfirmButton, DeployStatus, ExtLink, QueryState, short, StatusBadge } from './ui'
 import { Crumbs, PageHead, ImportSteps } from './views'
@@ -103,6 +103,8 @@ export function AppDetail() {
 
       {a && <SecretsEditor org={org} app={app} classes={a.classes} />}
 
+      {a && a.classes.length > 0 && <LogsPanel org={org} app={app} classes={a.classes} />}
+
       {appEvents.length > 0 && (
         <Card className="mt-4"><CardContent className="pt-6">
           <h2 className="mb-2 text-sm font-semibold">Recent deploys</h2>
@@ -184,6 +186,30 @@ function RestartControl({ org, app, classes, run, busy }: {
       </Select>
       <Button variant="outline" size="sm" disabled={busy} onClick={() => run(() => send(urls.restart(org, cls, app)))}>Restart</Button>
     </div>
+  )
+}
+
+// ── live container logs (streamed over the node Docker API) ───────────────────
+function LogsPanel({ org, app, classes }: { org: string; app: string; classes: string[] }) {
+  const opts = classes.length ? classes : ['production']
+  const [cls, setCls] = useState(opts.includes('production') ? 'production' : opts[0]!)
+  const q = useAppLogs(org, cls, app, true)
+  return (
+    <Card className="mb-4"><CardContent className="flex flex-col gap-3 pt-6">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <h2 className="text-sm font-semibold">Logs</h2>
+        <Select value={cls} onValueChange={setCls}>
+          <SelectTrigger size="sm" className="w-36"><SelectValue /></SelectTrigger>
+          <SelectContent>{opts.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+        </Select>
+        <span className="text-xs text-muted-foreground">last 300 lines · live (5s)</span>
+      </div>
+      <QueryState isLoading={q.isLoading} error={q.error}>
+        <pre className="max-h-96 overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap">
+          {q.data?.trim() ? q.data : 'No logs.'}
+        </pre>
+      </QueryState>
+    </CardContent></Card>
   )
 }
 
