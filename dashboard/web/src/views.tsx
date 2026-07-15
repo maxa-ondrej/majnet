@@ -145,6 +145,14 @@ export function ProjectDetail() {
   const pending = deploys.data?.length ?? 0
   // Importing apps not yet declared in the manifest — shown as skeletons.
   const importing = (imports.data ?? []).filter((i) => !apps.data?.some((a) => a.name === i.app))
+  // Running image digest per (app, class), from live container names
+  // `<project>-<app>-<class>-<hash>` — the version actually deployed per env.
+  const metrics = useNodeMetrics()
+  const runningDigest = (app: string, cls: string): string | null => {
+    const prefix = `${name}-${app}-${cls}-`
+    const c = (metrics.data ?? []).flatMap((n) => n.apps).find((x) => x.name.startsWith(prefix))
+    return c?.image.split('@sha256:')[1]?.slice(0, 7) ?? null
+  }
 
   return (
     <>
@@ -188,7 +196,10 @@ export function ProjectDetail() {
                 <Link to="/projects/$org/apps/$app" params={{ org, app: a.name }} className="flex min-w-0 flex-1 flex-col">
                   <div className="flex flex-wrap items-center gap-2 font-semibold">
                     {a.name}
-                    {a.classes.map((c) => <Badge key={c} variant="secondary" className="text-primary bg-accent">{c}</Badge>)}
+                    {a.classes.map((c) => {
+                      const d = runningDigest(a.name, c)
+                      return <Badge key={c} variant="secondary" className="bg-accent font-mono text-primary" title={d ? `running ${d}` : 'not running in this env'}>{c}{d ? ` · ${d}` : ''}</Badge>
+                    })}
                   </div>
                   <div className="mt-0.5 truncate font-mono text-xs text-muted-foreground">{dm || '—'}</div>
                 </Link>
