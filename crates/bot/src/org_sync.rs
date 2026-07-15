@@ -187,10 +187,7 @@ pub(crate) async fn rename_repo(
     new: &str,
 ) -> Result<()> {
     let _: serde_json::Value = client
-        .patch(
-            format!("/repos/{org}/{old}"),
-            Some(&json!({ "name": new })),
-        )
+        .patch(format!("/repos/{org}/{old}"), Some(&json!({ "name": new })))
         .await
         .with_context(|| format!("renaming repo {org}/{old} → {new}"))?;
     Ok(())

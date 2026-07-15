@@ -66,12 +66,19 @@ pub async fn purge_app(state: &AppState, org: &str, app: &str) -> Result<Vec<Str
         deploy::remove_app(&ctx, app).await?;
 
         for vol in &manifest.volumes {
-            deploy::remove_volume(&docker, &deploy::volume_name(&project, app, class, &vol.name))
-                .await?;
+            deploy::remove_volume(
+                &docker,
+                &deploy::volume_name(&project, app, class, &vol.name),
+            )
+            .await?;
         }
         if let Some(db) = &manifest.database {
-            crate::db::drop_database(&docker, db.engine, &crate::db::db_name(&project, app, class))
-                .await?;
+            crate::db::drop_database(
+                &docker,
+                db.engine,
+                &crate::db::db_name(&project, app, class),
+            )
+            .await?;
         }
         purged.push(class.as_str().to_string());
     }

@@ -1129,7 +1129,10 @@ pub async fn app_rename_post(
 
     // A pending render PR means env diverges from main — renaming now could
     // orphan an app that's running but only staged in that PR. Merge/close first.
-    if has_open_render_pr(&state, &org).await.map_err(bad_gateway)? {
+    if has_open_render_pr(&state, &org)
+        .await
+        .map_err(bad_gateway)?
+    {
         return Err(bad_request(
             "this project has an unmerged render PR — merge or close it in Deployments before renaming, so the rename migrates the current deployed state",
         ));
@@ -1137,7 +1140,9 @@ pub async fn app_rename_post(
 
     // Current app files (manifests + secrets), keyed by path relative to
     // `apps/<app>/`. Refuse if the app is missing or the target already exists.
-    let dir = app_dir_files(&state, &org, &app).await.map_err(bad_gateway)?;
+    let dir = app_dir_files(&state, &org, &app)
+        .await
+        .map_err(bad_gateway)?;
     if dir.is_empty() {
         return Err(bad_request(format!("app {app} not found")));
     }
@@ -1230,11 +1235,19 @@ pub async fn app_rename_post(
 
     state
         .store
-        .log_event("app-renamed", Some(&org), &format!("{app} → {new} by {actor}"))
+        .log_event(
+            "app-renamed",
+            Some(&org),
+            &format!("{app} → {new} by {actor}"),
+        )
         .map_err(bad_gateway)?;
     Ok(format!(
         "renamed {app} → {new}{}; render propagated{}{}",
-        if declared { " (source repo renamed)" } else { "" },
+        if declared {
+            " (source repo renamed)"
+        } else {
+            ""
+        },
         if merged.is_empty() {
             String::new()
         } else {
@@ -1286,7 +1299,10 @@ pub async fn project_rename_post(
     }
     // A pending render PR means env diverges from main — a running-but-staged
     // app would be missed by the migration (its data orphaned). Settle it first.
-    if has_open_render_pr(&state, &org).await.map_err(bad_gateway)? {
+    if has_open_render_pr(&state, &org)
+        .await
+        .map_err(bad_gateway)?
+    {
         return Err(bad_request(
             "this project has an unmerged render PR — merge or close it in Deployments before renaming the project, so every app migrates from its current deployed state",
         ));
@@ -1386,20 +1402,22 @@ async fn has_open_render_pr(state: &AppState, org: &str) -> Result<bool> {
     let open: serde_json::Value = client
         .get(format!("/repos/{org}/ops/pulls?state=open"), None::<&()>)
         .await?;
-    Ok(open
-        .as_array()
-        .is_some_and(|prs| {
-            prs.iter().any(|pr| {
-                pr["base"]["ref"]
-                    .as_str()
-                    .is_some_and(|b| b.starts_with("env/"))
-            })
-        }))
+    Ok(open.as_array().is_some_and(|prs| {
+        prs.iter().any(|pr| {
+            pr["base"]["ref"]
+                .as_str()
+                .is_some_and(|b| b.starts_with("env/"))
+        })
+    }))
 }
 
 /// Every file under `apps/<app>/` on ops `main`, keyed by path relative to that
 /// prefix (manifests *and* SOPS secrets, unlike `app_files`).
-async fn app_dir_files(state: &AppState, org: &str, app: &str) -> Result<BTreeMap<String, Vec<u8>>> {
+async fn app_dir_files(
+    state: &AppState,
+    org: &str,
+    app: &str,
+) -> Result<BTreeMap<String, Vec<u8>>> {
     let (_, tar) = crate::proxy::fetch_snapshot(state, org, "ops", "main").await?;
     let sources = majnet_common::tarball::untar(&tar)?;
     let prefix = format!("apps/{app}/");
@@ -1476,7 +1494,11 @@ async fn commit_ops_tree(
 /// push, so poll for each class's PR to appear before merging. Returns the
 /// classes actually deployed; a class whose PR never appears is left for the
 /// operator to merge in Deployments (rather than failing the whole rename).
-async fn merge_render_prs(state: &AppState, org: &str, classes: &[EnvClass]) -> Result<Vec<String>> {
+async fn merge_render_prs(
+    state: &AppState,
+    org: &str,
+    classes: &[EnvClass],
+) -> Result<Vec<String>> {
     let client = state.github.org_client(org).await?;
     let repo = format!("/repos/{org}/ops");
     let mut merged = Vec::new();
@@ -1522,7 +1544,9 @@ async fn find_open_render_pr(
             )
             .await?;
         if let Some(pr) = open.as_array().and_then(|p| p.first()) {
-            return Ok(Some(pr["number"].as_u64().context("render PR has no number")?));
+            return Ok(Some(
+                pr["number"].as_u64().context("render PR has no number")?,
+            ));
         }
     }
     Ok(None)
@@ -1571,12 +1595,17 @@ pub async fn app_archive_post(
     let actor = crate::authz::require(&state, &headers, &org, Role::Admin)
         .await
         .map_err(|e| (StatusCode::FORBIDDEN, format!("{e:#}")))?;
-    if has_open_render_pr(&state, &org).await.map_err(bad_gateway)? {
+    if has_open_render_pr(&state, &org)
+        .await
+        .map_err(bad_gateway)?
+    {
         return Err(bad_request(
             "this project has an unmerged render PR — merge or close it in Deployments first",
         ));
     }
-    let dir = app_dir_files(&state, &org, &app).await.map_err(bad_gateway)?;
+    let dir = app_dir_files(&state, &org, &app)
+        .await
+        .map_err(bad_gateway)?;
     if dir.is_empty() {
         return Err(bad_request(format!("app {app} not found")));
     }
@@ -1880,7 +1909,9 @@ mod tests {
         let files = BTreeMap::from([
             (
                 "base.yaml".to_string(),
-                format!("{BASE}volumes:\n  - name: data\n    path: /d\ndatabase:\n  engine: postgres\n"),
+                format!(
+                    "{BASE}volumes:\n  - name: data\n    path: /d\ndatabase:\n  engine: postgres\n"
+                ),
             ),
             ("production.yaml".to_string(), "{}\n".to_string()),
         ]);

@@ -122,10 +122,15 @@ pub async fn converge_app(
     // Replica 1 keeps the unsuffixed name so existing single-container apps stay
     // in sync (no churn); further replicas get a `-N` suffix.
     let desired: Vec<String> = (1..=replicas)
-        .map(|i| if i == 1 { base.clone() } else { format!("{base}-{i}") })
+        .map(|i| {
+            if i == 1 {
+                base.clone()
+            } else {
+                format!("{base}-{i}")
+            }
+        })
         .collect();
-    let desired_set: std::collections::HashSet<&str> =
-        desired.iter().map(String::as_str).collect();
+    let desired_set: std::collections::HashSet<&str> = desired.iter().map(String::as_str).collect();
 
     let existing = list_app_containers(ctx, &manifest.name).await?;
     let running_current: std::collections::HashSet<String> = existing

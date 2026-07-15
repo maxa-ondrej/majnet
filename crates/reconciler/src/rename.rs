@@ -216,12 +216,26 @@ pub async fn project_commit(
     for class in EnvClass::ALL {
         let pending = state.store.renames_pending(new_project, class.as_str())?;
         for (app, _) in &pending {
-            migrate_stack(state, &nodes, org, old_project, app, new_project, app, class)
-                .await
-                .with_context(|| {
-                    format!("migrating {old_project}/{app} → {new_project} ({})", class.as_str())
-                })?;
-            state.store.rename_complete(new_project, app, class.as_str())?;
+            migrate_stack(
+                state,
+                &nodes,
+                org,
+                old_project,
+                app,
+                new_project,
+                app,
+                class,
+            )
+            .await
+            .with_context(|| {
+                format!(
+                    "migrating {old_project}/{app} → {new_project} ({})",
+                    class.as_str()
+                )
+            })?;
+            state
+                .store
+                .rename_complete(new_project, app, class.as_str())?;
         }
         if !pending.is_empty() {
             state.store.record(
@@ -261,10 +275,7 @@ async fn copy_volume(docker: &Docker, from: &str, to: &str) -> Result<()> {
                     format!("cp -a /from/. /to/ 2>/dev/null; true"),
                 ]),
                 host_config: Some(bollard::models::HostConfig {
-                    binds: Some(vec![
-                        format!("{from}:/from:ro"),
-                        format!("{to}:/to"),
-                    ]),
+                    binds: Some(vec![format!("{from}:/from:ro"), format!("{to}:/to")]),
                     ..Default::default()
                 }),
                 labels: Some([("majnet.helper".to_string(), "rename".to_string())].into()),
@@ -331,8 +342,12 @@ pub(crate) async fn resolve_project(state: &AppState, org: &str) -> Result<Strin
     )
     .await?
     .context("platform snapshot unavailable")?;
-    let projects: ProjectsFile =
-        serde_yaml::from_slice(platform.files.get("projects.yaml").context("no projects.yaml")?)?;
+    let projects: ProjectsFile = serde_yaml::from_slice(
+        platform
+            .files
+            .get("projects.yaml")
+            .context("no projects.yaml")?,
+    )?;
     projects
         .projects
         .into_iter()

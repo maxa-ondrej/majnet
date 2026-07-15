@@ -481,11 +481,19 @@ mod tests {
     fn rename_script_per_engine() {
         use super::rename_script;
         use majnet_common::manifest::DbEngine;
-        let pg = rename_script(DbEngine::Postgres, "demo_app_production", "demo_new_production")
-            .unwrap()
-            .unwrap();
-        assert!(pg.contains(r#"ALTER DATABASE \"demo_app_production\" RENAME TO \"demo_new_production\""#));
-        assert!(pg.contains(r#"ALTER ROLE \"demo_app_production\" RENAME TO \"demo_new_production\""#));
+        let pg = rename_script(
+            DbEngine::Postgres,
+            "demo_app_production",
+            "demo_new_production",
+        )
+        .unwrap()
+        .unwrap();
+        assert!(pg.contains(
+            r#"ALTER DATABASE \"demo_app_production\" RENAME TO \"demo_new_production\""#
+        ));
+        assert!(
+            pg.contains(r#"ALTER ROLE \"demo_app_production\" RENAME TO \"demo_new_production\""#)
+        );
         assert!(pg.contains("pg_terminate_backend"));
         let maria = rename_script(DbEngine::Mariadb, "old_db", "new_db")
             .unwrap()
@@ -493,7 +501,7 @@ mod tests {
         assert!(maria.contains("RENAME TABLE"));
         assert!(maria.contains("information_schema.tables WHERE table_schema='old_db'"));
         assert!(maria.contains("DROP DATABASE IF EXISTS")); // backticks are shell-escaped
-        // Valkey has no per-user data isolation → nothing to run.
+                                                            // Valkey has no per-user data isolation → nothing to run.
         assert!(rename_script(DbEngine::Valkey, "a", "b").unwrap().is_none());
         // Mongo is unsupported (matches the restore limitation).
         assert!(rename_script(DbEngine::Mongodb, "a", "b").is_err());
@@ -508,7 +516,10 @@ mod tests {
         assert!(pg.contains(r#"DROP ROLE IF EXISTS \"demo_app_production\""#));
         assert!(pg.contains("pg_terminate_backend"));
         let maria = drop_script(DbEngine::Mariadb, "d");
-        assert!(maria.contains("DROP DATABASE IF EXISTS") && maria.contains("DROP USER IF EXISTS 'd'@'%'"));
+        assert!(
+            maria.contains("DROP DATABASE IF EXISTS")
+                && maria.contains("DROP USER IF EXISTS 'd'@'%'")
+        );
         assert!(drop_script(DbEngine::Valkey, "d").contains("ACL DELUSER d"));
         assert!(drop_script(DbEngine::Mongodb, "d").contains("dropDatabase"));
     }
