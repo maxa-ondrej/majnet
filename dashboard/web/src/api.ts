@@ -34,7 +34,7 @@ export interface DeployFile {
   filename: string; status: string; additions: number; deletions: number; patch: string | null
 }
 export interface DeployPr {
-  number: number; title: string; class: string; base: string; created_at: string; files: DeployFile[]
+  number: number; title: string; class: string; base: string; created_at: string; mergeable: boolean | null; files: DeployFile[]
 }
 export interface ManifestFile { yaml: string; data: unknown }
 export interface Member { user: string; role: string }
@@ -173,7 +173,13 @@ export const useNodes = () =>
 export const useEvents = (limit = 300) =>
   useQuery({ queryKey: ['events', limit], queryFn: () => getJSON<Event[]>(urls.events(limit)), refetchInterval: 15000 })
 export const useDeploys = (org: string) =>
-  useQuery({ queryKey: ['deploys', org], queryFn: () => getJSON<DeployPr[]>(urls.deploys(org)) })
+  useQuery({
+    queryKey: ['deploys', org],
+    queryFn: () => getJSON<DeployPr[]>(urls.deploys(org)),
+    // Poll so a "reconciling" PR flips to mergeable (and the Merge button
+    // enables) without a manual refresh.
+    refetchInterval: (q) => (q.state.data?.some((d) => d.mergeable !== true) ? 5000 : false),
+  })
 export const useManifest = (org: string, app: string) =>
   useQuery({ queryKey: ['manifest', org, app], queryFn: () => getJSON<Record<string, ManifestFile>>(urls.manifest(org, app)) })
 export const useMembers = (org: string) =>

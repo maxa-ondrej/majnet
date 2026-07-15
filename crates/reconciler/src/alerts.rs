@@ -85,26 +85,45 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
         }
     }
 
-    let prev: BTreeMap<String, String> = state
-        .store
-        .get_config("alert_firing")?
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
+    // Debounce: only alert on a condition that persisted across two consecutive
+    // ticks (~2 min). A single-tick blip — the brief unroutable window while an
+    // app is archived/deleted/renamed or a deploy cuts over — never fires.
+    let last: BTreeMap<String, String> = load_map(state, "alert_seen");
+    let firing: BTreeMap<String, String> = current
+        .iter()
+        .filter(|(k, _)| last.contains_key(*k))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
 
-    for (k, label) in &current {
+    let prev: BTreeMap<String, String> = load_map(state, "alert_firing");
+    for (k, label) in &firing {
         if !prev.contains_key(k) {
             post(state, &webhook, &format!("🔴 {label}")).await;
         }
     }
     for (k, label) in &prev {
-        if !current.contains_key(k) {
+        if !firing.contains_key(k) {
             post(state, &webhook, &format!("🟢 Recovered — {label}")).await;
         }
     }
     state
         .store
-        .set_config("alert_firing", &serde_json::to_string(&current)?)?;
+        .set_config("alert_seen", &serde_json::to_string(&current)?)?;
+    state
+        .store
+        .set_config("alert_firing", &serde_json::to_string(&firing)?)?;
     Ok(())
+}
+
+/// Load a JSON string→string map from config, defaulting to empty.
+fn load_map(state: &AppState, key: &str) -> BTreeMap<String, String> {
+    state
+        .store
+        .get_config(key)
+        .ok()
+        .flatten()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
 }
 
 fn threshold(state: &AppState, key: &str) -> f64 {

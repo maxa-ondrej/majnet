@@ -42,6 +42,9 @@ pub struct DeployPr {
     pub class: String,
     pub base: String,
     pub created_at: String,
+    /// GitHub's mergeability: `Some(true)` ready, `Some(false)` conflict,
+    /// `None` still computing ("reconciling" — merge should be held).
+    pub mergeable: Option<bool>,
     pub files: Vec<DeployFile>,
 }
 
@@ -75,6 +78,13 @@ pub async fn list(
             continue;
         };
         let number = pr["number"].as_u64().unwrap_or_default();
+        // The list endpoint doesn't compute `mergeable`; the per-PR GET does
+        // (null while GitHub is still computing = "reconciling", not yet ready).
+        let detail: serde_json::Value = client
+            .get(format!("{repo}/pulls/{number}"), None::<&()>)
+            .await
+            .map_err(gh_err)?;
+        let mergeable = detail["mergeable"].as_bool();
         let files: serde_json::Value = client
             .get(format!("{repo}/pulls/{number}/files"), None::<&()>)
             .await
@@ -97,6 +107,7 @@ pub async fn list(
             class: class.to_string(),
             base: base.to_string(),
             created_at: pr["created_at"].as_str().unwrap_or_default().to_string(),
+            mergeable,
             files,
         });
     }

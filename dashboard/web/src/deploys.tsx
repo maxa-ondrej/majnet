@@ -49,8 +49,10 @@ export function Deploys() {
               <div className="flex flex-wrap items-center gap-2.5 border-b px-4 py-3">
                 <Badge variant="secondary" className="bg-accent text-primary">{d.class}</Badge>
                 <h2 className="font-semibold">#{d.number} · {d.title}</h2>
+                {d.mergeable !== true && <Badge variant="outline" className="text-warning">reconciling…</Badge>}
                 <div className="flex-1" />
-                <ConfirmButton size="sm" title={`Merge PR #${d.number}?`} description={`Deploy env/${d.class}.`} confirmText="Merge & deploy"
+                <ConfirmButton size="sm" disabled={d.mergeable !== true}
+                  title={`Merge PR #${d.number}?`} description={`Deploy env/${d.class}.`} confirmText="Merge & deploy"
                   onConfirm={() => m.mutate(() => send(urls.deployMerge(org, d.number)))}>{d.class === 'production' ? 'Approve & deploy' : 'Merge & deploy'}</ConfirmButton>
                 <ConfirmButton variant="outline" size="sm" className="text-destructive" title={`Close PR #${d.number}?`} description="Reject this change without deploying."
                   confirmText="Close" onConfirm={() => m.mutate(() => send(urls.deployClose(org, d.number)))}>Close</ConfirmButton>

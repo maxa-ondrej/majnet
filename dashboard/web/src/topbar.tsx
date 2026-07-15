@@ -15,37 +15,54 @@ function Count({ children }: { children: ReactNode }) {
   )
 }
 
-// ── deployment requests (open render PRs, all projects) ───────────────────────
-function DeployRequests() {
+// ── deployments (in-flight converges + open render PRs, all projects) ─────────
+// The deployment lifecycle lives here, out of Notifications: "deploying now"
+// (an active converge), and pending render PRs — flagged "reconciling" until
+// GitHub finishes computing mergeability (merge is held until then).
+function Deployments() {
   const projects = useProjects()
   const onboarded = (projects.data ?? []).filter((p) => p.onboarded)
   const results = useQueries({
     queries: onboarded.map((p) => ({
       queryKey: ['deploys', p.org],
       queryFn: () => getJSON<DeployPr[]>(urls.deploys(p.org)),
-      refetchInterval: 30_000,
+      refetchInterval: 15_000,
     })),
   })
   const pending = onboarded.flatMap((p, i) => (results[i]?.data ?? []).map((pr) => ({ p, pr })))
+  const events = useEvents()
+  const now = Date.now()
+  const deploying = (events.data ?? []).filter((e) => e.result.startsWith('deployed') && now - parseAt(e.at) < 90_000)
   const [open, setOpen] = useState(false)
+  const count = pending.length + deploying.length
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <Button variant="ghost" size="icon" className="relative" title="Deployment requests" aria-label="Deployment requests">
+        <Button variant="ghost" size="icon" className="relative" title="Deployments" aria-label="Deployments">
           <GitPullRequest className="size-5" />
-          {pending.length > 0 && <Count>{pending.length}</Count>}
+          {deploying.length > 0 && <span className="absolute right-1 top-1 size-2 animate-pulse rounded-full bg-warning" />}
+          {count > 0 && <Count>{count}</Count>}
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-80 p-2">
-        <div className="px-2 py-1.5 text-sm font-semibold">Deployment requests</div>
-        {pending.length === 0 && <div className="px-2 py-3 text-xs text-muted-foreground">No render PRs awaiting review.</div>}
+        <div className="px-2 py-1.5 text-sm font-semibold">Deployments</div>
+        {deploying.length > 0 && (
+          <div className="mb-1 rounded-md bg-warning/10 px-2 py-1.5">
+            <div className="flex items-center gap-1.5 text-xs font-medium text-warning"><Loader2 className="size-3 animate-spin" /> Deploying now</div>
+            {deploying.map((e, i) => (
+              <div key={i} className="pl-4 text-xs text-muted-foreground">{e.project} · {e.action.replace('converge ', '')}</div>
+            ))}
+          </div>
+        )}
+        {count === 0 && <div className="px-2 py-3 text-xs text-muted-foreground">No active or pending deployments.</div>}
         {pending.map(({ p, pr }) => (
           <Link key={`${p.org}-${pr.number}`} to="/projects/$org/deploys" params={{ org: p.org }} onClick={() => setOpen(false)}
             className="block rounded-md px-2 py-1.5 hover:bg-accent">
-            <div className="flex items-center gap-2 text-sm">
+            <div className="flex flex-wrap items-center gap-2 text-sm">
               <Badge variant="secondary" className="bg-accent text-primary">{pr.class}</Badge>
               {p.name} · #{pr.number}
+              {pr.mergeable !== true && <Badge variant="outline" className="text-warning">reconciling</Badge>}
             </div>
             <div className="mt-0.5 truncate text-xs text-muted-foreground">{pr.title}</div>
           </Link>
@@ -91,8 +108,6 @@ function Notifications() {
 
   const seenIdx = seen ? evs.findIndex((e) => evKey(e) === seen) : 0
   const unread = seenIdx === -1 ? evs.length : seenIdx
-  const now = Date.now()
-  const deploying = evs.filter((e) => e.result.startsWith('deployed') && now - parseAt(e.at) < 90_000)
 
   const onOpenChange = (o: boolean) => {
     setOpen(o)
@@ -108,7 +123,6 @@ function Notifications() {
       <PopoverTrigger asChild>
         <Button variant="ghost" size="icon" className="relative" title="Notifications" aria-label="Notifications">
           <Bell className="size-5" />
-          {deploying.length > 0 && <span className="absolute right-1 top-1 size-2 animate-pulse rounded-full bg-warning" />}
           {unread > 0 && <Count>{unread > 9 ? '9+' : unread}</Count>}
         </Button>
       </PopoverTrigger>
@@ -117,14 +131,6 @@ function Notifications() {
           <span className="text-sm font-semibold">Notifications</span>
           <Link to="/activity" onClick={() => setOpen(false)} className="ml-auto text-xs text-primary hover:underline">All activity</Link>
         </div>
-        {deploying.length > 0 && (
-          <div className="mb-1 rounded-md bg-warning/10 px-2 py-1.5">
-            <div className="flex items-center gap-1.5 text-xs font-medium text-warning"><Loader2 className="size-3 animate-spin" /> Deploying now</div>
-            {deploying.map((e, i) => (
-              <div key={i} className="pl-4 text-xs text-muted-foreground">{e.project} · {e.action.replace('converge ', '')}</div>
-            ))}
-          </div>
-        )}
         <div className="max-h-96 overflow-auto">
           {evs.length === 0 && <div className="px-2 py-3 text-xs text-muted-foreground">Nothing yet.</div>}
           {evs.slice(0, 15).map((e, i) => <NotifRow key={i} e={e} fresh={i < unread} />)}
@@ -138,7 +144,7 @@ export function TopBar() {
   return (
     <header className="sticky top-0 z-20 flex h-12 items-center gap-1 border-b bg-background/80 px-4 backdrop-blur md:px-6">
       <div className="flex-1" />
-      <DeployRequests />
+      <Deployments />
       <Notifications />
     </header>
   )
