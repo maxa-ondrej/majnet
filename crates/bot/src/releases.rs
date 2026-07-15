@@ -90,18 +90,34 @@ pub async fn backfill(state: &AppState, org: &str, app: &str) -> Result<usize> {
         .into_iter()
         .map(|r| r.version)
         .collect();
-    let client = state.github.org_client(org).await?;
+    // The GHCR packages REST API needs `read:packages`, which the App
+    // installation token lacks — use the configured GHCR PAT (the same one that
+    // authenticates image pulls), via the plain REST endpoint.
+    let (_, pat) = crate::proxy::ghcr_credential(state, org).await?;
     let mut recorded = 0;
     // Paginate defensively (cap at 10×100 versions) so a huge package can't spin
     // forever; a break on a short page ends it early.
     for page in 1..=10u32 {
-        let versions: Vec<serde_json::Value> = client
-            .get(
-                format!("/orgs/{org}/packages/container/{app}/versions?per_page=100&page={page}"),
-                None::<&()>,
-            )
+        let resp = state
+            .http
+            .get(format!(
+                "https://api.github.com/orgs/{org}/packages/container/{app}/versions?per_page=100&page={page}"
+            ))
+            .header("Authorization", format!("Bearer {pat}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("User-Agent", "majnet-bot")
+            .send()
             .await
-            .context("listing GHCR package versions (needs packages:read)")?;
+            .context("listing GHCR package versions")?;
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::ensure!(
+            status.is_success(),
+            "listing GHCR package versions for {app} ({status}): {body}"
+        );
+        let versions: Vec<serde_json::Value> =
+            serde_json::from_str(&body).context("parsing GHCR package versions")?;
         let count = versions.len();
         for v in &versions {
             let Some(digest) = v["name"].as_str().filter(|d| d.starts_with("sha256:")) else {
