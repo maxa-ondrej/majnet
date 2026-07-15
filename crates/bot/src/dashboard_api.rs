@@ -1171,6 +1171,35 @@ pub async fn app_rename_post(
     let declared = project.apps.iter().any(|a| a.name == app);
     let client = state.github.org_client(&org).await.map_err(bad_gateway)?;
 
+    // 0. Copy the app's own image(s) into the NEW GHCR package before anything
+    //    flips. Renaming the repo doesn't move existing packages, so without this
+    //    the rewritten pin `ghcr.io/<org>/<new>@<digest>` would 404. Done first so
+    //    a missing `write:packages` token aborts the rename cleanly (nothing
+    //    changed yet) rather than mid-flight.
+    let mut image_digests: std::collections::BTreeSet<String> = Default::default();
+    for content in manifests.values() {
+        if let (_, Some(digest)) =
+            rewrite_manifest_image(content, &org, &app, &new).map_err(bad_gateway)?
+        {
+            image_digests.insert(digest);
+        }
+    }
+    if !image_digests.is_empty() {
+        let (user, pass) = crate::proxy::ghcr_credential(&state, &org)
+            .await
+            .map_err(bad_gateway)?;
+        for digest in &image_digests {
+            crate::registry::copy_image(&state.http, &org, &app, &new, digest, &user, &pass)
+                .await
+                .map_err(|e| {
+                    bad_gateway(anyhow::anyhow!(
+                        "copying image {digest} into the {new} package \
+                         (needs a write:packages GHCR token): {e:#}"
+                    ))
+                })?;
+        }
+    }
+
     // 1. Rename the source repo FIRST — before the ops commit flips
     //    project.yaml — so org-sync never sees the old repo undeclared.
     if declared {
@@ -1185,7 +1214,12 @@ pub async fn app_rename_post(
     for (rel, bytes) in &dir {
         let content = String::from_utf8(bytes.clone()).map_err(|e| bad_gateway(e.into()))?;
         let content = if MANIFEST_FILES.contains(&rel.as_str()) {
-            set_manifest_name(&content, &new).map_err(bad_gateway)?
+            let named = set_manifest_name(&content, &new).map_err(bad_gateway)?;
+            // Keep the image name in sync with the repo (copied to the new
+            // package in step 0); leaves custom/external images untouched.
+            rewrite_manifest_image(&named, &org, &app, &new)
+                .map_err(bad_gateway)?
+                .0
         } else {
             content
         };
@@ -1458,6 +1492,35 @@ fn set_manifest_name(yaml: &str, new: &str) -> Result<String> {
         }
     }
     Ok(serde_yaml::to_string(&v)?)
+}
+
+/// If a manifest's `image:` points at the app's own GHCR package
+/// (`ghcr.io/<org>/<old>@<digest>`), rewrite the repo path to `<new>` and return
+/// the digest that must be copied into the new package. Images that don't follow
+/// the convention (custom/external, or a different name) are left untouched —
+/// returns `(unchanged, None)`. Sparse overlays without `image` are no-ops.
+fn rewrite_manifest_image(
+    yaml: &str,
+    org: &str,
+    old: &str,
+    new: &str,
+) -> Result<(String, Option<String>)> {
+    let mut v: serde_yaml::Value = serde_yaml::from_str(yaml)?;
+    let expected = format!("ghcr.io/{org}/{old}");
+    let mut copied = None;
+    if let serde_yaml::Value::Mapping(map) = &mut v {
+        let key = serde_yaml::Value::from("image");
+        if let Some(serde_yaml::Value::String(image)) = map.get(&key) {
+            if let Some((repo, digest)) = image.split_once('@') {
+                if repo == expected {
+                    let rewritten = format!("ghcr.io/{org}/{new}@{digest}");
+                    copied = Some(digest.to_string());
+                    map.insert(key, serde_yaml::Value::from(rewritten));
+                }
+            }
+        }
+    }
+    Ok((serde_yaml::to_string(&v)?, copied))
 }
 
 /// The env classes an app renders into (which overlay files it has).
@@ -1785,6 +1848,32 @@ mod tests {
             ("stable.yaml".to_string(), "env:\n  X: \"1\"\n".to_string()),
         ]);
         validate_app_files("myapp", &files).unwrap();
+    }
+
+    #[test]
+    fn rewrite_manifest_image_follows_the_repo() {
+        let d = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        // Matches ghcr.io/<org>/<old> → rewritten, digest returned for copy.
+        let (out, copied) =
+            rewrite_manifest_image(&format!("image: ghcr.io/o/old@{d}\n"), "o", "old", "new")
+                .unwrap();
+        assert_eq!(copied.as_deref(), Some(d));
+        assert!(out.contains(&format!("ghcr.io/o/new@{d}")));
+
+        // A custom/external image name is left untouched.
+        let (out, copied) = rewrite_manifest_image(
+            &format!("image: ghcr.io/o/custom-name@{d}\n"),
+            "o",
+            "old",
+            "new",
+        )
+        .unwrap();
+        assert!(copied.is_none());
+        assert!(out.contains(&format!("ghcr.io/o/custom-name@{d}")));
+
+        // A sparse overlay without an image is a no-op.
+        let (_, copied) = rewrite_manifest_image("env:\n  X: \"1\"\n", "o", "old", "new").unwrap();
+        assert!(copied.is_none());
     }
 
     #[test]

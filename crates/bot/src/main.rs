@@ -27,6 +27,7 @@ mod org_sync;
 mod platform_api;
 mod promote;
 mod proxy;
+mod registry;
 mod releases;
 mod render;
 mod state;

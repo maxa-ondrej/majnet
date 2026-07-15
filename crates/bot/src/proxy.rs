@@ -112,25 +112,28 @@ pub async fn registry_auth(
     State(state): State<Arc<AppState>>,
     Path(org): Path<String>,
 ) -> Result<Json<RegistryAuth>, (StatusCode, String)> {
-    // Precedence: the token set at runtime in Settings (DB) > the bootstrap
-    // env var (onboarding) > the App installation token (public packages only).
-    let stored = state
-        .store
-        .get_config("ghcr_token")
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let (username, password) = ghcr_credential(&state, &org)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
+    Ok(Json(RegistryAuth { username, password }))
+}
+
+/// The GHCR credential `(username, password)` used to pull (and, with a
+/// `write:packages` PAT, push) an org's app images. Precedence: the token set at
+/// runtime in Settings (DB) > the bootstrap env var > the App installation token
+/// (public packages only). GHCR does not honor App installation tokens for
+/// package pulls, so the configured PAT is strongly preferred.
+pub async fn ghcr_credential(
+    state: &crate::AppState,
+    org: &str,
+) -> anyhow::Result<(String, String)> {
+    let stored = state.store.get_config("ghcr_token")?;
     let password = match stored.or_else(|| state.config.ghcr_token.clone()) {
         Some(pat) => pat,
         None => {
-            let (_, token) = state
-                .github
-                .org_client_and_token(&org)
-                .await
-                .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
+            let (_, token) = state.github.org_client_and_token(org).await?;
             token.expose_secret().to_string()
         }
     };
-    Ok(Json(RegistryAuth {
-        username: "x-access-token".to_string(),
-        password,
-    }))
+    Ok(("x-access-token".to_string(), password))
 }

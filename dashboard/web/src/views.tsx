@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
 import { ChevronRight, Plus, Loader2, CheckCircle2, Circle, AlertCircle } from 'lucide-react'
-import { send, urls, useApps, useArchivedApps, useDeploys, useEvents, useImports, useNodeMetrics, useNodes, useProjects, useWhoami, IMPORT_STEPS, type ImportStatus } from './api'
+import { send, urls, useApps, useAppInfo, useArchivedApps, useDeploys, useEvents, useImports, useNodeMetrics, useNodes, useProjects, useWhoami, IMPORT_STEPS, type ImportStatus } from './api'
 import { useApiMutation } from './mutations'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -133,6 +133,33 @@ function RenameProjectControl({ org, current }: { org: string; current: string }
   )
 }
 
+// Per-env badges showing the running version the app reports at /info (scraped
+// at deploy time), falling back to the image digest when /info has no version.
+function AppEnvBadges({ org, app, classes, digestFor }: {
+  org: string; app: string; classes: string[]; digestFor: (cls: string) => string | null
+}) {
+  const info = useAppInfo(org, app)
+  const versionFor = (cls: string): string | null => {
+    const v = info.data?.find((r) => r.class === cls)?.info?.version
+    return typeof v === 'string' ? v : null
+  }
+  return (
+    <>
+      {classes.map((c) => {
+        const ver = versionFor(c)
+        const d = digestFor(c)
+        const label = ver ?? d
+        const title = label ? `running ${label}` : 'not running in this env'
+        return (
+          <Badge key={c} variant="secondary" className="bg-accent font-mono text-primary" title={title}>
+            {c}{label ? ` · ${label}` : ''}
+          </Badge>
+        )
+      })}
+    </>
+  )
+}
+
 export function ProjectDetail() {
   const { org } = useParams({ from: '/projects/$org' })
   const projects = useProjects()
@@ -196,10 +223,7 @@ export function ProjectDetail() {
                 <Link to="/projects/$org/apps/$app" params={{ org, app: a.name }} className="flex min-w-0 flex-1 flex-col">
                   <div className="flex flex-wrap items-center gap-2 font-semibold">
                     {a.name}
-                    {a.classes.map((c) => {
-                      const d = runningDigest(a.name, c)
-                      return <Badge key={c} variant="secondary" className="bg-accent font-mono text-primary" title={d ? `running ${d}` : 'not running in this env'}>{c}{d ? ` · ${d}` : ''}</Badge>
-                    })}
+                    <AppEnvBadges org={org} app={a.name} classes={a.classes} digestFor={(c) => runningDigest(a.name, c)} />
                   </div>
                   <div className="mt-0.5 truncate font-mono text-xs text-muted-foreground">{dm || '—'}</div>
                 </Link>
