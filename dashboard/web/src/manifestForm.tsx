@@ -17,6 +17,7 @@ export interface ManifestDraft {
   secrets: string[]
   migration: { on: boolean; command: string[] }
   volumes: [string, string][]
+  replicas: string
 }
 
 type Rec = Record<string, unknown>
@@ -39,6 +40,7 @@ export function fromData(data: unknown): ManifestDraft {
     volumes: Array.isArray(d.volumes)
       ? d.volumes.map((v) => { const r = asRec(v); return [str(r.name), str(r.path)] as [string, string] })
       : [],
+    replicas: str(d.replicas, '1'),
   }
 }
 
@@ -70,6 +72,8 @@ export function toManifest(d: ManifestDraft, file: string, app: string): Rec {
     .map(([name, path]) => ({ name: name.trim(), path: path.trim() }))
     .filter((v) => v.name && v.path)
   if (volumes.length) out.volumes = volumes
+  const replicas = Number(d.replicas)
+  if (Number.isFinite(replicas) && replicas > 1) out.replicas = replicas
   return out
 }
 
@@ -139,6 +143,11 @@ export function ManifestForm({ file, draft, onChange }: { file: string; draft: M
         <span className="text-xs text-muted-foreground">Stable/testing/preview get an auto host <code className="font-mono">{'{app}.{project}.<base-domain>'}</code>; a domain here is a production custom domain (Cloudflare + edge).</span>
         <Fld label="Additional production domains"><ListEditor values={draft.ingress.domains} placeholder="www.example.com" onChange={(domains) => set('ingress', { ...draft.ingress, domains })} /></Fld>
       </Section>
+
+      <Fld label="Replicas">
+        <Input type="number" min="1" value={draft.replicas} onChange={(e) => set('replicas', e.target.value)} />
+        <span className="text-xs text-muted-foreground">Container replicas, load-balanced by the edge. Must be 1 for apps with a persistent volume (single-writer).</span>
+      </Fld>
 
       <Section label="Health check" on={draft.health.on} onToggle={(on) => set('health', { ...draft.health, on })}>
         <div className="grid grid-cols-[2fr_1fr_1fr] gap-2.5">

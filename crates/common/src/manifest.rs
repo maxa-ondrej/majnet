@@ -34,6 +34,15 @@ pub struct AppManifest {
     /// ("archive, never delete"). For stateful apps that write to disk.
     #[serde(default)]
     pub volumes: Vec<Volume>,
+    /// Number of container replicas to run, round-robin load-balanced by the
+    /// edge Traefik. Defaults to 1. Capped at 1 for volume-backed apps
+    /// (a persistent volume is single-writer).
+    #[serde(default = "default_replicas")]
+    pub replicas: u32,
+}
+
+fn default_replicas() -> u32 {
+    1
 }
 
 /// A persistent named volume mounted into the app container. `name` identifies
@@ -222,6 +231,11 @@ impl AppManifest {
                 v.path
             );
         }
+        ensure!(self.replicas >= 1, "replicas must be at least 1");
+        ensure!(
+            self.replicas == 1 || self.volumes.is_empty(),
+            "cannot run more than one replica of an app with persistent volumes (single-writer)"
+        );
         Ok(())
     }
 }
@@ -302,6 +316,23 @@ mod tests {
         assert_eq!(m.volumes.len(), 1);
         assert_eq!(m.volumes[0].name, "data");
         assert_eq!(m.volumes[0].path, "/app/data");
+    }
+
+    #[test]
+    fn replicas_default_is_one() {
+        let m = AppManifest::parse(&format!("name: api\nimage: ghcr.io/org/api@{DIGEST}\n")).unwrap();
+        assert_eq!(m.replicas, 1);
+    }
+
+    #[test]
+    fn rejects_replicas_with_volume() {
+        let yaml = format!(
+            "name: api\nimage: ghcr.io/org/api@{DIGEST}\nreplicas: 3\nvolumes:\n  - name: data\n    path: /app/data\n"
+        );
+        assert!(AppManifest::parse(&yaml)
+            .unwrap_err()
+            .to_string()
+            .contains("more than one replica"));
     }
 
     #[test]

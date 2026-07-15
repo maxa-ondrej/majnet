@@ -111,20 +111,47 @@ pub async fn converge_app(
     extra_env: &[(String, String)],
 ) -> Result<String> {
     let config_hash = config_hash(manifest, secrets, extra_env);
-    let existing = list_app_containers(ctx, &manifest.name).await?;
+    let replicas = manifest.replicas.max(1);
+    let base = format!(
+        "{}-{}-{}-{}",
+        ctx.project,
+        manifest.name,
+        ctx.class.as_str(),
+        &config_hash[..8]
+    );
+    // Replica 1 keeps the unsuffixed name so existing single-container apps stay
+    // in sync (no churn); further replicas get a `-N` suffix.
+    let desired: Vec<String> = (1..=replicas)
+        .map(|i| if i == 1 { base.clone() } else { format!("{base}-{i}") })
+        .collect();
+    let desired_set: std::collections::HashSet<&str> =
+        desired.iter().map(String::as_str).collect();
 
-    let current = existing.iter().find(|c| {
-        label(c, LABEL_CONFIG) == Some(config_hash.as_str())
-            && c.state == Some(bollard::models::ContainerSummaryStateEnum::RUNNING)
-    });
-    if current.is_some() {
+    let existing = list_app_containers(ctx, &manifest.name).await?;
+    let running_current: std::collections::HashSet<String> = existing
+        .iter()
+        .filter(|c| {
+            label(c, LABEL_CONFIG) == Some(config_hash.as_str())
+                && c.state == Some(bollard::models::ContainerSummaryStateEnum::RUNNING)
+        })
+        .filter_map(container_name)
+        .collect();
+    // In sync when every desired replica runs at the current hash and no other
+    // (old-hash or surplus) container of this app is left.
+    let in_sync = desired.iter().all(|n| running_current.contains(n))
+        && existing
+            .iter()
+            .filter_map(container_name)
+            .all(|n| desired_set.contains(n.as_str()));
+    if in_sync {
         return Ok("in sync".into());
     }
     if ctx.dry_run {
         return Ok(format!(
-            "DRY RUN: would deploy {} ({})",
+            "DRY RUN: would deploy {} ({}, {replicas} replica{})",
             manifest.image,
-            &config_hash[..8]
+            &config_hash[..8],
+            if replicas == 1 { "" } else { "s" }
         ));
     }
 
@@ -156,91 +183,90 @@ pub async fn converge_app(
         .await?;
     }
 
-    let name = format!(
-        "{}-{}-{}-{}",
-        ctx.project,
-        manifest.name,
-        ctx.class.as_str(),
-        &config_hash[..8]
-    );
-    remove_container_if_exists(ctx.docker, &name).await?; // crashed previous attempt
-
-    let body = container_spec(
-        ctx,
-        manifest,
-        secrets.is_some(),
-        &secrets_dir,
-        extra_env,
-        &config_hash,
-    );
-    ctx.docker
-        .create_container(
-            Some(qp::CreateContainerOptions {
-                name: Some(name.clone()),
-                ..Default::default()
-            }),
-            body,
-        )
-        .await
-        .context("creating container")?;
-    ctx.docker
-        .start_container(&name, None::<qp::StartContainerOptions>)
-        .await
-        .context("starting container")?;
-
-    // Production apps with an ingress also join the shared `edge` network so
-    // edge-main (Traefik) can route to them (ADR 0007). The network is ensured
-    // by the platform-services pass, which runs before projects.
-    if ctx.class == EnvClass::Production && manifest.ingress.is_some() {
-        // Best-effort: if the edge network isn't there yet (edge-main not
-        // converged, or local/smoke mode), the app just isn't routable until a
-        // later cycle — don't fail the deploy over it.
-        if let Err(e) = ctx
-            .docker
-            .connect_network(
-                "edge",
-                bollard::models::NetworkConnectRequest {
-                    container: name.clone(),
+    // Create each missing replica, health-gating before moving on. A failure
+    // removes just that replica and aborts — the old set keeps serving (nothing
+    // is drained until all desired replicas are healthy).
+    for name in &desired {
+        if running_current.contains(name) {
+            continue;
+        }
+        remove_container_if_exists(ctx.docker, name).await?; // crashed previous attempt
+        let body = container_spec(
+            ctx,
+            manifest,
+            secrets.is_some(),
+            &secrets_dir,
+            extra_env,
+            &config_hash,
+        );
+        ctx.docker
+            .create_container(
+                Some(qp::CreateContainerOptions {
+                    name: Some(name.clone()),
                     ..Default::default()
-                },
+                }),
+                body,
             )
             .await
-        {
-            tracing::warn!(
-                app = manifest.name,
-                error = format!("{e:#}"),
-                "could not attach app to the edge network (is edge-main up?)"
-            );
+            .context("creating container")?;
+        ctx.docker
+            .start_container(name, None::<qp::StartContainerOptions>)
+            .await
+            .context("starting container")?;
+
+        // Production apps with an ingress also join the shared `edge` network so
+        // edge-main (Traefik) can route to (and load-balance across) them
+        // (ADR 0007). Best-effort — not routable until edge-main is up.
+        if ctx.class == EnvClass::Production && manifest.ingress.is_some() {
+            if let Err(e) = ctx
+                .docker
+                .connect_network(
+                    "edge",
+                    bollard::models::NetworkConnectRequest {
+                        container: name.clone(),
+                        ..Default::default()
+                    },
+                )
+                .await
+            {
+                tracing::warn!(
+                    app = manifest.name,
+                    error = format!("{e:#}"),
+                    "could not attach app to the edge network (is edge-main up?)"
+                );
+            }
+        }
+
+        // Health gate. Failure leaves the old set serving.
+        if let Err(e) = await_healthy(ctx.docker, name, manifest).await {
+            let _ = ctx
+                .docker
+                .remove_container(
+                    name,
+                    Some(qp::RemoveContainerOptions {
+                        force: true,
+                        ..Default::default()
+                    }),
+                )
+                .await;
+            return Err(e.context("health check failed — old container keeps serving"));
         }
     }
 
-    // Health gate. Failure leaves the old container serving.
-    if let Err(e) = await_healthy(ctx.docker, &name, manifest).await {
-        let _ = ctx
-            .docker
-            .remove_container(
-                &name,
-                Some(qp::RemoveContainerOptions {
-                    force: true,
-                    ..Default::default()
-                }),
-            )
-            .await;
-        return Err(e.context("health check failed — old container keeps serving"));
-    }
-
-    // Drain: the new container is healthy (and routed); stop the old ones.
+    // Drain: the new replicas are healthy (and routed); remove old-hash
+    // containers and any surplus replicas (scale-down).
     for old in &existing {
         if let Some(old_name) = container_name(old) {
-            if old_name != name {
+            if !desired_set.contains(old_name.as_str()) {
                 remove_container_if_exists(ctx.docker, &old_name).await?;
             }
         }
     }
     Ok(format!(
-        "deployed {} ({})",
+        "deployed {} ({}, {replicas} replica{})",
         manifest.image,
-        &config_hash[..8]
+        &config_hash[..8],
+        if replicas == 1 { "" } else { "s" }
     ))
 }
 
@@ -315,7 +341,11 @@ fn config_hash(
     let mut hasher = sha2::Sha256::new();
     hasher.update(SPEC_VERSION);
     hasher.update([0]);
-    hasher.update(serde_yaml::to_string(manifest).expect("manifest serializes"));
+    // Replica count is not part of the identity — scaling up/down adds/removes
+    // containers rather than recreating them — so normalize it out of the hash.
+    let mut normalized = manifest.clone();
+    normalized.replicas = 1;
+    hasher.update(serde_yaml::to_string(&normalized).expect("manifest serializes"));
     for (k, v) in secrets
         .into_iter()
         .flatten()
