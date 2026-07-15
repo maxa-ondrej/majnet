@@ -235,4 +235,25 @@ impl Store {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
+
+    /// The release version whose image is exactly `app_image` (digest-pinned),
+    /// if one was recorded — used to label render-PR diffs with the version
+    /// instead of a bare digest. `None` when no matching release is known.
+    pub fn version_for_image(
+        &self,
+        org: &str,
+        app: &str,
+        app_image: &str,
+    ) -> Result<Option<String>> {
+        use rusqlite::OptionalExtension;
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT version FROM releases WHERE org = ?1 AND app = ?2 AND app_image = ?3
+             ORDER BY published_at DESC LIMIT 1",
+            rusqlite::params![org, app, app_image],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("version_for_image")
+    }
 }

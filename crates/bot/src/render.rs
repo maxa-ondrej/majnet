@@ -19,6 +19,7 @@
 //! undeploy it.
 
 use anyhow::{bail, ensure, Context, Result};
+use base64::Engine;
 use majnet_common::{manifest::AppManifest, merge::merge, EnvClass};
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -212,6 +213,15 @@ async fn push_render_pr(
         crate::git::create_ref(&client, &repo, &render_branch, &commit_sha).await?;
     }
 
+    // Human-readable version diff (falls back to short digests) for the PR body.
+    let summary = version_summary(state, &client, org, &env_branch, &files).await;
+    let body = format!(
+        "Rendered manifests from `main@{source_commit}`.\n\n\
+         Merging this PR **is the deploy trigger** for `{}`.{}",
+        class.as_str(),
+        summary.unwrap_or_default()
+    );
+
     // One open render PR per class.
     let open: serde_json::Value = client
         .get(
@@ -220,7 +230,14 @@ async fn push_render_pr(
         )
         .await?;
     let pr_number = match open.as_array().and_then(|prs| prs.first()) {
-        Some(pr) => pr["number"].as_u64().context("PR has no number")?,
+        Some(pr) => {
+            let n = pr["number"].as_u64().context("PR has no number")?;
+            // Keep the body current as pending changes accumulate into this PR.
+            let _: std::result::Result<serde_json::Value, _> = client
+                .patch(format!("{repo}/pulls/{n}"), Some(&json!({ "body": body })))
+                .await;
+            n
+        }
         None => {
             let pr: serde_json::Value = client
                 .post(
@@ -229,11 +246,7 @@ async fn push_render_pr(
                         "title": format!("render: {}", class.as_str()),
                         "head": render_branch,
                         "base": env_branch,
-                        "body": format!(
-                            "Rendered manifests from `main@{source_commit}`.\n\n\
-                             Merging this PR **is the deploy trigger** for `{}`.",
-                            class.as_str()
-                        ),
+                        "body": body,
                     })),
                 )
                 .await
@@ -271,6 +284,87 @@ async fn push_render_pr(
         );
     }
     Ok(())
+}
+
+/// The `image:` of a rendered manifest, if present.
+fn image_of(yaml: &str) -> Option<String> {
+    serde_yaml::from_str::<serde_yaml::Value>(yaml)
+        .ok()?
+        .get("image")?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// A short human ref for an image: its recorded release version if known, else
+/// the first 12 hex of the digest.
+fn short_ref(store: &crate::state::Store, org: &str, app: &str, image: &str) -> String {
+    if let Ok(Some(v)) = store.version_for_image(org, app, image) {
+        return v;
+    }
+    match image.split_once("@sha256:") {
+        Some((_, digest)) => digest.chars().take(12).collect(),
+        None => image.to_string(),
+    }
+}
+
+/// A markdown "Version changes" section for the render PR body: one row per app
+/// whose rendered image differs from the current env branch, showing the release
+/// version (or short digest) old → new. Best-effort — any read/parse hiccup just
+/// omits that app; returns None when nothing changed.
+async fn version_summary(
+    state: &AppState,
+    client: &octocrab::Octocrab,
+    org: &str,
+    env_branch: &str,
+    files: &BTreeMap<String, String>,
+) -> Option<String> {
+    let repos = client.repos(org, "ops");
+    let mut rows = Vec::new();
+    for (path, new_content) in files {
+        // Only top-level `<app>.yaml` manifests (skip `secrets/…`).
+        let Some(app) = path.strip_suffix(".yaml").filter(|p| !p.contains('/')) else {
+            continue;
+        };
+        let Some(new_image) = image_of(new_content) else {
+            continue;
+        };
+        // Current image on the env branch (None = newly added app).
+        let old_image = match repos
+            .get_content()
+            .path(path)
+            .r#ref(env_branch)
+            .send()
+            .await
+        {
+            Ok(content) => content
+                .items
+                .into_iter()
+                .next()
+                .and_then(|item| item.content)
+                .map(|c| c.replace(['\n', ' '], ""))
+                .and_then(|c| base64::engine::general_purpose::STANDARD.decode(c).ok())
+                .and_then(|b| String::from_utf8(b).ok())
+                .and_then(|y| image_of(&y)),
+            Err(_) => None,
+        };
+        if old_image.as_deref() == Some(new_image.as_str()) {
+            continue; // unchanged
+        }
+        let new_ref = short_ref(&state.store, org, app, &new_image);
+        let old_ref = match &old_image {
+            Some(img) => short_ref(&state.store, org, app, img),
+            None => "—".to_string(),
+        };
+        rows.push(format!("| `{app}` | `{old_ref}` → `{new_ref}` |"));
+    }
+    if rows.is_empty() {
+        return None;
+    }
+    rows.sort();
+    Some(format!(
+        "\n\n**Version changes**\n\n| app | change |\n|---|---|\n{}",
+        rows.join("\n")
+    ))
 }
 
 #[cfg(test)]
