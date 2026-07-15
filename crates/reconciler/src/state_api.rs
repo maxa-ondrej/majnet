@@ -31,6 +31,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/rename/commit/{org}", post(rename_commit))
         .route("/api/rename/project-prepare/{org}", post(project_prepare))
         .route("/api/rename/project-commit/{org}", post(project_commit))
+        .route("/api/purge/{org}", post(purge))
         .route("/api/ephemeral/extend/{project}/{app}", post(extend))
         .route(
             "/api/migrate/{project}/{app}",
@@ -185,6 +186,30 @@ async fn project_commit(
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
     Ok(format!("migrated project {} → {} [{}]", b.old, b.new, done.join(", ")))
+}
+
+#[derive(serde::Deserialize)]
+struct PurgeBody {
+    app: String,
+}
+
+/// `POST /api/purge/{org}` — permanently reap an archived app's runtime + data
+/// (containers, volumes, database). Platform-admin (infra) gated. The bot has
+/// already parked the manifests under `archived/<app>/` and gates this on the
+/// app being archived; here we only touch the physical footprint.
+async fn purge(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(org): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+    Json(b): Json<PurgeBody>,
+) -> Result<String, (StatusCode, String)> {
+    crate::authz::require_platform_admin(&state, &headers)
+        .await
+        .map_err(|e| (StatusCode::FORBIDDEN, format!("{e:#}")))?;
+    let purged = crate::purge::purge_app(&state, &org, &b.app)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
+    Ok(format!("purged {} [{}]", b.app, purged.join(", ")))
 }
 
 #[derive(serde::Serialize)]

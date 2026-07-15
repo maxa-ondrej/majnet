@@ -184,6 +184,39 @@ pub async fn rename_database(
     Ok(())
 }
 
+/// Permanently drop an app's logical database + its owning role/user — the DB
+/// half of an archived-app purge (§2 escape from "never delete"). Idempotent
+/// (`IF EXISTS`). Never touches the shared per-project `project_role`.
+pub async fn drop_database(docker: &Docker, engine: DbEngine, db: &str) -> Result<()> {
+    exec(docker, engine_container(engine), &drop_script(engine, db))
+        .await
+        .with_context(|| format!("dropping database {db}"))
+}
+
+/// The per-engine drop command (DB + app role/user). Pure, so it's unit-tested.
+fn drop_script(engine: DbEngine, db: &str) -> String {
+    match engine {
+        // Terminate stragglers, drop the DB, then the role (same name).
+        DbEngine::Postgres => format!(
+            r#"psql -U postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='{db}' AND pid <> pg_backend_pid()" >/dev/null 2>&1 || true
+psql -U postgres -c "DROP DATABASE IF EXISTS \"{db}\""
+psql -U postgres -c "DROP ROLE IF EXISTS \"{db}\"""#
+        ),
+        DbEngine::Mariadb => format!(
+            r#"ROOT="$(cat /run/secrets/mariadb-root)"
+mariadb -uroot -p"$ROOT" -e "DROP DATABASE IF EXISTS \`{db}\`; DROP USER IF EXISTS '{db}'@'%';""#
+        ),
+        DbEngine::Valkey => format!(
+            r#"AUTH="$(cat /run/secrets/valkey-root)"
+valkey-cli -a "$AUTH" --no-auth-warning ACL DELUSER {db} >/dev/null 2>&1 || true
+valkey-cli -a "$AUTH" --no-auth-warning ACL SAVE"#
+        ),
+        DbEngine::Mongodb => format!(
+            r#"mongosh --quiet -u root -p "$(cat /run/secrets/mongodb-root)" --authenticationDatabase admin --eval 'const d = db.getSiblingDB("{db}"); try {{ d.dropUser("{db}"); }} catch (e) {{}} d.dropDatabase();'"#
+        ),
+    }
+}
+
 /// The per-engine rename command. `None` = nothing to do (Valkey); `Err` =
 /// unsupported (Mongo). Pure so it can be unit-tested like `restore_script`.
 fn rename_script(engine: DbEngine, old: &str, new: &str) -> Result<Option<String>> {
@@ -464,6 +497,20 @@ mod tests {
         assert!(rename_script(DbEngine::Valkey, "a", "b").unwrap().is_none());
         // Mongo is unsupported (matches the restore limitation).
         assert!(rename_script(DbEngine::Mongodb, "a", "b").is_err());
+    }
+
+    #[test]
+    fn drop_script_per_engine() {
+        use super::drop_script;
+        use majnet_common::manifest::DbEngine;
+        let pg = drop_script(DbEngine::Postgres, "demo_app_production");
+        assert!(pg.contains(r#"DROP DATABASE IF EXISTS \"demo_app_production\""#));
+        assert!(pg.contains(r#"DROP ROLE IF EXISTS \"demo_app_production\""#));
+        assert!(pg.contains("pg_terminate_backend"));
+        let maria = drop_script(DbEngine::Mariadb, "d");
+        assert!(maria.contains("DROP DATABASE IF EXISTS") && maria.contains("DROP USER IF EXISTS 'd'@'%'"));
+        assert!(drop_script(DbEngine::Valkey, "d").contains("ACL DELUSER d"));
+        assert!(drop_script(DbEngine::Mongodb, "d").contains("dropDatabase"));
     }
 
     #[test]

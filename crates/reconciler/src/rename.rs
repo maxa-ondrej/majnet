@@ -321,7 +321,7 @@ async fn ensure_helper_image(docker: &Docker) {
 
 /// Resolve a GitHub org to its project name (container/volume/DB prefix) via the
 /// platform registry — the org and the project name can differ (§2).
-async fn resolve_project(state: &AppState, org: &str) -> Result<String> {
+pub(crate) async fn resolve_project(state: &AppState, org: &str) -> Result<String> {
     let platform = crate::snapshot::fetch(
         &state.http,
         &state.config,

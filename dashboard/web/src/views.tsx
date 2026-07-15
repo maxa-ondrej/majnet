@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
 import { ChevronRight, Plus, Loader2, CheckCircle2, Circle, AlertCircle } from 'lucide-react'
-import { send, urls, useApps, useDeploys, useEvents, useImports, useNodeMetrics, useNodes, useProjects, useWhoami, IMPORT_STEPS, type ImportStatus } from './api'
+import { send, urls, useApps, useArchivedApps, useDeploys, useEvents, useImports, useNodeMetrics, useNodes, useProjects, useWhoami, IMPORT_STEPS, type ImportStatus } from './api'
 import { useApiMutation } from './mutations'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -89,6 +89,32 @@ export function Projects() {
 }
 
 // ── Project detail ───────────────────────────────────────────────────────────
+function ArchivedApps({ org }: { org: string }) {
+  const q = useArchivedApps(org)
+  const m = useApiMutation({ invalidate: [['archived', org], ['apps', org], ['events']] })
+  const apps = q.data ?? []
+  if (apps.length === 0) return null
+  return (
+    <div className="mt-6">
+      <h2 className="mb-2.5 text-sm font-semibold text-muted-foreground">Archived</h2>
+      <div className="flex flex-col gap-2">
+        {apps.map((name) => (
+          <div key={name} className="flex items-center gap-3 rounded-lg border border-dashed bg-card/50 px-4 py-3">
+            <span className="min-w-0 flex-1 font-mono text-sm text-muted-foreground">{name}</span>
+            <Badge variant="outline" className="text-muted-foreground">archived</Badge>
+            <ConfirmButton variant="outline" size="sm" className="text-destructive" disabled={m.isPending}
+              title={`Permanently delete ${name}?`}
+              description="Irreversible: purges its containers, volumes and databases, and deletes the GitHub source repo. There is no undo."
+              confirmText="Delete permanently" onConfirm={() => m.mutate(() => send(urls.appDelete(org, name)))}>
+              Delete
+            </ConfirmButton>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function RenameProjectControl({ org, current }: { org: string; current: string }) {
   const [name, setName] = useState('')
   const m = useApiMutation({ invalidate: [['projects'], ['apps', org], ['events']] })
@@ -176,6 +202,8 @@ export function ProjectDetail() {
           })}
         </div>
       </QueryState>
+
+      <ArchivedApps org={org} />
     </>
   )
 }

@@ -39,9 +39,14 @@ export function AppDetail() {
       ? `https://adminer.prod.majksa.net/?pgsql=majnet-postgres&db=${`${project}_${app}_production`.replace(/-/g, '_')}`
       : null
 
+  const navigate = useNavigate()
   const act = useApiMutation({ invalidate: [['events']] })
   const deploy = useApiMutation({ invalidate: [['deploys', org], ['events']] })
   const retry = useApiMutation({ invalidate: [['imports', org], ['apps', org]] })
+  const archive = useApiMutation({
+    invalidate: [['apps', org], ['archived', org], ['events']],
+    onDone: () => navigate({ to: '/projects/$org', params: { org } }),
+  })
 
   return (
     <>
@@ -53,6 +58,10 @@ export function AppDetail() {
         <ConfirmButton size="sm" title={`Promote ${app} to production?`} description="An admin still merges the render PR in Deployments."
           confirmText="Promote" onConfirm={() => deploy.mutate(() => send(urls.promote(org, app)))}>Promote → production</ConfirmButton>
         <RenameControl org={org} app={app} stateful={!!a?.database} />
+        <ConfirmButton variant="outline" size="sm" className="text-destructive" disabled={archive.isPending}
+          title={`Archive ${app}?`}
+          description="Takes the app down and archives its source repo. Volumes and databases are kept — you can permanently delete it later from the project page to reclaim storage."
+          confirmText="Archive" onConfirm={() => archive.mutate(() => send(urls.appArchive(org, app)))}>Archive</ConfirmButton>
       </PageHead>
 
       {imp && (

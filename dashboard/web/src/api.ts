@@ -144,6 +144,11 @@ export const urls = {
   appRename: (org: string, app: string) =>
     `${BOT}/apps/${encodeURIComponent(org)}/${encodeURIComponent(app)}/rename`,
   projectRename: (org: string) => `${BOT}/projects/${encodeURIComponent(org)}/rename`,
+  appArchive: (org: string, app: string) =>
+    `${BOT}/apps/${encodeURIComponent(org)}/${encodeURIComponent(app)}/archive`,
+  appDelete: (org: string, app: string) =>
+    `${BOT}/apps/${encodeURIComponent(org)}/${encodeURIComponent(app)}/delete`,
+  archivedApps: (org: string) => `${BOT}/archived/${encodeURIComponent(org)}`,
 }
 
 // ── query hooks ──────────────────────────────────────────────────────────────
@@ -184,3 +189,5 @@ export const useRegistry = () =>
   useQuery({ queryKey: ['registry'], queryFn: () => getJSON<RegistryStatus>(urls.registry) })
 export const useReleases = (org: string, app: string) =>
   useQuery({ queryKey: ['releases', org, app], queryFn: () => getJSON<StoredRelease[]>(urls.releases(org, app)) })
+export const useArchivedApps = (org: string) =>
+  useQuery({ queryKey: ['archived', org], queryFn: () => getJSON<string[]>(urls.archivedApps(org)) })

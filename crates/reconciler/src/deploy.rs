@@ -666,3 +666,18 @@ async fn remove_container_if_exists(docker: &Docker, name: &str) -> Result<()> {
         Err(e) => Err(e.into()),
     }
 }
+
+/// Force-remove a named volume, tolerating "already gone" (404). The one place
+/// MajNet deletes data — only reached by the archived-app purge (§2 escape).
+pub async fn remove_volume(docker: &Docker, name: &str) -> Result<()> {
+    match docker
+        .remove_volume(name, Some(qp::RemoveVolumeOptions { force: true }))
+        .await
+    {
+        Ok(()) => Ok(()),
+        Err(bollard::errors::Error::DockerResponseServerError {
+            status_code: 404, ..
+        }) => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("removing volume {name}")),
+    }
+}

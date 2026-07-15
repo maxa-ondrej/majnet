@@ -1556,6 +1556,193 @@ async fn merge_pr_with_retry(client: &octocrab::Octocrab, repo: &str, number: u6
         .with_context(|| format!("render PR #{number} still not mergeable after retries"))
 }
 
+// ── archive + permanent delete ───────────────────────────────────────────────
+
+/// `POST /api/apps/{org}/{app}/archive` — take an app down but keep it fully
+/// recoverable (admin). Moves `apps/<app>/*` → `archived/<app>/*` and drops it
+/// from `project.yaml` in one commit: render un-deploys it, org-sync archives
+/// the source repo, and its volumes + databases are left intact.
+pub async fn app_archive_post(
+    State(state): State<Arc<AppState>>,
+    Path((org, app)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<String, ApiError> {
+    check_name(&app)?;
+    let actor = crate::authz::require(&state, &headers, &org, Role::Admin)
+        .await
+        .map_err(|e| (StatusCode::FORBIDDEN, format!("{e:#}")))?;
+    if has_open_render_pr(&state, &org).await.map_err(bad_gateway)? {
+        return Err(bad_request(
+            "this project has an unmerged render PR — merge or close it in Deployments first",
+        ));
+    }
+    let dir = app_dir_files(&state, &org, &app).await.map_err(bad_gateway)?;
+    if dir.is_empty() {
+        return Err(bad_request(format!("app {app} not found")));
+    }
+    let manifests: BTreeMap<String, String> = dir
+        .iter()
+        .filter(|(p, _)| MANIFEST_FILES.contains(&p.as_str()))
+        .map(|(p, b)| Ok((p.clone(), String::from_utf8(b.clone())?)))
+        .collect::<Result<_>>()
+        .map_err(bad_gateway)?;
+
+    let mut changes: BTreeMap<String, Option<String>> = BTreeMap::new();
+    for (rel, bytes) in &dir {
+        let content = String::from_utf8(bytes.clone()).map_err(|e| bad_gateway(e.into()))?;
+        changes.insert(format!("archived/{app}/{rel}"), Some(content));
+        changes.insert(format!("apps/{app}/{rel}"), None);
+    }
+    let mut project = read_project(&state, &org).await.map_err(bad_gateway)?;
+    if project.apps.iter().any(|a| a.name == app) {
+        project.apps.retain(|a| a.name != app);
+        changes.insert(
+            "project.yaml".to_string(),
+            Some(serde_yaml::to_string(&project).map_err(|e| bad_gateway(e.into()))?),
+        );
+    }
+    commit_ops_tree(
+        &state,
+        &org,
+        &changes,
+        &format!("archive app {app} via dashboard by {actor}"),
+    )
+    .await
+    .map_err(bad_gateway)?;
+    merge_render_prs(&state, &org, &app_classes(&manifests))
+        .await
+        .map_err(bad_gateway)?;
+    state
+        .store
+        .log_event("app-archived", Some(&org), &format!("{app} by {actor}"))
+        .map_err(bad_gateway)?;
+    Ok(format!(
+        "archived {app} — undeployed and source repo archived; data kept. Permanently delete it from the project page to reclaim storage."
+    ))
+}
+
+/// `GET /api/archived/{org}` — names of archived apps (`archived/<app>/`).
+pub async fn archived_get(
+    State(state): State<Arc<AppState>>,
+    Path(org): Path<String>,
+) -> Result<Json<Vec<String>>, ApiError> {
+    let (_, tar) = crate::proxy::fetch_snapshot(&state, &org, "ops", "main")
+        .await
+        .map_err(bad_gateway)?;
+    let files = majnet_common::tarball::untar(&tar).map_err(bad_gateway)?;
+    let mut names: Vec<String> = files
+        .keys()
+        .filter_map(|p| p.strip_prefix("archived/"))
+        .filter_map(|rest| rest.strip_suffix("/base.yaml"))
+        .map(str::to_string)
+        .collect();
+    names.sort();
+    Ok(Json(names))
+}
+
+/// `POST /api/apps/{org}/{app}/delete` — permanently delete an ARCHIVED app
+/// (admin). Purges its runtime + volumes + databases (reconciler), deletes the
+/// GitHub source repo, and removes the archived manifests. Irreversible.
+pub async fn app_delete_post(
+    State(state): State<Arc<AppState>>,
+    Path((org, app)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<String, ApiError> {
+    check_name(&app)?;
+    let actor = crate::authz::require(&state, &headers, &org, Role::Admin)
+        .await
+        .map_err(|e| (StatusCode::FORBIDDEN, format!("{e:#}")))?;
+    let (_, tar) = crate::proxy::fetch_snapshot(&state, &org, "ops", "main")
+        .await
+        .map_err(bad_gateway)?;
+    let files = majnet_common::tarball::untar(&tar).map_err(bad_gateway)?;
+    let prefix = format!("archived/{app}/");
+    if !files.keys().any(|p| *p == format!("{prefix}base.yaml")) {
+        return Err(bad_request(format!(
+            "{app} is not archived — archive it first"
+        )));
+    }
+    if files.keys().any(|p| p.starts_with(&format!("apps/{app}/"))) {
+        return Err(bad_request(format!("{app} still has active manifests")));
+    }
+
+    // 1. Reap runtime + volumes + databases.
+    reconciler_purge(&state, &org, &app)
+        .await
+        .map_err(bad_gateway)?;
+    // 2. Delete the source repo (graceful — a manifests-only app has none, and
+    //    org policy may block deletion; in either case keep going).
+    let repo_note = match delete_repo(&state, &org, &app).await {
+        Ok(true) => "source repo deleted",
+        Ok(false) => "no source repo",
+        Err(e) => {
+            tracing::warn!(org, app, error = format!("{e:#}"), "repo delete failed");
+            "source repo left archived (deletion blocked)"
+        }
+    };
+    // 3. Remove the archived manifests.
+    let changes: BTreeMap<String, Option<String>> = files
+        .keys()
+        .filter(|p| p.starts_with(&prefix))
+        .map(|p| (p.clone(), None))
+        .collect();
+    commit_ops_tree(
+        &state,
+        &org,
+        &changes,
+        &format!("delete archived app {app} via dashboard by {actor}"),
+    )
+    .await
+    .map_err(bad_gateway)?;
+    state
+        .store
+        .log_event("app-deleted", Some(&org), &format!("{app} by {actor}"))
+        .map_err(bad_gateway)?;
+    Ok(format!(
+        "permanently deleted {app}: purged containers, volumes and databases; {repo_note}"
+    ))
+}
+
+/// Ask the reconciler to purge an archived app's runtime + data.
+async fn reconciler_purge(state: &AppState, org: &str, app: &str) -> Result<()> {
+    anyhow::ensure!(
+        !state.config.reconciler_url.is_empty(),
+        "reconciler URL not configured — cannot purge app data"
+    );
+    let url = format!(
+        "{}/api/purge/{org}",
+        state.config.reconciler_url.trim_end_matches('/')
+    );
+    let resp = state
+        .http
+        .post(&url)
+        .json(&serde_json::json!({ "app": app }))
+        .send()
+        .await
+        .context("calling reconciler purge")?;
+    let ok = resp.status().is_success();
+    let body = resp.text().await.unwrap_or_default();
+    anyhow::ensure!(ok, "reconciler purge failed: {body}");
+    Ok(())
+}
+
+/// Delete a source repo. `Ok(true)` = deleted, `Ok(false)` = no such repo
+/// (manifests-only app or already gone), `Err` = deletion refused (org policy).
+async fn delete_repo(state: &AppState, org: &str, repo: &str) -> Result<bool> {
+    let client = state.github.org_client(org).await?;
+    let exists: std::result::Result<serde_json::Value, _> = client
+        .get(format!("/repos/{org}/{repo}"), None::<&()>)
+        .await;
+    if exists.is_err() {
+        return Ok(false);
+    }
+    client
+        .delete::<serde_json::Value, _, ()>(format!("/repos/{org}/{repo}"), None)
+        .await
+        .with_context(|| format!("deleting repo {org}/{repo}"))?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

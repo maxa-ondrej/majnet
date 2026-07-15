@@ -27,6 +27,7 @@ mod ingress;
 mod metrics;
 mod migrate;
 mod platform;
+mod purge;
 mod rename;
 mod secrets;
 mod snapshot;
