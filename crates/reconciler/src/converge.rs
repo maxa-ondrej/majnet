@@ -301,8 +301,12 @@ async fn converge_one(
     // On an actual rollout (not a no-op "in sync"), scrape the app's standard
     // `/info` now that the health gate has proven it serves HTTP, and record the
     // build metadata for the dashboard. Best-effort — never fails the deploy.
+    // Label the deploy event with the reported version instead of the raw image
+    // digest when the app reports one.
     if !ctx.dry_run && summary.starts_with("deployed") {
-        crate::info::capture(state, ctx, &manifest).await;
+        if let Some(version) = crate::info::capture(state, ctx, &manifest).await {
+            return Ok(summary.replace(&manifest.image, &version));
+        }
     }
     Ok(summary)
 }

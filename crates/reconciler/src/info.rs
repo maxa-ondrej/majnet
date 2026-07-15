@@ -21,14 +21,25 @@ use majnet_common::manifest::AppManifest;
 use crate::deploy::{DeployCtx, LABEL_APP, LABEL_CLASS, LABEL_PROJECT};
 use crate::AppState;
 
-/// Probe the freshly-deployed app's `/info` and record what it reports (or why
-/// it couldn't be read) for this env. Never returns an error — a failed probe
-/// is stored, not propagated.
-pub async fn capture(state: &AppState, ctx: &DeployCtx<'_>, manifest: &AppManifest) {
-    let (info, error) = match probe(ctx, manifest).await {
-        Ok(value) => (Some(value.to_string()), None),
+/// Probe the freshly-deployed app's `/info`, record what it reports (or why it
+/// couldn't be read) for this env, and return the reported `version` (used to
+/// label the deploy event). Never returns an error — a failed probe is stored,
+/// not propagated.
+pub async fn capture(
+    state: &AppState,
+    ctx: &DeployCtx<'_>,
+    manifest: &AppManifest,
+) -> Option<String> {
+    let (value, error) = match probe(ctx, manifest).await {
+        Ok(value) => (Some(value), None),
         Err(e) => (None, Some(format!("{e:#}"))),
     };
+    let version = value
+        .as_ref()
+        .and_then(|v| v.get("version"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let info = value.as_ref().map(serde_json::Value::to_string);
     if let Err(e) = state.store.record_app_info(
         ctx.project,
         &manifest.name,
@@ -45,6 +56,7 @@ pub async fn capture(state: &AppState, ctx: &DeployCtx<'_>, manifest: &AppManife
             "recording /info failed"
         );
     }
+    version
 }
 
 /// GET `/info` from inside the running app container and parse it as JSON.
