@@ -1,26 +1,36 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
-import { send, urls, useApps, useAppInfo, useAppLogs, useAppSecrets, useEvents, useImports, useManifest, useNodeMetrics, useProjects, useReleases, type AppInfo, type ManifestFile } from './api'
+import {
+  RotateCw, ScrollText, KeyRound, SlidersHorizontal, ArrowUpFromLine, MoreVertical,
+} from 'lucide-react'
+import {
+  send, urls, useApps, useAppInfo, useAppLogs, useAppSecrets, useEvents, useImports,
+  useManifest, useNodeMetrics, useProjects, useReleases, type AppInfo, type ManifestFile,
+} from './api'
 import { useApiMutation } from './mutations'
-import { ConfirmButton, DeployStatus, ExtLink, QueryState, short, StatusBadge } from './ui'
-import { Crumbs, PageHead, ImportSteps } from './views'
+import { ConfirmButton, ExtLink, QueryState, short, StatusBadge } from './ui'
+import { Crumbs, ImportSteps } from './views'
 import { fromData, ManifestForm, toManifest, type ManifestDraft } from './manifestForm'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import {
+  Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
+} from '@/components/ui/dialog'
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { Sheet, SheetBody, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 
 const FILES = ['base.yaml', 'testing.yaml', 'stable.yaml', 'production.yaml', 'ephemeral.yaml']
-
-function Kv({ k, children }: { k: string; children: React.ReactNode }) {
-  return <div className="flex gap-2.5 text-sm"><span className="min-w-28 text-muted-foreground">{k}</span><span className="font-mono text-xs">{children}</span></div>
-}
+// Environment order for the selector + strip; filtered to the classes an app has.
+const ENV_ORDER = ['production', 'stable', 'testing', 'ephemeral'] as const
 
 // Replace a full `ghcr.io/…@sha256:…` image ref in a deploy-event result with the
-// version the app reports at /info (falling back to a short digest) — older events
-// were recorded before deploy events carried the version.
+// version the app reports at /info (else a short digest) — older events predate
+// versioned deploy events.
 const IMG_REF = /ghcr\.io\/\S+@sha256:[0-9a-f]{64}/
 function resultVersioned(result: string, rows?: AppInfo[]): string {
   const m = result.match(IMG_REF)
@@ -31,6 +41,8 @@ function resultVersioned(result: string, rows?: AppInfo[]): string {
   return result.replace(IMG_REF, String(repl))
 }
 
+type Sheeted = null | 'config' | 'logs' | 'secrets'
+
 export function AppDetail() {
   const { org, app } = useParams({ from: '/projects/$org/apps/$app' })
   const apps = useApps(org)
@@ -40,18 +52,21 @@ export function AppDetail() {
   const manifest = useManifest(org, app)
   const events = useEvents()
   const info = useAppInfo(org, app)
+  const metrics = useNodeMetrics()
+  const project = useProjects().data?.find((p) => p.org === org)?.name
   const appEvents = (events.data ?? []).filter((e) => e.action.trim().split(/\s+/).pop() === app)
   const imageOf = (f?: ManifestFile) => (f?.data as { image?: string } | null)?.image
   const prodImage = imageOf(manifest.data?.['production.yaml']) ?? imageOf(manifest.data?.['base.yaml'])
 
-  // "Open in Adminer" (ADR 0014): the managed DB name is {project}_{app}_{class}
-  // (hyphens → underscores), and the per-project Adminer auto-logs-in scoped to
-  // the project. Prod-only for now — that's the only env with an Adminer.
-  const project = useProjects().data?.find((p) => p.org === org)?.name
-  const adminerUrl =
-    project && a?.database && a.classes.includes('production')
-      ? `https://adminer.prod.majksa.net/?pgsql=majnet-postgres&db=${`${project}_${app}_production`.replace(/-/g, '_')}`
-      : null
+  const classes: string[] = ENV_ORDER.filter((c) => a?.classes.includes(c))
+  const [env, setEnv] = useState<string>('production')
+  // Settle the selection on a class the app actually has, once they load.
+  useEffect(() => {
+    if (classes.length && !classes.includes(env)) setEnv(classes[0]!)
+  }, [classes, env])
+
+  const [sheet, setSheet] = useState<Sheeted>(null)
+  const [renameOpen, setRenameOpen] = useState(false)
 
   const navigate = useNavigate()
   const act = useApiMutation({ invalidate: [['events']] })
@@ -62,93 +77,283 @@ export function AppDetail() {
     onDone: () => navigate({ to: '/projects/$org', params: { org } }),
   })
 
+  // Live, per-environment state.
+  const containersFor = (cls: string) =>
+    project ? (metrics.data ?? []).flatMap((n) => n.apps).filter((c) => c.name.startsWith(`${project}-${app}-${cls}-`)) : []
+  const versionFor = (cls: string): string | null => {
+    const v = info.data?.find((r) => r.class === cls)?.info?.version
+    return typeof v === 'string' ? v : null
+  }
+  const digestShort = (img?: string) => img?.split('@sha256:')[1]?.slice(0, 7) ?? null
+
+  const adminerUrl =
+    project && a?.database && a.classes.includes('production')
+      ? `https://adminer.prod.majksa.net/?pgsql=majnet-postgres&db=${`${project}_${app}_production`.replace(/-/g, '_')}`
+      : null
+
   return (
     <>
-      <Crumbs><Link to="/">Projects</Link> / <Link to="/projects/$org" params={{ org }}>{org}</Link> / {app}</Crumbs>
-      <PageHead title={app}>
-        {a && a.classes.length > 0 && <RestartControl org={org} app={app} classes={a.classes} run={act.mutate} busy={act.isPending} />}
-        <ConfirmButton variant="outline" size="sm" title={`Roll back ${app}?`} description={`Revert the last change on ${org}/ops.`}
-          confirmText="Roll back" onConfirm={() => deploy.mutate(() => send(urls.rollback(org)))}>Roll back</ConfirmButton>
-        <ConfirmButton size="sm" title={`Promote ${app} to production?`} description="An admin still merges the render PR in Deployments."
-          confirmText="Promote" onConfirm={() => deploy.mutate(() => send(urls.promote(org, app)))}>Promote → production</ConfirmButton>
-        <RenameControl org={org} app={app} stateful={!!a?.database} />
-        <ConfirmButton variant="outline" size="sm" className="text-destructive" disabled={archive.isPending}
-          title={`Archive ${app}?`}
-          description="Takes the app down and archives its source repo. Volumes and databases are kept — you can permanently delete it later from the project page to reclaim storage."
-          confirmText="Archive" onConfirm={() => archive.mutate(() => send(urls.appArchive(org, app)))}>Archive</ConfirmButton>
-      </PageHead>
+      <Crumbs>
+        <Link to="/">Projects</Link> / <Link to="/projects/$org" params={{ org }}>{org}</Link> / {app}
+      </Crumbs>
+
+      {/* ── app header ─────────────────────────────────────────────────────── */}
+      <div className="flex flex-wrap items-start gap-4">
+        <div className="min-w-0">
+          <h1 className="text-2xl font-semibold tracking-tight">{app}</h1>
+          <div className="mt-1 truncate text-sm text-muted-foreground">
+            {[short(a?.image), a?.database].filter(Boolean).join('  ·  ') || '—'}
+          </div>
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => setSheet('config')}>
+            <SlidersHorizontal className="size-4" /> Configuration
+          </Button>
+          <ConfirmButton variant="outline" size="sm" title={`Roll back ${app}?`}
+            description={`Revert the last change on ${org}/ops.`} confirmText="Roll back"
+            onConfirm={() => deploy.mutate(() => send(urls.rollback(org)))}>
+            Roll back
+          </ConfirmButton>
+          <ConfirmButton size="sm" title={`Promote ${app} to production?`}
+            description="An admin still merges the render PR in Deployments." confirmText="Promote"
+            onConfirm={() => deploy.mutate(() => send(urls.promote(org, app)))}>
+            <ArrowUpFromLine className="size-4" /> Promote
+          </ConfirmButton>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="icon" className="size-9" aria-label="More actions">
+                <MoreVertical className="size-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onSelect={() => setRenameOpen(true)}>Rename app…</DropdownMenuItem>
+              <DropdownMenuItem
+                variant="destructive"
+                onSelect={() => archive.mutate(() => send(urls.appArchive(org, app)))}>
+                Archive app
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </div>
 
       {imp && (
-        <Card className="mb-4"><CardContent className="pt-6">
-          <h2 className="mb-3 text-sm font-semibold">
-            {imp.status === 'failed' ? 'Import failed' : 'Importing…'}
-          </h2>
+        <Card className="mt-5"><CardContent className="pt-6">
+          <h2 className="mb-3 text-sm font-semibold">{imp.status === 'failed' ? 'Import failed' : 'Importing…'}</h2>
           <ImportSteps status={imp} />
           {imp.status === 'failed' && (
             <div className="mt-3 flex items-center gap-3">
               <Button size="sm" disabled={retry.isPending}
                 onClick={() => retry.mutate(() => send(urls.importRetry(org, app)))}>Retry import</Button>
-              <span className="text-xs text-muted-foreground">Re-runs from the stored request; re-enter a private-repo token or env secrets via the form.</span>
+              <span className="text-xs text-muted-foreground">Re-runs from the stored request; re-enter secrets via the form.</span>
             </div>
           )}
         </CardContent></Card>
       )}
 
-      {a && (
-        <Card className="mb-4"><CardContent className="flex flex-col gap-2.5 pt-6">
-          <Kv k="Deploy status"><span className="inline-flex items-center gap-2"><DeployStatus ev={appEvents[0]} />{appEvents[0] && <span className="text-muted-foreground">{resultVersioned(appEvents[0].result, info.data)} · {appEvents[0].at}</span>}</span></Kv>
-          <Kv k="Classes">{a.classes.join(', ') || '—'}</Kv>
-          <Kv k="Domains">
-            {a.domains.length
-              ? a.domains.map((d, i) => <span key={d}>{i > 0 && ', '}<ExtLink to={d} /></span>)
-              : '—'}
-          </Kv>
-          <Kv k="Image">{short(a.image)}</Kv>
-          {a.database && (
-            <Kv k="Database">
-              <span className="inline-flex items-center gap-3">
-                {a.database}
-                {adminerUrl && (
-                  <Button asChild variant="outline" size="sm">
-                    <a href={adminerUrl} target="_blank" rel="noreferrer">Open in Adminer ↗</a>
-                  </Button>
-                )}
-              </span>
-            </Kv>
-          )}
-        </CardContent></Card>
+      {/* ── environment selector (the centerpiece) ─────────────────────────── */}
+      {classes.length > 0 && (
+        <>
+          <div className="mt-6 flex flex-wrap items-center gap-x-4 gap-y-2">
+            <div className="inline-flex gap-0.5 rounded-xl bg-muted p-1">
+              {classes.map((c) => {
+                const live = containersFor(c).length > 0
+                return (
+                  <button key={c} onClick={() => setEnv(c)}
+                    className={`inline-flex h-8 items-center gap-2 rounded-lg px-3.5 text-[13px] font-medium transition-colors ${
+                      env === c ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>
+                    <span className={`size-1.5 rounded-full ${live ? 'bg-success' : 'bg-muted-foreground/40'}`} />
+                    {c.charAt(0).toUpperCase() + c.slice(1)}
+                  </button>
+                )
+              })}
+            </div>
+            <span className="text-xs text-muted-foreground">Status, containers, logs & secrets below follow this selection.</span>
+          </div>
+
+          <EnvironmentZone
+            app={app} env={env}
+            containers={containersFor(env)}
+            version={versionFor(env)}
+            domains={env === 'production' ? (a?.domains ?? []) : []}
+            adminerUrl={env === 'production' ? adminerUrl : null}
+            onLogs={() => setSheet('logs')} onSecrets={() => setSheet('secrets')}
+            restart={() => act.mutate(() => send(urls.restart(org, env, app)))} busy={act.isPending}
+          />
+        </>
       )}
 
-      {a && a.classes.length > 0 && <Containers project={project} app={app} classes={a.classes} />}
-
-      {a && <BuildInfo org={org} app={app} />}
+      {/* ── all environments (comparison; not filtered) ────────────────────── */}
+      {classes.length > 1 && (
+        <>
+          <SectionHead title="All environments" hint="click to switch · not filtered by the selector" />
+          <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${Math.min(classes.length, 4)}, minmax(0, 1fr))` }}>
+            {classes.map((c) => {
+              const ver = versionFor(c) ?? digestShort(containersFor(c)[0]?.image) ?? null
+              const live = containersFor(c).length > 0
+              return (
+                <button key={c} onClick={() => setEnv(c)}
+                  className={`flex flex-col gap-1.5 rounded-lg border p-3.5 text-left transition-colors hover:border-primary/50 ${
+                    env === c ? 'border-primary/60 ring-1 ring-primary/40' : ''}`}>
+                  <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{c}</span>
+                  <span className="font-mono text-base font-semibold">{ver ?? '—'}</span>
+                  {live
+                    ? <StatusBadge tone="success" dot>healthy</StatusBadge>
+                    : <StatusBadge tone="muted">not deployed</StatusBadge>}
+                </button>
+              )
+            })}
+          </div>
+        </>
+      )}
 
       <Releases org={org} app={app} prodImage={prodImage} />
 
-      <QueryState isLoading={manifest.isLoading} error={imp && !manifest.data ? undefined : manifest.error}>
-        {manifest.data && <ManifestEditor org={org} app={app} files={manifest.data} />}
-      </QueryState>
-
-      {a && <SecretsEditor org={org} app={app} classes={a.classes} />}
-
-      {a && a.classes.length > 0 && <LogsPanel org={org} app={app} classes={a.classes} />}
-
       {appEvents.length > 0 && (
-        <Card className="mt-4"><CardContent className="pt-6">
-          <h2 className="mb-2 text-sm font-semibold">Recent deploys</h2>
-          <Table>
-            <TableHeader><TableRow><TableHead>time</TableHead><TableHead>node</TableHead><TableHead>action</TableHead><TableHead>result</TableHead><TableHead>commit</TableHead></TableRow></TableHeader>
-            <TableBody className="font-mono text-xs">
-              {appEvents.slice(0, 8).map((e, i) => (
-                <TableRow key={i}><TableCell>{e.at}</TableCell><TableCell>{e.node}</TableCell><TableCell>{e.action}</TableCell>
-                  <TableCell className={e.result.startsWith('FAILED') ? 'text-destructive' : ''}>{e.result}</TableCell><TableCell>{e.commit.slice(0, 12)}</TableCell></TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardContent></Card>
+        <>
+          <SectionHead title="Recent deploys" />
+          <Card><CardContent className="pt-6">
+            <Table>
+              <TableHeader><TableRow><TableHead>time</TableHead><TableHead>node</TableHead><TableHead>action</TableHead><TableHead>result</TableHead><TableHead>commit</TableHead></TableRow></TableHeader>
+              <TableBody className="font-mono text-xs">
+                {appEvents.slice(0, 8).map((e, i) => (
+                  <TableRow key={i}>
+                    <TableCell>{e.at}</TableCell><TableCell>{e.node}</TableCell><TableCell>{e.action}</TableCell>
+                    <TableCell className={e.result.startsWith('FAILED') ? 'text-destructive' : ''}>{resultVersioned(e.result, info.data)}</TableCell>
+                    <TableCell>{e.commit.slice(0, 12)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent></Card>
+        </>
       )}
+
+      {/* ── on-demand drawers ──────────────────────────────────────────────── */}
+      <Sheet open={sheet === 'config'} onOpenChange={(o) => setSheet(o ? 'config' : null)}>
+        <SheetContent>
+          <SheetHeader><SheetTitle>Configuration</SheetTitle>
+            <span className="text-xs text-muted-foreground">base manifest + per-env overlays</span></SheetHeader>
+          <SheetBody>
+            <QueryState isLoading={manifest.isLoading} error={imp && !manifest.data ? undefined : manifest.error}>
+              {manifest.data && <ManifestEditor org={org} app={app} files={manifest.data} />}
+            </QueryState>
+          </SheetBody>
+        </SheetContent>
+      </Sheet>
+
+      <Sheet open={sheet === 'logs'} onOpenChange={(o) => setSheet(o ? 'logs' : null)}>
+        <SheetContent>
+          <SheetHeader><SheetTitle>Logs</SheetTitle><StatusBadge tone="accent">{env}</StatusBadge></SheetHeader>
+          <SheetBody>{sheet === 'logs' && <LogsView org={org} app={app} cls={env} />}</SheetBody>
+        </SheetContent>
+      </Sheet>
+
+      <Sheet open={sheet === 'secrets'} onOpenChange={(o) => setSheet(o ? 'secrets' : null)}>
+        <SheetContent>
+          <SheetHeader><SheetTitle>Secrets</SheetTitle><StatusBadge tone="accent">{env}</StatusBadge></SheetHeader>
+          <SheetBody>{sheet === 'secrets' && <SecretsView org={org} app={app} cls={env} />}</SheetBody>
+        </SheetContent>
+      </Sheet>
+
+      <RenameDialog org={org} app={app} stateful={!!a?.database} open={renameOpen} onOpenChange={setRenameOpen} />
     </>
   )
+}
+
+function SectionHead({ title, hint }: { title: string; hint?: string }) {
+  return (
+    <div className="mb-3 mt-8 flex items-center gap-2.5">
+      <h2 className="text-sm font-semibold">{title}</h2>
+      {hint && <span className="text-xs text-muted-foreground">{hint}</span>}
+      <span className="h-px flex-1 bg-border" />
+    </div>
+  )
+}
+
+// ── the environment section, scoped to the selected class ─────────────────────
+function EnvironmentZone({
+  app, env, containers, version, domains, adminerUrl, onLogs, onSecrets, restart, busy,
+}: {
+  app: string; env: string
+  containers: { name: string; image: string; state: string; cpu_pct: number; mem_used: number; mem_limit: number }[]
+  version: string | null; domains: string[]; adminerUrl: string | null
+  onLogs: () => void; onSecrets: () => void; restart: () => void; busy: boolean
+}) {
+  const running = containers.length > 0
+  const cpu = containers.reduce((s, c) => s + c.cpu_pct, 0)
+  const mem = containers.reduce((s, c) => s + c.mem_used, 0)
+
+  if (!running) {
+    return (
+      <>
+        <SectionHead title="Environment" hint={env} />
+        <Card><CardContent className="flex flex-col items-center gap-2 py-12 text-center">
+          <StatusBadge tone="muted" dot>not deployed</StatusBadge>
+          <div className="text-sm">{app} isn’t running in <b>{env}</b>{version ? <> — last built <span className="font-mono">{version}</span></> : null}.</div>
+          <div className="text-xs text-muted-foreground">
+            {env === 'production'
+              ? 'Promote a release to deploy it here.'
+              : `Add a ${env}.yaml overlay in Configuration to deploy it here.`}
+          </div>
+        </CardContent></Card>
+      </>
+    )
+  }
+
+  return (
+    <>
+      <SectionHead title="Environment" hint={`${env}${domains[0] ? ` · ${domains[0]}` : ''}`} />
+      <div className="grid gap-3.5 md:grid-cols-[1.3fr_1fr]">
+        <Card><CardContent className="pt-6">
+          <div className="flex flex-wrap items-start gap-4">
+            <div className="min-w-0">
+              <div className="text-xs text-muted-foreground">Running version</div>
+              <div className="mt-0.5 font-mono text-2xl font-semibold tracking-tight">{version ?? digest(containers[0]?.image)}</div>
+            </div>
+            <div className="ml-auto flex flex-col items-end gap-2">
+              <StatusBadge tone="success" dot>deployed · healthy</StatusBadge>
+              {domains.map((d) => <ExtLink key={d} to={d} className="font-mono text-xs" />)}
+            </div>
+          </div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <ConfirmButton variant="outline" size="sm" disabled={busy}
+              title={`Restart ${app} in ${env}?`} description="Bounces the container(s) — same digest, brief downtime."
+              confirmText="Restart" onConfirm={restart}><RotateCw className="size-4" /> Restart</ConfirmButton>
+            <Button variant="outline" size="sm" onClick={onLogs}><ScrollText className="size-4" /> Logs</Button>
+            <Button variant="outline" size="sm" onClick={onSecrets}><KeyRound className="size-4" /> Secrets</Button>
+            {adminerUrl && <Button asChild variant="outline" size="sm"><a href={adminerUrl} target="_blank" rel="noreferrer">Open in Adminer ↗</a></Button>}
+          </div>
+        </CardContent></Card>
+
+        <Card><CardContent className="pt-6">
+          <div className="flex gap-7">
+            <Metric n={String(containers.length)} l="Containers" />
+            <Metric n={`${cpu.toFixed(1)}%`} l="CPU" />
+            <Metric n={`${Math.round(mem / 1e6)} MB`} l="Memory" />
+          </div>
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead><tr className="text-left text-muted-foreground"><th className="py-1 pr-3 font-medium">container</th><th className="py-1 pr-3 font-medium">state</th><th className="py-1 pr-3 font-medium">cpu</th><th className="py-1 font-medium">mem</th></tr></thead>
+              <tbody className="font-mono">
+                {containers.map((c) => (
+                  <tr key={c.name} className="border-t">
+                    <td className="py-1 pr-3">{c.name}</td><td className="py-1 pr-3">{c.state}</td>
+                    <td className="py-1 pr-3 tabular-nums">{c.cpu_pct.toFixed(1)}%</td>
+                    <td className="py-1 tabular-nums">{(c.mem_used / 1e6).toFixed(0)} MB{c.mem_limit ? ` / ${(c.mem_limit / 1e9).toFixed(1)} GB` : ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardContent></Card>
+      </div>
+    </>
+  )
+}
+const digest = (img?: string) => img?.split('@sha256:')[1]?.slice(0, 7) ?? '—'
+function Metric({ n, l }: { n: string; l: string }) {
+  return <div className="flex flex-col gap-0.5"><span className="text-xl font-semibold tracking-tight tabular-nums">{n}</span><span className="text-[11px] uppercase tracking-wide text-muted-foreground">{l}</span></div>
 }
 
 function Releases({ org, app, prodImage }: { org: string; app: string; prodImage?: string }) {
@@ -156,21 +361,16 @@ function Releases({ org, app, prodImage }: { org: string; app: string; prodImage
   const m = useApiMutation({ invalidate: [['deploys', org], ['releases', org, app], ['events']] })
   const releases = q.data ?? []
   if (q.isLoading || q.error) return null
-
   return (
-    <Card className="mb-4"><CardContent className="pt-6">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <h2 className="text-sm font-semibold">Releases</h2>
+    <>
+      <SectionHead title="Releases" hint="tagged image publishes" />
+      <div className="mb-2 flex justify-end">
         <Button variant="outline" size="sm" disabled={m.isPending}
           title="Recover any vX.Y.Z publishes the registry_package webhook missed"
-          onClick={() => m.mutate(() => send(urls.releaseBackfill(org, app)))}>
-          Backfill from registry
-        </Button>
+          onClick={() => m.mutate(() => send(urls.releaseBackfill(org, app)))}>Backfill from registry</Button>
       </div>
       {releases.length === 0 && (
-        <p className="text-sm text-muted-foreground">
-          No releases yet. Tag <code className="font-mono">vX.Y.Z</code> in the app repo to publish one, or Backfill from the registry.
-        </p>
+        <p className="text-sm text-muted-foreground">No releases yet. Tag <code className="font-mono">vX.Y.Z</code> in the app repo, or Backfill from the registry.</p>
       )}
       <div className="flex flex-col gap-2">
         {releases.map((r) => {
@@ -178,19 +378,13 @@ function Releases({ org, app, prodImage }: { org: string; app: string; prodImage
           return (
             <div key={r.version} className="flex items-center gap-3 rounded-lg border px-4 py-2.5">
               <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2 font-medium">
-                  {r.version}
-                  {onProd && <StatusBadge tone="success" dot>on production</StatusBadge>}
-                </div>
-                <div className="truncate font-mono text-xs text-muted-foreground">
-                  {short(r.app_image)} · {r.commit.slice(0, 7)} · {r.published_at}
-                </div>
+                <div className="flex flex-wrap items-center gap-2 font-medium">{r.version}{onProd && <StatusBadge tone="success" dot>on production</StatusBadge>}</div>
+                <div className="truncate font-mono text-xs text-muted-foreground">{short(r.app_image)} · {r.commit.slice(0, 7)} · {r.published_at}</div>
               </div>
               {!onProd && (
                 <ConfirmButton size="sm" title={`Promote ${app} ${r.version} to production?`}
                   description="Writes the release into production.yaml; an admin still merges the render PR."
-                  confirmText="Promote"
-                  onConfirm={() => m.mutate(() => send(urls.releasePromote(org, app, r.version)))}>
+                  confirmText="Promote" onConfirm={() => m.mutate(() => send(urls.releasePromote(org, app, r.version)))}>
                   Promote → production
                 </ConfirmButton>
               )}
@@ -198,290 +392,148 @@ function Releases({ org, app, prodImage }: { org: string; app: string; prodImage
           )
         })}
       </div>
-    </CardContent></Card>
+    </>
   )
 }
 
-// ── live containers for this app (across its classes/nodes) ───────────────────
-function Containers({ project, app, classes }: { project?: string; app: string; classes: string[] }) {
-  const metrics = useNodeMetrics()
-  if (!project) return null
-  // Container names are `<project>-<app>-<class>-<hash>`; match on class prefixes
-  // so a sibling app whose name extends this one (blog vs blog-api) can't leak in.
-  const prefixes = classes.map((c) => `${project}-${app}-${c}-`)
-  const mine = (metrics.data ?? [])
-    .flatMap((n) => n.apps)
-    .filter((c) => prefixes.some((p) => c.name.startsWith(p)))
-  return (
-    <Card className="mb-4"><CardContent className="pt-6">
-      <h2 className="mb-2 text-sm font-semibold">Containers</h2>
-      {mine.length === 0 ? (
-        <span className="text-xs text-muted-foreground">No running containers.</span>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs">
-            <thead><tr className="text-left text-muted-foreground"><th className="py-1 pr-3 font-medium">container</th><th className="py-1 pr-3 font-medium">state</th><th className="py-1 pr-3 font-medium">cpu</th><th className="py-1 font-medium">mem</th></tr></thead>
-            <tbody className="font-mono">
-              {mine.map((c) => (
-                <tr key={c.name} className="border-t">
-                  <td className="py-1 pr-3">{c.name}</td>
-                  <td className="py-1 pr-3">{c.state}</td>
-                  <td className="py-1 pr-3">{c.cpu_pct.toFixed(1)}%</td>
-                  <td className="py-1">{(c.mem_used / 1e6).toFixed(0)} MB{c.mem_limit ? ` / ${(c.mem_limit / 1e9).toFixed(1)} GB` : ''}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </CardContent></Card>
-  )
-}
-
-// ── build metadata from each env's `/info` endpoint (scraped at deploy) ───────
-// The app self-reports arbitrary JSON; surface the conventional keys and fall
-// back to the rest so nothing is hidden. `null` info + no error ⇒ endpoint
-// missing; only show the card once at least one env has been probed.
-const pick = (info: Record<string, unknown> | null, keys: string[]): string | null => {
-  for (const k of keys) {
-    const v = info?.[k]
-    if (v != null && typeof v !== 'object') return String(v)
-  }
-  return null
-}
-const KNOWN = ['version', 'ver', 'commit', 'git_sha', 'gitSha', 'sha', 'revision', 'build_time', 'built_at', 'buildTime', 'builtAt', 'date']
-
-function BuildInfo({ org, app }: { org: string; app: string }) {
-  const q = useAppInfo(org, app)
-  const rows = q.data ?? []
-  if (rows.length === 0) return null // no env probed yet — hide entirely
-
-  const line = (r: AppInfo) => {
-    const version = pick(r.info, ['version', 'ver'])
-    const commit = pick(r.info, ['commit', 'git_sha', 'gitSha', 'sha', 'revision'])
-    const built = pick(r.info, ['build_time', 'built_at', 'buildTime', 'builtAt', 'date'])
-    // Any reported keys the conventional set didn't cover.
-    const extra = Object.entries(r.info ?? {})
-      .filter(([k, v]) => !KNOWN.includes(k) && v != null && typeof v !== 'object')
-      .map(([k, v]) => `${k}=${String(v)}`)
-    const parts = [
-      version && `v${version.replace(/^v/, '')}`,
-      commit && commit.slice(0, 12),
-      built,
-      ...extra,
-    ].filter(Boolean)
-    if (r.error) return <span className="text-muted-foreground">{r.error}</span>
-    if (parts.length === 0) return <span className="text-muted-foreground">no build info reported</span>
-    return <span>{parts.join('  ·  ')}</span>
-  }
-
-  return (
-    <Card className="mb-4"><CardContent className="pt-6">
-      <h2 className="mb-2 text-sm font-semibold">Build info</h2>
-      <div className="flex flex-col gap-1.5">
-        {rows.map((r) => (
-          <div key={r.class} className="flex items-baseline gap-2.5 text-sm">
-            <span className="min-w-24 text-muted-foreground">{r.class}</span>
-            <span className="font-mono text-xs">{line(r)}</span>
-          </div>
-        ))}
-      </div>
-      <span className="mt-2 block text-xs text-muted-foreground">Reported by each env’s <code className="font-mono">/info</code> endpoint at its last deploy.</span>
-    </CardContent></Card>
-  )
-}
-
-// ── rename an app (repo + manifests in one commit, then deploy) ───────────────
-function RenameControl({ org, app, stateful }: { org: string; app: string; stateful: boolean }) {
+// ── rename dialog (opened from the ⋯ menu) ────────────────────────────────────
+function RenameDialog({ org, app, stateful, open, onOpenChange }: {
+  org: string; app: string; stateful: boolean; open: boolean; onOpenChange: (o: boolean) => void
+}) {
   const [name, setName] = useState('')
   const navigate = useNavigate()
   const m = useApiMutation({
     invalidate: [['apps', org], ['projects'], ['deploys', org], ['events']],
-    onDone: () => navigate({ to: '/projects/$org/apps/$app', params: { org, app: name } }),
+    onDone: () => { onOpenChange(false); navigate({ to: '/projects/$org/apps/$app', params: { org, app: name } }) },
   })
   const valid = /^[a-z0-9-]+$/.test(name) && name !== app
   return (
-    <div className="flex items-center gap-2">
-      <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="new-name" className="h-8 w-40" aria-label="new app name" />
-      <ConfirmButton variant="outline" size="sm" disabled={!valid || m.isPending}
-        title={`Rename ${app} → ${name}?`}
-        description={stateful
-          ? 'Renames the source repo + manifests, then migrates the managed database (and any volumes) to the new names — a brief cutover downtime while the data moves.'
-          : 'Renames the source repo and moves the app’s manifests in one ops commit, then re-renders. Non-production deploys immediately; production merges its render PR.'}
-        confirmText="Rename"
-        onConfirm={() => m.mutate(() => send(urls.appRename(org, app), { json: { new: name } }))}>
-        Rename
-      </ConfirmButton>
-    </div>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Rename {app}</DialogTitle></DialogHeader>
+        <p className="text-sm text-muted-foreground">
+          {stateful
+            ? 'Renames the source repo + manifests, then migrates the database (and volumes) to the new names — a brief cutover downtime.'
+            : 'Renames the source repo and moves the app’s manifests in one ops commit, then re-renders.'}
+        </p>
+        <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="new-name" aria-label="new app name" className="font-mono" />
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button disabled={!valid || m.isPending} onClick={() => m.mutate(() => send(urls.appRename(org, app), { json: { new: name } }))}>Rename</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
-function RestartControl({ org, app, classes, run, busy }: {
-  org: string; app: string; classes: string[]; run: (fn: () => Promise<string>) => void; busy: boolean
-}) {
-  const [cls, setCls] = useState(classes[0]!)
-  return (
-    <div className="flex items-center gap-2">
-      <Select value={cls} onValueChange={setCls}>
-        <SelectTrigger size="sm" className="w-auto"><SelectValue /></SelectTrigger>
-        <SelectContent>{classes.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
-      </Select>
-      <Button variant="outline" size="sm" disabled={busy} onClick={() => run(() => send(urls.restart(org, cls, app)))}>Restart</Button>
-    </div>
-  )
-}
-
-// ── live container logs (streamed over the node Docker API) ───────────────────
-function LogsPanel({ org, app, classes }: { org: string; app: string; classes: string[] }) {
-  const opts = classes.length ? classes : ['production']
-  const [cls, setCls] = useState(opts.includes('production') ? 'production' : opts[0]!)
+// ── logs (scoped to the selected env) ─────────────────────────────────────────
+function LogsView({ org, app, cls }: { org: string; app: string; cls: string }) {
   const q = useAppLogs(org, cls, app, true)
   return (
-    <Card className="mb-4"><CardContent className="flex flex-col gap-3 pt-6">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <h2 className="text-sm font-semibold">Logs</h2>
-        <Select value={cls} onValueChange={setCls}>
-          <SelectTrigger size="sm" className="w-36"><SelectValue /></SelectTrigger>
-          <SelectContent>{opts.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
-        </Select>
-        <span className="text-xs text-muted-foreground">last 300 lines · live (5s)</span>
-      </div>
+    <div className="flex flex-col gap-3">
+      <span className="text-xs text-muted-foreground">last 300 lines · live (5s)</span>
       <QueryState isLoading={q.isLoading} error={q.error}>
-        <pre className="max-h-96 overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap">
+        <pre className="max-h-[calc(100vh-12rem)] overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap">
           {q.data?.trim() ? q.data : 'No logs.'}
         </pre>
       </QueryState>
-    </CardContent></Card>
+    </div>
   )
 }
 
-// ── secret values: fields/bulk editor, values decrypted for display ───────────
+// ── secrets (scoped to the selected env) ──────────────────────────────────────
 type Row = { key: string; value: string }
-
-function SecretsEditor({ org, app, classes }: { org: string; app: string; classes: string[] }) {
-  const opts = classes.length ? classes : ['production']
-  const [cls, setCls] = useState(opts.includes('production') ? 'production' : opts[0]!)
+function SecretsView({ org, app, cls }: { org: string; app: string; cls: string }) {
   const [mode, setMode] = useState<'fields' | 'bulk'>('fields')
   const [rows, setRows] = useState<Row[]>([{ key: '', value: '' }])
   const [bulk, setBulk] = useState('')
   const q = useAppSecrets(org, cls, app)
 
-  // Seed the editor from the decrypted current values whenever they load or the
-  // class changes — so you edit what's actually set, not a blank slate.
   useEffect(() => {
     if (!q.data) return
     const entries = Object.entries(q.data)
     setRows(entries.length ? entries.map(([key, value]) => ({ key, value })) : [{ key: '', value: '' }])
     setBulk(entries.map(([k, v]) => `${k}=${v}`).join('\n'))
-  }, [q.data, cls])
+  }, [q.data])
 
-  const m = useApiMutation({
-    invalidate: [['deploys', org], ['manifest', org, app], ['secrets', org, cls, app], ['events']],
-  })
-
-  // Both modes serialize to a dotenv blob for the set endpoint (full replace).
-  const env = mode === 'bulk'
+  const m = useApiMutation({ invalidate: [['deploys', org], ['manifest', org, app], ['secrets', org, cls, app], ['events']] })
+  const envtext = mode === 'bulk'
     ? bulk.trim()
     : rows.filter((r) => r.key.trim()).map((r) => `${r.key.trim()}=${r.value}`).join('\n')
-
-  const setRow = (i: number, patch: Partial<Row>) =>
-    setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)))
+  const setRow = (i: number, patch: Partial<Row>) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)))
 
   return (
-    <Card className="mb-4"><CardContent className="flex flex-col gap-3 pt-6">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <h2 className="text-sm font-semibold">Secrets</h2>
-        <Select value={cls} onValueChange={setCls}>
-          <SelectTrigger size="sm" className="w-36"><SelectValue /></SelectTrigger>
-          <SelectContent>{opts.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
-        </Select>
-        <div className="flex-1" />
-        <div className="inline-flex rounded-md border p-0.5">
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center">
+        <span className="text-xs text-muted-foreground">Decrypted from SOPS (VPN-only). Saving replaces the whole set for this env.</span>
+        <div className="ml-auto inline-flex rounded-md border p-0.5">
           <Button size="sm" variant={mode === 'fields' ? 'secondary' : 'ghost'} className="h-7 px-2.5" onClick={() => setMode('fields')}>Fields</Button>
           <Button size="sm" variant={mode === 'bulk' ? 'secondary' : 'ghost'} className="h-7 px-2.5" onClick={() => setMode('bulk')}>Bulk</Button>
         </div>
       </div>
-
       <QueryState isLoading={q.isLoading} error={q.error}>
         {mode === 'fields' ? (
           <div className="flex flex-col gap-2">
             {rows.map((r, i) => (
               <div key={i} className="flex items-center gap-2">
-                <Input value={r.key} placeholder="SECRET_NAME" className="w-64 font-mono text-xs" onChange={(e) => setRow(i, { key: e.target.value })} />
+                <Input value={r.key} placeholder="SECRET_NAME" className="w-56 font-mono text-xs" onChange={(e) => setRow(i, { key: e.target.value })} />
                 <Input value={r.value} placeholder="value" className="flex-1 font-mono text-xs" onChange={(e) => setRow(i, { value: e.target.value })} />
-                <Button size="sm" variant="ghost" className="text-destructive" onClick={() => setRows((rs) => { const next = rs.filter((_, j) => j !== i); return next.length ? next : [{ key: '', value: '' }] })}>×</Button>
+                <Button size="sm" variant="ghost" className="text-destructive" onClick={() => setRows((rs) => { const n = rs.filter((_, j) => j !== i); return n.length ? n : [{ key: '', value: '' }] })}>×</Button>
               </div>
             ))}
             <div><Button size="sm" variant="outline" onClick={() => setRows((rs) => [...rs, { key: '', value: '' }])}>+ Add secret</Button></div>
           </div>
         ) : (
-          <Textarea value={bulk} onChange={(e) => setBulk(e.target.value)} className="min-h-28 font-mono text-xs"
-            placeholder={'DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/…\nAPI_KEY=…'} />
+          <Textarea value={bulk} onChange={(e) => setBulk(e.target.value)} className="min-h-40 font-mono text-xs" placeholder={'API_KEY=…\nWEBHOOK_URL=…'} />
         )}
       </QueryState>
-
-      <span className="text-xs text-muted-foreground">
-        Values shown are decrypted from the current SOPS file (VPN-only). Saving <em>replaces</em> the whole set for
-        this class; they're re-encrypted to the project key and delivered as tmpfs files at <code className="font-mono">/run/secrets/&lt;NAME&gt;</code>, never env vars.
-        Production writes open a render PR you review before it deploys.
-      </span>
       <div>
-        <ConfirmButton size="sm" disabled={!env || m.isPending}
+        <ConfirmButton size="sm" disabled={!envtext || m.isPending}
           title={`Set ${cls} secrets for ${app}?`}
-          description={cls === 'production'
-            ? 'Encrypts + commits the values; a render PR will gate the deploy.'
-            : 'Encrypts + commits the values; auto-deploys on render.'}
+          description={cls === 'production' ? 'Encrypts + commits; a render PR gates the deploy.' : 'Encrypts + commits; auto-deploys on render.'}
           confirmText="Encrypt & save"
-          onConfirm={() => m.mutate(() => send(urls.appSecrets(org, app), { json: { class: cls, env } }))}>
+          onConfirm={() => m.mutate(() => send(urls.appSecrets(org, app), { json: { class: cls, env: envtext } }))}>
           Save secrets
         </ConfirmButton>
       </div>
-    </CardContent></Card>
+    </div>
   )
 }
 
-// ── manifest editor: file tabs + Form/YAML ────────────────────────────────────
+// ── manifest editor: file tabs + Form/YAML (inside the Configuration sheet) ────
 function ManifestEditor({ org, app, files }: { org: string; app: string; files: Record<string, ManifestFile> }) {
   const [file, setFile] = useState('base.yaml')
   const [mode, setMode] = useState<'form' | 'yaml'>('form')
   const [draft, setDraft] = useState<ManifestDraft>(() => fromData(files[file]?.data))
   const [yaml, setYaml] = useState(() => files[file]?.yaml ?? '')
-
-  useEffect(() => {
-    setDraft(fromData(files[file]?.data))
-    setYaml(files[file]?.yaml ?? '')
-  }, [file, files])
+  useEffect(() => { setDraft(fromData(files[file]?.data)); setYaml(files[file]?.yaml ?? '') }, [file, files])
 
   const save = useApiMutation({ invalidate: [['manifest', org, app], ['apps', org], ['deploys', org], ['events']] })
   const onSave = () => {
     if (mode === 'form') save.mutate(() => send(urls.manifestFile(org, app, file), { method: 'PUT', json: toManifest(draft, file, app) }))
     else save.mutate(() => send(urls.manifestFile(org, app, file), { method: 'PUT', body: yaml }))
   }
-
   return (
-    <Card>
-      <div className="flex flex-wrap items-center gap-1 border-b px-3 py-2">
+    <div className="flex flex-col gap-3.5">
+      <div className="flex flex-wrap items-center gap-1 border-b pb-2">
         {FILES.map((f) => (
           <button key={f} onClick={() => setFile(f)}
-            className={`rounded-md px-2.5 py-1.5 text-sm font-medium ${f === file ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground'}`}>
+            className={`rounded-md px-2.5 py-1.5 text-xs font-medium ${f === file ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground'}`}>
             {f}{!files[f] && <span className="text-muted-foreground/60"> (new)</span>}
           </button>
         ))}
-        <div className="flex-1" />
-        <div className="flex gap-1 rounded-md bg-muted p-0.5">
+        <div className="ml-auto flex gap-1 rounded-md bg-muted p-0.5">
           <button onClick={() => setMode('form')} className={`rounded px-2.5 py-1 text-xs font-medium ${mode === 'form' ? 'bg-background shadow-sm' : 'text-muted-foreground'}`}>Form</button>
           <button onClick={() => setMode('yaml')} className={`rounded px-2.5 py-1 text-xs font-medium ${mode === 'yaml' ? 'bg-background shadow-sm' : 'text-muted-foreground'}`}>YAML</button>
         </div>
       </div>
-      <CardContent className="flex flex-col gap-3.5 pt-5">
-        {mode === 'form'
-          ? <ManifestForm file={file} draft={draft} onChange={setDraft} />
-          : <Textarea spellCheck={false} value={yaml} onChange={(e) => setYaml(e.target.value)} className="min-h-64 font-mono text-xs" />}
-        <div className="flex items-center gap-3">
-          <Button size="sm" disabled={save.isPending} onClick={onSave}>Save &amp; commit</Button>
-          <span className="text-xs text-muted-foreground">Validated + committed to ops main; a render PR follows. production.yaml requires admin.</span>
-        </div>
-      </CardContent>
-    </Card>
+      {mode === 'form'
+        ? <ManifestForm file={file} draft={draft} onChange={setDraft} />
+        : <Textarea spellCheck={false} value={yaml} onChange={(e) => setYaml(e.target.value)} className="min-h-72 font-mono text-xs" />}
+      <div className="flex items-center gap-3">
+        <Button size="sm" disabled={save.isPending} onClick={onSave}>Save &amp; commit</Button>
+        <span className="text-xs text-muted-foreground">Committed to ops main; a render PR follows. production.yaml requires admin.</span>
+      </div>
+    </div>
   )
 }

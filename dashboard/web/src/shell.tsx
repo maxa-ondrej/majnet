@@ -45,7 +45,7 @@ export function Shell() {
       </aside>
       <div className="flex min-w-0 flex-col">
         <TopBar />
-        <main className="w-full max-w-5xl p-6 md:p-8">
+        <main className="w-full max-w-[1400px] p-6 md:px-8 md:py-7">
           <Outlet />
         </main>
       </div>
