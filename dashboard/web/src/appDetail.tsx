@@ -18,6 +18,19 @@ function Kv({ k, children }: { k: string; children: React.ReactNode }) {
   return <div className="flex gap-2.5 text-sm"><span className="min-w-28 text-muted-foreground">{k}</span><span className="font-mono text-xs">{children}</span></div>
 }
 
+// Replace a full `ghcr.io/…@sha256:…` image ref in a deploy-event result with the
+// version the app reports at /info (falling back to a short digest) — older events
+// were recorded before deploy events carried the version.
+const IMG_REF = /ghcr\.io\/\S+@sha256:[0-9a-f]{64}/
+function resultVersioned(result: string, rows?: AppInfo[]): string {
+  const m = result.match(IMG_REF)
+  if (!m) return result
+  const v = rows?.find((r) => r.class === 'production' && typeof r.info?.version === 'string')?.info?.version
+    ?? rows?.find((r) => typeof r.info?.version === 'string')?.info?.version
+  const repl = (typeof v === 'string' && v) || m[0].split('@sha256:')[1]?.slice(0, 12) || m[0]
+  return result.replace(IMG_REF, String(repl))
+}
+
 export function AppDetail() {
   const { org, app } = useParams({ from: '/projects/$org/apps/$app' })
   const apps = useApps(org)
@@ -26,6 +39,7 @@ export function AppDetail() {
   const imp = imports.data?.find((x) => x.app === app)
   const manifest = useManifest(org, app)
   const events = useEvents()
+  const info = useAppInfo(org, app)
   const appEvents = (events.data ?? []).filter((e) => e.action.trim().split(/\s+/).pop() === app)
   const imageOf = (f?: ManifestFile) => (f?.data as { image?: string } | null)?.image
   const prodImage = imageOf(manifest.data?.['production.yaml']) ?? imageOf(manifest.data?.['base.yaml'])
@@ -82,7 +96,7 @@ export function AppDetail() {
 
       {a && (
         <Card className="mb-4"><CardContent className="flex flex-col gap-2.5 pt-6">
-          <Kv k="Deploy status"><span className="inline-flex items-center gap-2"><DeployStatus ev={appEvents[0]} />{appEvents[0] && <span className="text-muted-foreground">{appEvents[0].result} · {appEvents[0].at}</span>}</span></Kv>
+          <Kv k="Deploy status"><span className="inline-flex items-center gap-2"><DeployStatus ev={appEvents[0]} />{appEvents[0] && <span className="text-muted-foreground">{resultVersioned(appEvents[0].result, info.data)} · {appEvents[0].at}</span>}</span></Kv>
           <Kv k="Classes">{a.classes.join(', ') || '—'}</Kv>
           <Kv k="Domains">
             {a.domains.length
