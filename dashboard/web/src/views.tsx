@@ -1,12 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
-import { ChevronRight, Plus, Loader2, CheckCircle2, Circle, AlertCircle, MoreVertical, Boxes } from 'lucide-react'
-import { send, urls, useApps, useAppInfo, useArchivedApps, useDeploys, useEvents, useImports, useNodeMetrics, useNodes, useProjects, useWhoami, IMPORT_STEPS, type ImportStatus } from './api'
+import { ChevronRight, Plus, Loader2, CheckCircle2, Circle, AlertCircle, MoreVertical, Boxes, Rocket, Trash2, Archive, GitPullRequest, RefreshCw, PenLine } from 'lucide-react'
+import { send, urls, useApps, useAppInfo, useArchivedApps, useDeploys, useEvents, useImports, useNodeMetrics, useNodes, useProjects, useWhoami, parseAt, IMPORT_STEPS, type ImportStatus, type Event } from './api'
 import { useApiMutation } from './mutations'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { ConfirmButton, DeployStatus, Empty, ExtLink, latestEventFor, QueryState, short, Sparkline, StatusBadge } from './ui'
@@ -455,29 +454,151 @@ export function Nodes() {
 }
 
 // ── Activity ─────────────────────────────────────────────────────────────────
+// ── Activity feed ─────────────────────────────────────────────────────────────
+type EvKind = 'deploy' | 'remove' | 'config'
+type EvTone = 'ok' | 'bad' | 'mut' | 'info'
+const KIND_LABELS: { k: 'all' | EvKind; label: string }[] = [
+  { k: 'all', label: 'All' }, { k: 'deploy', label: 'Deploys' },
+  { k: 'remove', label: 'Removals' }, { k: 'config', label: 'Config & repos' },
+]
+
+function EvPill({ tone, children }: { tone: EvTone; children: React.ReactNode }) {
+  const c = { ok: 'bg-success/15 text-success', bad: 'bg-destructive/15 text-destructive', mut: 'bg-muted text-muted-foreground', info: 'bg-accent text-accent-foreground' }[tone]
+  return <span className={`inline-flex items-center rounded-full px-2 py-0.5 align-middle font-mono text-[11.5px] font-medium ${c}`}>{children}</span>
+}
+
+// The image/version deployed, from a "deployed <ref> (…)" result: the version
+// (vX.Y.Z) if the ref is one, else the short digest.
+function deployedRef(result: string): string {
+  const ref = result.match(/^deployed\s+(\S+)/)?.[1]
+  if (!ref) return ''
+  return ref.match(/@sha256:([0-9a-f]{12})/)?.[1] ?? ref
+}
+const firstToken = (s: string) => s.split(/\s+/)[0] ?? ''
+
+// Map a stored (action, result) event to a feed item. Always renders something
+// sensible; unknown kinds fall back to the raw action/result.
+function classify(e: Event): { kind: EvKind; tone: EvTone; Icon: React.ComponentType<{ className?: string }>; line: React.ReactNode; detail: string } {
+  const parts = e.action.trim().split(/\s+/)
+  const verb = parts[0] ?? ''
+  const target = parts.slice(1).join(' ')
+  const detail = [e.project, e.node || null, e.commit.slice(0, 7)].filter(Boolean).join(' · ')
+
+  if (e.result.startsWith('FAILED')) {
+    const reason = e.result.replace(/^FAILED:?\s*/, '')
+    return { kind: verb === 'converge' ? 'deploy' : 'config', tone: 'bad', Icon: AlertCircle,
+      line: <><b>{target || e.project}</b> {verb} <EvPill tone="bad">failed</EvPill></>,
+      detail: [detail, reason].filter(Boolean).join(' · ') }
+  }
+  if (verb === 'converge') {
+    if (e.result.startsWith('deployed')) return { kind: 'deploy', tone: 'ok', Icon: Rocket, line: <><b>{target}</b> deployed <EvPill tone="ok">{deployedRef(e.result)}</EvPill></>, detail }
+    if (e.result === 'in sync') return { kind: 'deploy', tone: 'ok', Icon: CheckCircle2, line: <><b>{target}</b> <EvPill tone="ok">in sync</EvPill></>, detail }
+    return { kind: 'deploy', tone: 'mut', Icon: Rocket, line: <><b>{target}</b> {e.result}</>, detail }
+  }
+  if (verb === 'gc') return { kind: 'remove', tone: 'mut', Icon: Trash2, line: <><b>{target || short(e.result)}</b> <EvPill tone="mut">removed</EvPill></>, detail }
+
+  switch (e.action) {
+    case 'app-archived': case 'project-archived': case 'repo-archived':
+      return { kind: 'config', tone: 'mut', Icon: Archive, line: <><b>{firstToken(e.result)}</b> <EvPill tone="mut">archived</EvPill></>, detail }
+    case 'app-deleted': case 'project-deleted':
+      return { kind: 'config', tone: 'bad', Icon: Trash2, line: <><b>{firstToken(e.result)}</b> <EvPill tone="bad">deleted</EvPill></>, detail }
+    case 'app-renamed': case 'project-renamed':
+      return { kind: 'config', tone: 'info', Icon: PenLine, line: <>Renamed <span className="font-mono">{e.result}</span></>, detail }
+    case 'render-pr':
+      return { kind: 'config', tone: 'info', Icon: GitPullRequest, line: <>Render PR <span className="font-mono">{e.result}</span></>, detail }
+    case 'template-sync':
+      return { kind: 'config', tone: 'info', Icon: RefreshCw, line: <>Template sync — {e.result}</>, detail }
+    case 'org-sync':
+      return { kind: 'config', tone: 'info', Icon: RefreshCw, line: <>Org sync — {e.result}</>, detail }
+    case 'repo-unarchived':
+      return { kind: 'config', tone: 'info', Icon: Archive, line: <><b>{e.result}</b> unarchived</>, detail }
+  }
+  return { kind: 'config', tone: 'mut', Icon: Circle, line: <>{e.action}{e.result ? <> — {e.result}</> : null}</>, detail }
+}
+
+function relTime(at: string): string {
+  const t = parseAt(at)
+  if (Number.isNaN(t)) return at
+  const s = Math.max(0, (Date.now() - t) / 1000)
+  if (s < 60) return 'just now'
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`
+  const d = Math.floor(s / 86400)
+  return d === 1 ? 'yesterday' : `${d} d ago`
+}
+function dayLabel(at: string): string {
+  const t = parseAt(at)
+  if (Number.isNaN(t)) return 'Earlier'
+  const d = new Date(t), now = new Date()
+  const same = (a: Date, b: Date) => a.toDateString() === b.toDateString()
+  if (same(d, now)) return 'Today'
+  const y = new Date(now); y.setDate(now.getDate() - 1)
+  if (same(d, y)) return 'Yesterday'
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', ...(d.getFullYear() !== now.getFullYear() ? { year: 'numeric' } : {}) })
+}
+const DOT_TONE: Record<EvTone, string> = {
+  ok: 'border-success/60 text-success', bad: 'border-destructive/60 text-destructive',
+  info: 'border-primary/55 text-primary', mut: 'border-border text-muted-foreground',
+}
+
 export function Activity() {
   const q = useEvents(100)
+  const [kind, setKind] = useState<'all' | EvKind>('all')
+  const [proj, setProj] = useState('all')
+  const events = q.data ?? []
+  const projectList = [...new Set(events.map((e) => e.project).filter(Boolean))].sort()
+  const filtered = events.filter((e) => (proj === 'all' || e.project === proj) && (kind === 'all' || classify(e).kind === kind))
+
+  const groups: { day: string; items: Event[] }[] = []
+  for (const e of filtered) {
+    const day = dayLabel(e.at)
+    const last = groups[groups.length - 1]
+    if (last && last.day === day) last.items.push(e)
+    else groups.push({ day, items: [e] })
+  }
+
   return (
     <>
-      <PageHead title="Activity" />
-      <QueryState isLoading={q.isLoading} error={q.error}>
-        <div className="rounded-xl border bg-card">
-          <Table>
-            <TableHeader>
-              <TableRow><TableHead>time</TableHead><TableHead>project</TableHead><TableHead>node</TableHead><TableHead>action</TableHead><TableHead>result</TableHead><TableHead>commit</TableHead></TableRow>
-            </TableHeader>
-            <TableBody className="font-mono text-xs">
-              {q.data?.length === 0 && <TableRow><TableCell colSpan={6} className="text-muted-foreground">No events yet.</TableCell></TableRow>}
-              {q.data?.map((e, i) => (
-                <TableRow key={i}>
-                  <TableCell>{e.at}</TableCell><TableCell>{e.project}</TableCell><TableCell>{e.node}</TableCell><TableCell>{e.action}</TableCell>
-                  <TableCell className={e.result.startsWith('FAILED') ? 'text-destructive' : ''}>{e.result}</TableCell>
-                  <TableCell>{e.commit.slice(0, 12)}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+      <PageHead title="Activity">
+        {projectList.length > 1 && (
+          <select value={proj} onChange={(e) => setProj(e.target.value)}
+            className="h-8 rounded-md border bg-card px-2.5 text-xs">
+            <option value="all">All projects</option>
+            {projectList.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+        )}
+        <div className="inline-flex gap-0.5 rounded-lg bg-muted p-0.5">
+          {KIND_LABELS.map(({ k, label }) => (
+            <button key={k} onClick={() => setKind(k)}
+              className={`h-7 rounded-md px-2.5 text-xs font-medium transition-colors ${kind === k ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>
+              {label}
+            </button>
+          ))}
         </div>
+      </PageHead>
+
+      <QueryState isLoading={q.isLoading} error={q.error}>
+        {filtered.length === 0 && <Empty>No matching activity.</Empty>}
+        {groups.map((g, gi) => (
+          <div key={gi}>
+            <div className="mb-1.5 ml-11 mt-5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground first:mt-1">{g.day}</div>
+            <div className="relative pl-11 before:absolute before:left-[17px] before:top-2 before:bottom-2 before:w-px before:bg-border">
+              {g.items.map((e, i) => {
+                const c = classify(e)
+                return (
+                  <div key={i} className="relative flex items-baseline gap-3 rounded-lg px-3 py-2 hover:bg-muted/50">
+                    <div className={`absolute -left-[34px] top-1.5 grid size-7 place-items-center rounded-full border-2 bg-card ${DOT_TONE[c.tone]}`}><c.Icon className="size-3.5" /></div>
+                    <div className="min-w-0 flex-1">
+                      <div className="leading-snug">{c.line}</div>
+                      <div className="mt-0.5 truncate font-mono text-xs text-muted-foreground">{c.detail}</div>
+                    </div>
+                    <div className="shrink-0 whitespace-nowrap text-xs text-muted-foreground tabular-nums" title={e.at}>{relTime(e.at)}</div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        ))}
       </QueryState>
     </>
   )
