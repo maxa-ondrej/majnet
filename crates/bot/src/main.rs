@@ -32,6 +32,7 @@ mod releases;
 mod render;
 mod state;
 mod tailscale;
+mod template_sync;
 mod webhooks;
 
 use anyhow::{Context, Result};
@@ -120,6 +121,7 @@ async fn main() -> Result<()> {
             post(dashboard_api::app_delete_post),
         )
         .route("/api/archived/{org}", get(dashboard_api::archived_get))
+        .route("/api/template-sync/{org}", post(template_sync::sync_post))
         .route(
             "/api/secrets/{org}/{app}",
             post(dashboard_api::secrets_post),

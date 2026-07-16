@@ -133,6 +133,21 @@ function RenameProjectControl({ org, current }: { org: string; current: string }
   )
 }
 
+// Sync platform-managed template files (.github/ CI) into the project's app
+// repos — opens a template-sync PR per repo that has drifted (admin-only).
+function SyncTemplateControl({ org }: { org: string }) {
+  const m = useApiMutation({ invalidate: [['events']] })
+  return (
+    <ConfirmButton variant="outline" size="sm" disabled={m.isPending}
+      title="Sync repo templates?"
+      description="Opens a template-sync PR on each app repo whose platform-managed CI files (.github/) have drifted from the current template. Your source, Dockerfile and other files are never touched."
+      confirmText="Sync templates"
+      onConfirm={() => m.mutate(() => send(urls.templateSync(org)))}>
+      Sync templates
+    </ConfirmButton>
+  )
+}
+
 // Per-env badges showing the running version the app reports at /info (scraped
 // at deploy time), falling back to the image digest when /info has no version.
 function AppEnvBadges({ org, app, classes, digestFor }: {
@@ -188,6 +203,7 @@ export function ProjectDetail() {
         <Button asChild variant="outline" size="sm"><Link to="/projects/$org/deploys" params={{ org }}>Deployments{pending ? ` · ${pending}` : ''}</Link></Button>
         <Button asChild variant="outline" size="sm"><Link to="/projects/$org/members" params={{ org }}>Members</Link></Button>
         <Button asChild size="sm"><Link to="/projects/$org/new-app" params={{ org }}><Plus className="size-4" /> New app</Link></Button>
+        {isAdmin && <SyncTemplateControl org={org} />}
         {isAdmin && <RenameProjectControl org={org} current={name} />}
       </PageHead>
 

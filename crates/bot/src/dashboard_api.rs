@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use crate::AppState;
 
-type ApiError = (StatusCode, String);
+pub(crate) type ApiError = (StatusCode, String);
 
 fn bad_gateway(e: anyhow::Error) -> ApiError {
     (StatusCode::BAD_GATEWAY, format!("{e:#}"))
@@ -294,7 +294,7 @@ pub(crate) async fn commit_file(
     Ok(())
 }
 
-async fn read_project(state: &AppState, org: &str) -> Result<ProjectConfig> {
+pub(crate) async fn read_project(state: &AppState, org: &str) -> Result<ProjectConfig> {
     let (_, tar) = crate::proxy::fetch_snapshot(state, org, "ops", "main").await?;
     let files = majnet_common::tarball::untar(&tar)?;
     let yaml = files
