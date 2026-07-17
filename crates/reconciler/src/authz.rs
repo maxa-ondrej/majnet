@@ -44,6 +44,38 @@ pub async fn require_platform_admin(state: &AppState, headers: &HeaderMap) -> Re
     }
 }
 
+/// Like `require_platform_admin`, but for the terminal (ADR 0016): the
+/// header-less WG `Infra` bypass is NOT accepted — a terminal session must be
+/// attributable to a named human platform admin. Returns the github login.
+pub async fn require_named_platform_admin(state: &AppState, headers: &HeaderMap) -> Result<String> {
+    let login = headers
+        .get("tailscale-user-login")
+        .and_then(|v| v.to_str().ok())
+        .context("terminal requires an authenticated platform admin (no identity header)")?;
+    let platform = crate::snapshot::fetch(
+        &state.http,
+        &state.config,
+        &state.config.root_org,
+        "platform",
+        "main",
+    )
+    .await?
+    .context("platform snapshot unavailable for authz")?;
+    let people = PeopleFile::parse(
+        platform
+            .files
+            .get("people.yaml")
+            .context("platform repo has no people.yaml")?,
+    )?;
+    match authz::identify(Some(login), &people)? {
+        Actor::Human {
+            github,
+            platform_admin: true,
+        } => Ok(github),
+        _ => anyhow::bail!("platform admin required"),
+    }
+}
+
 /// Enforce `min_role` on `project` for this request; returns the audit label.
 pub async fn require(
     state: &AppState,

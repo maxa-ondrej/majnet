@@ -25,6 +25,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/secrets/{project}/{class}/{app}", get(secrets_get))
         .route("/api/metrics", get(metrics_get))
         .route("/api/logs/{project}/{class}/{app}", get(logs_get))
+        .route("/api/terminal", get(crate::terminal::terminal_ws))
         .route("/api/info/{org}/{app}", get(info_get))
         .route("/api/settings/alerts", get(alerts_get).post(alerts_set))
         .route("/api/settings/alerts/test", post(alerts_test))

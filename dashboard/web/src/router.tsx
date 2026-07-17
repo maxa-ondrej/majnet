@@ -7,6 +7,7 @@ import { Members } from './members'
 import { Deploys } from './deploys'
 import { Settings } from './settings'
 import { ControlPlane } from './controlPlane'
+import { Terminal } from './terminal'
 
 const rootRoute = createRootRoute({ component: Shell })
 
@@ -17,6 +18,19 @@ const activityRoute = createRoute({ getParentRoute: () => rootRoute, path: '/act
 const settingsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/settings', component: Settings })
 const nodesRoute = createRoute({ getParentRoute: () => rootRoute, path: '/nodes', component: Nodes })
 const controlPlaneRoute = createRoute({ getParentRoute: () => rootRoute, path: '/control-plane', component: ControlPlane })
+interface TermSearch { mode?: string; node?: string; project?: string; app?: string; class?: string }
+const terminalRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/terminal',
+  component: Terminal,
+  validateSearch: (s: Record<string, unknown>): TermSearch => ({
+    mode: s.mode as string | undefined,
+    node: s.node as string | undefined,
+    project: s.project as string | undefined,
+    app: s.app as string | undefined,
+    class: s.class as string | undefined,
+  }),
+})
 const projectRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects/$org', component: ProjectDetail })
 const newAppRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects/$org/new-app', component: NewApp })
 const membersRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects/$org/members', component: Members })
@@ -24,7 +38,7 @@ const deploysRoute = createRoute({ getParentRoute: () => rootRoute, path: '/proj
 const appRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects/$org/apps/$app', component: AppDetail })
 
 const routeTree = rootRoute.addChildren([
-  indexRoute, newProjectRoute, activityRoute, settingsRoute, nodesRoute, controlPlaneRoute,
+  indexRoute, newProjectRoute, activityRoute, settingsRoute, nodesRoute, controlPlaneRoute, terminalRoute,
   projectRoute, newAppRoute, membersRoute, deploysRoute, appRoute,
 ])
 

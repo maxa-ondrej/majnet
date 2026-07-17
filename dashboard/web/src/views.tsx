@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
-import { ChevronRight, Plus, Loader2, CheckCircle2, Circle, AlertCircle, MoreVertical, Boxes, Rocket, Trash2, Archive, GitPullRequest, RefreshCw, PenLine } from 'lucide-react'
+import { ChevronRight, Plus, Loader2, CheckCircle2, Circle, AlertCircle, MoreVertical, Boxes, Rocket, Trash2, Archive, GitPullRequest, RefreshCw, PenLine, TerminalSquare } from 'lucide-react'
 import { send, urls, useApps, useAppInfo, useArchivedApps, useBotEvents, useDeploys, useEvents, useImports, useNodeMetrics, useNodes, useProjects, useWhoami, parseAt, IMPORT_STEPS, type ImportStatus, type Event } from './api'
 import { useApiMutation } from './mutations'
 import { Button } from '@/components/ui/button'
@@ -366,6 +366,7 @@ function Stat({ label, value }: { label: string; value: string }) {
 export function Nodes() {
   const q = useNodes()
   const m = useNodeMetrics()
+  const me = useWhoami().data
   // Accumulate a rolling window (~last 60 samples ≈ 10 min at 10s) client-side
   // so the charts build up live while the page is open.
   const [hist, setHist] = useState<Record<string, { cpu: number[]; mem: number[] }>>({})
@@ -402,6 +403,12 @@ export function Nodes() {
                   {!enrolled ? <StatusBadge tone="muted">pending</StatusBadge>
                     : mm?.reachable ? <StatusBadge tone="success" dot>online</StatusBadge>
                     : <StatusBadge tone="danger" dot>unreachable</StatusBadge>}
+                  {me?.admin && enrolled && (
+                    <Link to="/terminal" search={{ mode: 'host', node: n.name }}
+                      className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground">
+                      <TerminalSquare className="size-3.5" /> Open shell
+                    </Link>
+                  )}
                 </div>
                 {mm?.reachable && (
                   <>

@@ -17,7 +17,7 @@ repository = "https://github.com/majnet/majnet"
 [workspace.dependencies]
 # async runtime + web
 tokio = { version = "1", features = ["full"] }
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 
 # GitHub / git
 octocrab = "0.44"

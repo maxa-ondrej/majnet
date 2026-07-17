@@ -34,6 +34,7 @@ mod secrets;
 mod snapshot;
 mod state;
 mod state_api;
+mod terminal;
 
 use anyhow::Result;
 use majnet_common::platform::NodesFile;
