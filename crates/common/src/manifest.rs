@@ -28,6 +28,10 @@ pub struct AppManifest {
     /// on the class-appropriate engine instance and injects connection env.
     #[serde(default)]
     pub database: Option<Database>,
+    /// Optional container resource limits (memory, CPU). Absent = unlimited
+    /// (Docker default). Applied to the app container's HostConfig at deploy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<Resources>,
     /// Persistent named volumes mounted into the container. Each is backed by a
     /// Docker named volume on the app's node, survives redeploys (blue-green
     /// reuses it), and is never deleted on teardown — data is preserved
@@ -59,6 +63,59 @@ pub struct Volume {
 #[serde(deny_unknown_fields)]
 pub struct Database {
     pub engine: DbEngine,
+}
+
+/// Optional container resource limits (→ bollard `HostConfig`). An absent field
+/// means unlimited (the Docker default). Memory takes Docker-style suffixes
+/// (`b`/`k`/`m`/`g`, base 1024); cpus is a core count (`0.5`, `2`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Resources {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpus: Option<String>,
+}
+
+impl Resources {
+    /// Hard memory limit in bytes, if set.
+    pub fn memory_bytes(&self) -> Result<Option<i64>> {
+        self.memory.as_deref().map(parse_memory).transpose()
+    }
+    /// CPU limit in nano-CPUs (cores × 1e9), if set.
+    pub fn nano_cpus(&self) -> Result<Option<i64>> {
+        self.cpus.as_deref().map(parse_cpus).transpose()
+    }
+}
+
+/// Parse a Docker-style memory string (`512m`, `2g`, `1073741824`) → bytes.
+pub fn parse_memory(s: &str) -> Result<i64> {
+    let s = s.trim();
+    ensure!(!s.is_empty(), "memory limit is empty");
+    let (num, mult) = match s.chars().last().unwrap() {
+        'b' | 'B' => (&s[..s.len() - 1], 1i64),
+        'k' | 'K' => (&s[..s.len() - 1], 1024),
+        'm' | 'M' => (&s[..s.len() - 1], 1024 * 1024),
+        'g' | 'G' => (&s[..s.len() - 1], 1024 * 1024 * 1024),
+        c if c.is_ascii_digit() => (s, 1),
+        other => bail!("invalid memory suffix '{other}' in '{s}' (use b/k/m/g)"),
+    };
+    let n: f64 = num
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("invalid memory value '{s}'"))?;
+    ensure!(n > 0.0, "memory limit must be positive");
+    Ok((n * mult as f64) as i64)
+}
+
+/// Parse a CPU core count (`0.5`, `2`) → nano-CPUs.
+pub fn parse_cpus(s: &str) -> Result<i64> {
+    let n: f64 = s
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("invalid cpus value '{s}'"))?;
+    ensure!(n > 0.0, "cpus must be positive");
+    Ok((n * 1e9) as i64)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -198,6 +255,11 @@ impl AppManifest {
             );
             ensure!(health.port != 0, "health port must be non-zero");
         }
+        if let Some(res) = &self.resources {
+            // Surface a bad value at render/validate time, not at deploy.
+            res.memory_bytes()?;
+            res.nano_cpus()?;
+        }
         if let Some(migration) = &self.migration {
             ensure!(
                 !migration.command.is_empty(),
@@ -272,7 +334,7 @@ impl Migration {
 
 #[cfg(test)]
 mod tests {
-    use super::AppManifest;
+    use super::{parse_cpus, parse_memory, AppManifest};
 
     const DIGEST: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
@@ -391,5 +453,26 @@ mod tests {
         assert!(AppManifest::parse(&valid().replace("name: api", "name: -api")).is_err());
         let with_secret = format!("{}secrets: [../etc/passwd]\n", valid());
         assert!(AppManifest::parse(&with_secret).is_err());
+    }
+
+    #[test]
+    fn parses_resource_limits() {
+        assert_eq!(parse_memory("512m").unwrap(), 512 * 1024 * 1024);
+        assert_eq!(parse_memory("2G").unwrap(), 2 * 1024 * 1024 * 1024);
+        assert_eq!(parse_memory("1048576").unwrap(), 1_048_576);
+        assert_eq!(parse_cpus("0.5").unwrap(), 500_000_000);
+        assert_eq!(parse_cpus("2").unwrap(), 2_000_000_000);
+        assert!(parse_memory("lots").is_err());
+        assert!(parse_memory("-1g").is_err());
+        assert!(parse_cpus("fast").is_err());
+        // A manifest with a bad resources value fails validation.
+        let bad = format!("{}resources:\n  memory: huge\n", valid());
+        assert!(AppManifest::parse(&bad).is_err());
+        let ok = format!("{}resources:\n  memory: 256m\n  cpus: \"0.5\"\n", valid());
+        let m = AppManifest::parse(&ok).unwrap();
+        assert_eq!(
+            m.resources.unwrap().memory_bytes().unwrap(),
+            Some(256 * 1024 * 1024)
+        );
     }
 }

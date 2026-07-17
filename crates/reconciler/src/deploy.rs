@@ -443,6 +443,19 @@ fn container_spec(
         ..Default::default()
     });
 
+    // Optional resource limits (manifest validated these already; treat any
+    // parse slip as unlimited rather than failing the deploy).
+    let (memory, nano_cpus) = manifest
+        .resources
+        .as_ref()
+        .map(|r| {
+            (
+                r.memory_bytes().ok().flatten(),
+                r.nano_cpus().ok().flatten(),
+            )
+        })
+        .unwrap_or((None, None));
+
     ContainerCreateBody {
         image: Some(manifest.image.clone()),
         env: Some(env_list(manifest, extra_env)),
@@ -451,6 +464,8 @@ fn container_spec(
         host_config: Some(HostConfig {
             network_mode: Some(network_name(ctx.project)),
             binds: mount_binds(ctx, manifest, with_secrets, secrets_dir),
+            memory,
+            nano_cpus,
             restart_policy: Some(RestartPolicy {
                 name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
                 ..Default::default()

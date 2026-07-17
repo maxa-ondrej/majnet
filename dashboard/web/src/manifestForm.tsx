@@ -18,6 +18,7 @@ export interface ManifestDraft {
   migration: { on: boolean; command: string[] }
   volumes: [string, string][]
   replicas: string
+  resources: { on: boolean; memory: string; cpus: string }
 }
 
 type Rec = Record<string, unknown>
@@ -26,7 +27,7 @@ const str = (v: unknown, d = '') => (v == null ? d : String(v))
 
 export function fromData(data: unknown): ManifestDraft {
   const d = asRec(data)
-  const ing = asRec(d.ingress), hl = asRec(d.health), db = asRec(d.database), mig = asRec(d.migration), env = asRec(d.env)
+  const ing = asRec(d.ingress), hl = asRec(d.health), db = asRec(d.database), mig = asRec(d.migration), env = asRec(d.env), res = asRec(d.resources)
   return {
     image: str(d.image),
     ingress: { on: !!d.ingress, host: str(ing.host), port: str(ing.port), domains: Array.isArray(ing.domains) ? ing.domains.map(String) : [] },
@@ -41,6 +42,7 @@ export function fromData(data: unknown): ManifestDraft {
       ? d.volumes.map((v) => { const r = asRec(v); return [str(r.name), str(r.path)] as [string, string] })
       : [],
     replicas: str(d.replicas, '1'),
+    resources: { on: !!d.resources, memory: str(res.memory), cpus: str(res.cpus) },
   }
 }
 
@@ -74,6 +76,14 @@ export function toManifest(d: ManifestDraft, file: string, app: string): Rec {
   if (volumes.length) out.volumes = volumes
   const replicas = Number(d.replicas)
   if (Number.isFinite(replicas) && replicas > 1) out.replicas = replicas
+  if (d.resources.on) {
+    const res: Rec = {}
+    const mem = d.resources.memory.trim()
+    if (mem) res.memory = mem
+    const cpus = d.resources.cpus.trim()
+    if (cpus) res.cpus = cpus
+    if (Object.keys(res).length) out.resources = res
+  }
   return out
 }
 
@@ -148,6 +158,14 @@ export function ManifestForm({ file, draft, onChange }: { file: string; draft: M
         <Input type="number" min="1" value={draft.replicas} onChange={(e) => set('replicas', e.target.value)} />
         <span className="text-xs text-muted-foreground">Container replicas, load-balanced by the edge. Must be 1 for apps with a persistent volume (single-writer).</span>
       </Fld>
+
+      <Section label="Resource limits" on={draft.resources.on} onToggle={(on) => set('resources', { ...draft.resources, on })}>
+        <div className="grid gap-2.5 sm:grid-cols-2">
+          <Fld label="Memory limit"><Input placeholder="512m" value={draft.resources.memory} onChange={(e) => set('resources', { ...draft.resources, memory: e.target.value })} /></Fld>
+          <Fld label="CPU limit (cores)"><Input placeholder="0.5" value={draft.resources.cpus} onChange={(e) => set('resources', { ...draft.resources, cpus: e.target.value })} /></Fld>
+        </div>
+        <span className="text-xs text-muted-foreground">Hard caps on the container. Memory takes b/k/m/g (e.g. <code className="font-mono">512m</code>, <code className="font-mono">2g</code>); CPU is a core count (e.g. <code className="font-mono">0.5</code>). Blank = unlimited.</span>
+      </Section>
 
       <Section label="Health check" on={draft.health.on} onToggle={(on) => set('health', { ...draft.health, on })}>
         <div className="grid grid-cols-[2fr_1fr_1fr] gap-2.5">

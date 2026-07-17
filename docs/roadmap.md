@@ -79,6 +79,8 @@ Code ✅ / remaining ⏳:
 - [x] Self-update: control-plane version pinned in the platform repo's `version.yaml` (seeded to the exact installed commit), converged by `majnet-update` on the main node via the bot's `GET /api/platform/version`; break-glass = `majnet-update <ref>` (**ADR 0005**, digest-pinned images **ADR 0008**)
 - [x] Standard app endpoints: `/healthz` is the default `health.path`; reconciler scrapes `/info` (build metadata) at deploy time and surfaces it per app/env in the dashboard (§16)
 - [x] Dashboard-driven control-plane updates: `/control-plane` page (platform-admin) shows running vs latest and publishes/rolls back the pin via `GET`+`PUT /api/control-plane`; control plane reports its own build at `/info` (CI-baked) → real `converged` signal + live rollout progress bar; `majnet-update` stamp-guarded and polled every ~30s (**ADR 0015**)
+- [x] In-dashboard node terminal (**ADR 0016**): platform-admin, audited container exec + host shell (nsenter) over a reconciler WebSocket; per-node/per-app entry points; identity injected at the Caddy edge via the bot's `/tsauth`
+- [x] Per-app resource limits: `resources: { memory, cpus }` in the manifest → applied to the container's Docker `HostConfig` (memory / nano_cpus); editable in the manifest form, surfaced as usage-vs-limit in `/nodes`
 - [ ] First weekly restore test actually performed
 
 ## Phase 6 — One-line auto-provisioning (Coolify-style install) 🚧
