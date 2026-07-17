@@ -152,6 +152,25 @@ pub(crate) async fn bump_class_digest(
 /// Replace the value of the top-level `image:` line, leaving everything else
 /// (comments, other keys) untouched. Appends the key if absent.
 pub(crate) fn replace_image_line(content: &str, image: &str) -> Result<String> {
+    // An empty or `{}`-only overlay (possibly with comments) has no image line to
+    // replace — and a flow `{}` can't have `image:` appended after it (that makes
+    // two YAML documents, which then fail to parse). Emit a clean image-only
+    // overlay, preserving any leading comments.
+    let significant: Vec<&str> = content
+        .lines()
+        .map(str::trim)
+        .filter(|t| !t.is_empty() && !t.starts_with('#'))
+        .collect();
+    if significant.is_empty() || (significant.len() == 1 && significant[0] == "{}") {
+        let mut out: Vec<String> = content
+            .lines()
+            .filter(|l| l.trim_start().starts_with('#'))
+            .map(str::to_string)
+            .collect();
+        out.push(format!("image: {image}"));
+        return Ok(out.join("\n") + "\n");
+    }
+
     let mut out = Vec::new();
     let mut replaced = false;
     for line in content.lines() {
@@ -208,5 +227,27 @@ mod tests {
     #[test]
     fn refuses_nested_image_key() {
         assert!(replace_image_line("spec:\n  image: x\n", "y").is_err());
+    }
+
+    #[test]
+    fn empty_map_overlay_becomes_clean_image_only() {
+        // `{}\n\n` must NOT become `{}\nimage: …` (two YAML docs → parse error).
+        assert_eq!(
+            replace_image_line("{}\n\n", "ghcr.io/o/a@sha256:x").unwrap(),
+            "image: ghcr.io/o/a@sha256:x\n"
+        );
+        // Comments are preserved; the `{}` is dropped.
+        assert_eq!(
+            replace_image_line("# managed\n{}\n", "img").unwrap(),
+            "# managed\nimage: img\n"
+        );
+        // Both parse as a single document.
+        for src in ["{}\n\n", "# c\n{}\n", ""] {
+            let out = replace_image_line(src, "img").unwrap();
+            assert!(
+                serde_yaml::from_str::<serde_yaml::Value>(&out).is_ok(),
+                "not single-doc: {out:?}"
+            );
+        }
     }
 }
