@@ -20,7 +20,7 @@ import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
 import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Sheet, SheetBody, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 
@@ -39,6 +39,21 @@ function resultVersioned(result: string, rows?: AppInfo[]): string {
     ?? rows?.find((r) => typeof r.info?.version === 'string')?.info?.version
   const repl = (typeof v === 'string' && v) || m[0].split('@sha256:')[1]?.slice(0, 12) || m[0]
   return result.replace(IMG_REF, String(repl))
+}
+
+// The next version each bump would create, from the highest recorded release
+// (mirrors the bot's next_version; advisory — the server recomputes on cut).
+function nextVersions(versions: string[]): { patch: string; minor: string; major: string } {
+  const parse = (t: string): [number, number, number] | null => {
+    const m = /^v(\d+)\.(\d+)\.(\d+)/.exec(t)
+    return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null
+  }
+  const cmp = (a: number[], b: number[]) => a[0]! - b[0]! || a[1]! - b[1]! || a[2]! - b[2]!
+  const [x, y, z] = versions
+    .map(parse)
+    .filter((v): v is [number, number, number] => v != null)
+    .reduce<[number, number, number]>((mx, v) => (cmp(v, mx) > 0 ? v : mx), [0, 0, 0])
+  return { patch: `v${x}.${y}.${z + 1}`, minor: `v${x}.${y + 1}.0`, major: `v${x + 1}.0.0` }
 }
 
 type Sheeted = null | 'config' | 'logs' | 'secrets'
@@ -130,10 +145,6 @@ export function AppDetail() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onSelect={() => deploy.mutate(() => send(urls.releaseCut(org, app, 'patch')))}>Cut release · patch</DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => deploy.mutate(() => send(urls.releaseCut(org, app, 'minor')))}>Cut release · minor</DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => deploy.mutate(() => send(urls.releaseCut(org, app, 'major')))}>Cut release · major</DropdownMenuItem>
-              <DropdownMenuSeparator />
               <DropdownMenuItem onSelect={() => setRenameOpen(true)}>Rename app…</DropdownMenuItem>
               <DropdownMenuItem
                 variant="destructive"
@@ -372,11 +383,22 @@ function Releases({ org, app, prodImage }: { org: string; app: string; prodImage
   const q = useReleases(org, app)
   const m = useApiMutation({ invalidate: [['deploys', org], ['releases', org, app], ['events']] })
   const releases = q.data ?? []
+  const nv = nextVersions(releases.map((r) => r.version))
   if (q.isLoading || q.error) return null
   return (
     <>
       <SectionHead title="Releases" hint="tagged image publishes" />
-      <div className="mb-2 flex justify-end">
+      <div className="mb-2 flex justify-end gap-2">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button size="sm" disabled={m.isPending} title="Cut a new release — the bot tags the next semver and CI builds it">Cut release ▾</Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onSelect={() => m.mutate(() => send(urls.releaseCut(org, app, 'patch')))}>Patch <span className="ml-auto pl-4 font-mono text-xs text-muted-foreground">{nv.patch}</span></DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => m.mutate(() => send(urls.releaseCut(org, app, 'minor')))}>Minor <span className="ml-auto pl-4 font-mono text-xs text-muted-foreground">{nv.minor}</span></DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => m.mutate(() => send(urls.releaseCut(org, app, 'major')))}>Major <span className="ml-auto pl-4 font-mono text-xs text-muted-foreground">{nv.major}</span></DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <Button variant="outline" size="sm" disabled={m.isPending}
           title="Recover any vX.Y.Z publishes the registry_package webhook missed"
           onClick={() => m.mutate(() => send(urls.releaseBackfill(org, app)))}>Backfill from registry</Button>
