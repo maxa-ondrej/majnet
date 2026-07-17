@@ -15,6 +15,7 @@ mod acme;
 mod authz;
 mod cloudflare;
 mod config;
+mod control_plane;
 mod dashboard_api;
 mod deploys;
 mod digest;
@@ -136,6 +137,14 @@ async fn main() -> Result<()> {
             post(dashboard_api::secrets_post),
         )
         .route("/api/nodes", get(dashboard_api::nodes_get))
+        .route(
+            "/api/control-plane",
+            get(control_plane::status_get),
+        )
+        .route(
+            "/api/control-plane/pin",
+            axum::routing::put(control_plane::pin_put),
+        )
         .route("/api/imports/{org}", get(dashboard_api::imports_get))
         .route(
             "/api/platform/registry",

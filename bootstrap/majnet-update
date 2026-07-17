@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # majnet-update (v2, ADR 0008) — converge the control plane to the pin in the
-# platform repo's version.yaml. Runs hourly from majnet-update.timer;
-# `majnet-update <ref>` is the break-glass path when the bot is down. Main only.
+# platform repo's version.yaml. Runs frequently from majnet-update.timer (a
+# cheap no-op while the pin is unchanged, so a dashboard-published pin rolls out
+# within ~1 min); `majnet-update <ref>` is the break-glass path when the bot is
+# down. Main only.
 #
 # The bot + reconciler + dashboard run as CI-built GHCR images (pulled, not
 # compiled). `setup` stays a native host binary (it drives systemctl/wireguard)
@@ -16,6 +18,9 @@ DIR=${MAJNET_REPO_DIR:-/opt/majnet}
 BOT_URL=${MAJNET_BOT_INTERNAL_URL:-http://10.88.0.1:8081}
 COMPOSE="$DIR/deploy/compose.yaml"
 LEGACY_DASHBOARD="$DIR/dashboard/compose.yaml"
+# Records the last successfully-converged pin so frequent timer runs skip the
+# heavy work (git fetch / compose pull) when nothing changed.
+STAMP=${MAJNET_PIN_STAMP:-/var/lib/majnet/last-pin}
 
 log() { printf '[majnet-update] %s\n' "$*"; }
 
@@ -37,6 +42,14 @@ main() {
   [[ -n $ref ]] || { log "empty ref in version.yaml — skipping"; return 0; }
   if [[ -z $image || -z $dashboard ]]; then
     log "version.yaml has no image/dashboard pin — not on the ADR 0008 schema yet; skipping"
+    return 0
+  fi
+
+  # Fast path: nothing changed since the last successful converge. Break-glass
+  # (an explicit ref override) always re-runs. Compose's own restart policies
+  # keep crashed containers up between converges, so skipping here is safe.
+  local pin_id="$ref $image $dashboard"
+  if [[ -z $ref_override && -f $STAMP && "$(cat "$STAMP" 2>/dev/null)" == "$pin_id" ]]; then
     return 0
   fi
 
@@ -82,6 +95,10 @@ main() {
     install -m 0755 "$DIR/bootstrap/majnet-update" /usr/local/bin/
     systemctl restart majnet-setup
   fi
+
+  # Record the converged pin so subsequent timer runs no-op until it changes.
+  mkdir -p "$(dirname "$STAMP")"
+  printf '%s' "$pin_id" > "$STAMP"
 
   log "converged: control plane on ${image##*@}, setup @ $target"
 }
