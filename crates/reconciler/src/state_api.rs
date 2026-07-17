@@ -8,6 +8,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::AppState;
 
@@ -24,6 +25,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/restart/{project}/{class}/{app}", post(restart))
         .route("/api/secrets/{project}/{class}/{app}", get(secrets_get))
         .route("/api/metrics", get(metrics_get))
+        .route("/api/metrics/history", get(metrics_history_get))
         .route("/api/logs/{project}/{class}/{app}", get(logs_get))
         .route("/api/terminal", get(crate::terminal::terminal_ws))
         .route("/api/terminal/sessions", get(crate::terminal::sessions_get))
@@ -346,6 +348,33 @@ async fn metrics_get(
         .await
         .map(Json)
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e:#}")))
+}
+
+#[derive(serde::Deserialize)]
+struct HistoryQuery {
+    /// Look-back window in seconds (default 24h, clamped 5min–60d).
+    range: Option<i64>,
+    /// Restrict to a single node.
+    node: Option<String>,
+}
+
+/// `GET /api/metrics/history?range=<sec>&node=<name>` — persisted node/host
+/// samples (ADR 0017), oldest first, already at the resolution for their age.
+async fn metrics_history_get(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<HistoryQuery>,
+) -> Result<Json<Vec<crate::state::MetricPoint>>, (StatusCode, String)> {
+    let range = q.range.unwrap_or(86_400).clamp(300, 60 * 86_400);
+    let since = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+        - range;
+    state
+        .store
+        .metric_history(q.node.as_deref(), since)
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))
 }
 
 #[derive(serde::Deserialize)]

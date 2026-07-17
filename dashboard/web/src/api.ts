@@ -143,6 +143,8 @@ export const urls = {
   importRetry: (org: string, app: string) => `${BOT}/imports/${encodeURIComponent(org)}/${encodeURIComponent(app)}/retry`,
   nodes: `${BOT}/nodes`,
   metrics: `${RECON}/metrics`,
+  metricsHistory: (range: number, node?: string) =>
+    `${RECON}/metrics/history?range=${range}${node ? `&node=${encodeURIComponent(node)}` : ''}`,
   alertSettings: `${RECON}/settings/alerts`,
   alertTest: `${RECON}/settings/alerts/test`,
   appLogs: (org: string, cls: string, app: string, tail = 300) =>
@@ -208,6 +210,15 @@ export const useImports = (org: string) =>
     // Poll while anything is still importing; back off once it's all settled.
     refetchInterval: (q) => (q.state.data?.some((i) => i.status === 'running') ? 2500 : false),
   })
+export interface MetricPoint { ts: number; node: string; cpu_pct: number; mem_used: number; mem_total: number; containers_running: number }
+export const useMetricsHistory = (range: number, enabled = true) =>
+  useQuery({
+    queryKey: ['metrics-history', range],
+    queryFn: () => getJSON<MetricPoint[]>(urls.metricsHistory(range)),
+    enabled,
+    refetchInterval: 60_000,
+  })
+
 export const useNodeMetrics = () =>
   useQuery({ queryKey: ['metrics'], queryFn: () => getJSON<NodeMetrics[]>(urls.metrics), refetchInterval: 10000 })
 export const useAppLogs = (org: string, cls: string, app: string, enabled: boolean) =>

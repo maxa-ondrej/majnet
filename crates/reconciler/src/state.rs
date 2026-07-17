@@ -408,6 +408,107 @@ impl Store {
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
+
+    // ── metrics history (ADR 0017) ────────────────────────────────────────
+
+    /// Write one raw node/host sample. `INSERT OR REPLACE` so a re-run at the
+    /// same aligned timestamp (after compaction) is idempotent.
+    pub fn insert_metric_sample(
+        &self,
+        ts: i64,
+        node: &str,
+        cpu_pct: f64,
+        mem_used: i64,
+        mem_total: i64,
+        containers_running: i64,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO metric_samples
+               (ts, node, cpu_pct, mem_used, mem_total, containers_running)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![ts, node, cpu_pct, mem_used, mem_total, containers_running],
+        )?;
+        Ok(())
+    }
+
+    /// Age samples into coarser, time-aligned buckets (RRD tiers). Each band is
+    /// re-aggregated into `bucket`-aligned rows (avg), idempotently. Runs oldest
+    /// band first so a row that has crossed two boundaries still lands correctly.
+    pub fn compact_metrics(&self, now: i64) -> Result<()> {
+        const DAY: i64 = 86_400;
+        let conn = self.conn.lock().unwrap();
+        // (band lower bound, band upper bound, target bucket seconds)
+        // > 30d → 1/day ; 7d–30d → 1/hour ; 24h–7d → 2/hour (30 min)
+        let bands = [
+            (i64::MIN, now - 30 * DAY, DAY),
+            (now - 30 * DAY, now - 7 * DAY, 3_600),
+            (now - 7 * DAY, now - DAY, 1_800),
+        ];
+        for (lo, hi, bucket) in bands {
+            if hi <= lo {
+                continue;
+            }
+            conn.execute_batch(&format!(
+                "CREATE TEMP TABLE _compact AS
+                   SELECT node, (ts/{bucket})*{bucket} AS ts, avg(cpu_pct) AS cpu_pct,
+                          CAST(avg(mem_used) AS INTEGER) AS mem_used,
+                          CAST(avg(mem_total) AS INTEGER) AS mem_total,
+                          CAST(avg(containers_running) AS INTEGER) AS containers_running
+                   FROM metric_samples WHERE ts >= {lo} AND ts < {hi}
+                   GROUP BY node, (ts/{bucket})*{bucket};
+                 DELETE FROM metric_samples WHERE ts >= {lo} AND ts < {hi};
+                 INSERT OR REPLACE INTO metric_samples
+                   (node, ts, cpu_pct, mem_used, mem_total, containers_running)
+                   SELECT node, ts, cpu_pct, mem_used, mem_total, containers_running FROM _compact;
+                 DROP TABLE _compact;"
+            ))?;
+        }
+        Ok(())
+    }
+
+    /// Node/host samples at or after `since`, oldest first. Optionally one node.
+    pub fn metric_history(&self, node: Option<&str>, since: i64) -> Result<Vec<MetricPoint>> {
+        let conn = self.conn.lock().unwrap();
+        let mut sql = String::from(
+            "SELECT ts, node, cpu_pct, mem_used, mem_total, containers_running
+             FROM metric_samples WHERE ts >= ?1",
+        );
+        if node.is_some() {
+            sql.push_str(" AND node = ?2");
+        }
+        sql.push_str(" ORDER BY node, ts");
+        let mut stmt = conn.prepare(&sql)?;
+        let map = |row: &rusqlite::Row| {
+            Ok(MetricPoint {
+                ts: row.get(0)?,
+                node: row.get(1)?,
+                cpu_pct: row.get(2)?,
+                mem_used: row.get(3)?,
+                mem_total: row.get(4)?,
+                containers_running: row.get(5)?,
+            })
+        };
+        let rows: Vec<MetricPoint> = match node {
+            Some(n) => stmt
+                .query_map(rusqlite::params![since, n], map)?
+                .collect::<Result<_, _>>()?,
+            None => stmt
+                .query_map(rusqlite::params![since], map)?
+                .collect::<Result<_, _>>()?,
+        };
+        Ok(rows)
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct MetricPoint {
+    pub ts: i64,
+    pub node: String,
+    pub cpu_pct: f64,
+    pub mem_used: i64,
+    pub mem_total: i64,
+    pub containers_running: i64,
 }
 
 #[cfg(test)]
@@ -448,6 +549,57 @@ mod tests {
         s.raw("UPDATE ephemeral_stacks SET extended_until = datetime('now', '-1 hour')")
             .unwrap();
         assert!(s.ephemeral_ttl_expired("proj", "app-pr1").unwrap());
+    }
+
+    #[test]
+    fn compact_metrics_tiers_by_age_and_is_idempotent() {
+        let s = store();
+        let now = 10_000_000i64;
+        let day = 86_400i64;
+        // 24h–7d band → 30-min buckets: 4 raw samples inside one aligned bucket.
+        let base = ((now - 2 * day) / 1800) * 1800;
+        for k in 0..4 {
+            s.insert_metric_sample(base + k * 300, "n1", 20.0 + k as f64, 100, 200, 3)
+                .unwrap();
+        }
+        // < 24h: must stay raw, untouched.
+        s.insert_metric_sample(now - 600, "n1", 55.0, 150, 200, 5)
+            .unwrap();
+        // > 30d → 1-day bucket: two samples in one day collapse to one.
+        let dbase = ((now - 40 * day) / day) * day;
+        s.insert_metric_sample(dbase + 100, "n1", 10.0, 50, 200, 1)
+            .unwrap();
+        s.insert_metric_sample(dbase + 5000, "n1", 30.0, 90, 200, 1)
+            .unwrap();
+
+        s.compact_metrics(now).unwrap();
+        let all = s.metric_history(Some("n1"), -1).unwrap();
+
+        // recent raw sample survives verbatim
+        assert!(all
+            .iter()
+            .any(|p| p.ts == now - 600 && (p.cpu_pct - 55.0).abs() < 1e-9));
+        // the 30-min band collapsed to one aligned row, averaged (20+21+22+23)/4 = 21.5
+        let band: Vec<_> = all.iter().filter(|p| p.ts == base).collect();
+        assert_eq!(
+            band.len(),
+            1,
+            "30-min band should collapse to one aligned row"
+        );
+        assert!(
+            (band[0].cpu_pct - 21.5).abs() < 1e-9,
+            "avg={}",
+            band[0].cpu_pct
+        );
+        // daily band collapsed to one row, (10+30)/2 = 20
+        let daily: Vec<_> = all.iter().filter(|p| p.ts == dbase).collect();
+        assert_eq!(daily.len(), 1);
+        assert!((daily[0].cpu_pct - 20.0).abs() < 1e-9);
+
+        // idempotent — a second pass changes nothing
+        let before = s.metric_history(Some("n1"), -1).unwrap().len();
+        s.compact_metrics(now).unwrap();
+        assert_eq!(s.metric_history(Some("n1"), -1).unwrap().len(), before);
     }
 
     #[test]

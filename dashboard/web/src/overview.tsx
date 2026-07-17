@@ -7,7 +7,7 @@ import { Link } from '@tanstack/react-router'
 import { Boxes, Check, Cpu, EyeOff, GripVertical, Layers, Pencil, Plus, RotateCcw, Server } from 'lucide-react'
 import {
   getJSON, parseAt, urls,
-  useBotEvents, useControlPlane, useDashboardLayout, useEvents, useNodeMetrics, useProjects, useWhoami,
+  useBotEvents, useControlPlane, useDashboardLayout, useEvents, useMetricsHistory, useNodeMetrics, useProjects, useWhoami,
   saveDashboardLayout, type DashboardLayout, type DeployPr, type Event, type NodeMetrics,
 } from './api'
 import { classify, DOT_TONE, PageHead, relTime } from './views'
@@ -58,21 +58,34 @@ function NodesTile() {
   )
 }
 
-function Meter({ label, pct }: { label: string; pct: number }) {
-  const tone = pct >= 90 ? 'var(--destructive)' : pct >= 80 ? 'var(--warning)' : 'var(--success)'
+// Compact sparkline (2px line + area + endpoint), colored by the current value
+// against the 80% threshold. Single-series magnitude → one hue.
+function Spark({ label, values, cur }: { label: string; values: number[]; cur: number }) {
+  const tone = cur >= 90 ? 'var(--destructive)' : cur >= 80 ? 'var(--warning)' : 'var(--success)'
+  const W = 120, H = 24, pad = 2
+  const n = values.length
+  const x = (i: number) => (i / Math.max(1, n - 1)) * W
+  const y = (v: number) => pad + (1 - Math.min(Math.max(v, 0), 100) / 100) * (H - pad * 2)
+  const line = n >= 2 ? values.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(' ') : ''
   return (
-    <div className="grid grid-cols-[34px_1fr_40px] items-center gap-2.5">
+    <div className="grid grid-cols-[34px_1fr_38px] items-center gap-2.5">
       <span className="text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
-      <div className="h-2 overflow-hidden rounded-full bg-muted">
-        <div className="h-full rounded-full transition-[width]" style={{ width: `${Math.min(100, pct)}%`, background: tone }} />
-      </div>
-      <span className="text-right text-xs tabular-nums" style={{ color: pct >= 80 ? tone : 'var(--muted-foreground)' }}>{Math.round(pct)}%</span>
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="block h-6 w-full">
+        <line x1={0} y1={y(80)} x2={W} y2={y(80)} stroke="var(--border)" strokeWidth={1} strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />
+        {n >= 2 && <>
+          <path d={`${line} L${W} ${H} L0 ${H} Z`} fill={tone} fillOpacity={0.12} />
+          <path d={line} fill="none" stroke={tone} strokeWidth={2} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+          <circle cx={x(n - 1)} cy={y(values[n - 1] ?? 0)} r={2.4} fill={tone} />
+        </>}
+      </svg>
+      <span className="text-right text-xs tabular-nums" style={{ color: cur >= 80 ? tone : 'var(--muted-foreground)' }}>{Math.round(cur)}%</span>
     </div>
   )
 }
 
 function FleetWidget() {
   const m = useNodeMetrics()
+  const hist = useMetricsHistory(21600) // 6h sparklines
   const nodes = m.data ?? []
   if (m.isLoading) return <Muted>Loading…</Muted>
   if (!nodes.length) return <Muted>No nodes reporting metrics.</Muted>
@@ -80,6 +93,9 @@ function FleetWidget() {
     <div className="flex flex-col gap-3">
       {nodes.map((n: NodeMetrics) => {
         const memPct = n.mem_total ? (n.mem_used / n.mem_total) * 100 : 0
+        const pts = (hist.data ?? []).filter((p) => p.node === n.name)
+        const cpuSeries = pts.map((p) => p.cpu_pct)
+        const memSeries = pts.map((p) => (p.mem_total ? (p.mem_used / p.mem_total) * 100 : 0))
         return (
           <div key={n.name} className="border-t pt-3 first:border-0 first:pt-0">
             <div className="mb-1.5 flex items-center gap-2">
@@ -87,7 +103,10 @@ function FleetWidget() {
               <span className="text-[11px] text-muted-foreground">{ZONE[n.role] ?? n.role}</span>
               <span className="ml-auto">{n.reachable ? <StatusBadge tone="success" dot>online</StatusBadge> : <StatusBadge tone="danger" dot>unreachable</StatusBadge>}</span>
             </div>
-            {n.reachable && <div className="flex flex-col gap-1.5"><Meter label="CPU" pct={n.host_cpu_pct} /><Meter label="MEM" pct={memPct} /></div>}
+            {n.reachable && <div className="flex flex-col gap-1.5">
+              <Spark label="CPU" values={cpuSeries} cur={n.host_cpu_pct} />
+              <Spark label="MEM" values={memSeries} cur={memPct} />
+            </div>}
           </div>
         )
       })}

@@ -6,9 +6,60 @@ use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use majnet_common::platform::{Node, NodesFile};
 use serde::Serialize;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::AppState;
+
+/// How often the sampler records a raw metrics point.
+const SAMPLE_INTERVAL: Duration = Duration::from_secs(60);
+/// Run the compaction pass every Nth sample (bands are day-scale — 15 min is
+/// plenty and keeps each pass cheap).
+const COMPACT_EVERY: u64 = 15;
+
+fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Metrics sampler (ADR 0017): every 60s, gather node/host metrics and persist
+/// one raw row per reachable node; periodically compact old rows into coarser
+/// tiers. Independent of alerting — history is kept whether or not alerts are on.
+pub async fn sample_loop(state: Arc<AppState>) {
+    let mut ticks: u64 = 0;
+    loop {
+        tokio::time::sleep(SAMPLE_INTERVAL).await;
+        if let Err(e) = sample_once(&state).await {
+            tracing::warn!(error = %format!("{e:#}"), "metrics sampler tick failed");
+        }
+        ticks += 1;
+        if ticks.is_multiple_of(COMPACT_EVERY) {
+            if let Err(e) = state.store.compact_metrics(unix_now()) {
+                tracing::warn!(error = %format!("{e:#}"), "metrics compaction failed");
+            }
+        }
+    }
+}
+
+async fn sample_once(state: &AppState) -> Result<()> {
+    let ts = unix_now();
+    for n in gather(state).await? {
+        if !n.reachable {
+            continue; // don't record zero-rows for an unreachable node
+        }
+        state.store.insert_metric_sample(
+            ts,
+            &n.name,
+            n.host_cpu_pct,
+            n.mem_used,
+            n.mem_total,
+            n.containers_running,
+        )?;
+    }
+    Ok(())
+}
 
 #[derive(Serialize)]
 pub struct NodeMetrics {

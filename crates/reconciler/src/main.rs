@@ -86,6 +86,9 @@ async fn main() -> Result<()> {
     // Alert evaluator: metrics + site health → Discord on state transitions.
     tokio::spawn(alerts::run_loop(state.clone()));
 
+    // Metrics sampler: persist node/host history for the dashboard charts (ADR 0017).
+    tokio::spawn(metrics::sample_loop(state.clone()));
+
     // The event loop (§12): converge now, then on every nudge or poll tick.
     let poll = std::time::Duration::from_secs(state.config.poll_interval_secs);
     loop {

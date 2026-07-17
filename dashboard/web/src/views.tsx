@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { ChevronRight, Plus, Loader2, CheckCircle2, Circle, AlertCircle, MoreVertical, Boxes, Rocket, Trash2, Archive, GitPullRequest, RefreshCw, PenLine, TerminalSquare } from 'lucide-react'
-import { send, urls, useApps, useAppInfo, useArchivedApps, useBotEvents, useDeploys, useEvents, useImports, useNodeMetrics, useNodes, useProjects, useWhoami, parseAt, IMPORT_STEPS, type ImportStatus, type Event } from './api'
+import { send, urls, useApps, useAppInfo, useArchivedApps, useBotEvents, useDeploys, useEvents, useImports, useMetricsHistory, useNodeMetrics, useNodes, useProjects, useWhoami, parseAt, IMPORT_STEPS, type ImportStatus, type Event } from './api'
 import { useApiMutation } from './mutations'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -365,12 +365,22 @@ function Stat({ label, value }: { label: string; value: string }) {
   return <div><div className="text-muted-foreground">{label}</div><div className="font-mono">{value || '—'}</div></div>
 }
 
+const RANGES: { label: string; secs: number | 'live' }[] = [
+  { label: 'Live', secs: 'live' },
+  { label: '1h', secs: 3600 },
+  { label: '6h', secs: 21600 },
+  { label: '24h', secs: 86400 },
+  { label: '7d', secs: 604800 },
+  { label: '30d', secs: 2592000 },
+]
+
 export function Nodes() {
   const q = useNodes()
   const m = useNodeMetrics()
   const me = useWhoami().data
-  // Accumulate a rolling window (~last 60 samples ≈ 10 min at 10s) client-side
-  // so the charts build up live while the page is open.
+  const [range, setRange] = useState<number | 'live'>('live')
+  // Live: accumulate a rolling ~10-min window client-side. A chosen range:
+  // pull persisted history (ADR 0017) instead.
   const [hist, setHist] = useState<Record<string, { cpu: number[]; mem: number[] }>>({})
   useEffect(() => {
     if (!m.data) return
@@ -385,9 +395,32 @@ export function Nodes() {
       return next
     })
   }, [m.data])
+
+  const isLive = range === 'live'
+  const histQ = useMetricsHistory(isLive ? 0 : range, !isLive)
+  // Per-node series for the charts, from live accumulation or persisted history.
+  const seriesFor = (name: string): { cpu: number[]; mem: number[]; sampleSecs: number } => {
+    if (isLive) return { ...(hist[name] ?? { cpu: [], mem: [] }), sampleSecs: 10 }
+    const pts = (histQ.data ?? []).filter((p) => p.node === name)
+    return {
+      cpu: pts.map((p) => p.cpu_pct),
+      mem: pts.map((p) => (p.mem_total ? (p.mem_used / p.mem_total) * 100 : 0)),
+      sampleSecs: pts.length > 1 ? Math.round((range as number) / (pts.length - 1)) : 60,
+    }
+  }
+
   return (
     <>
-      <PageHead title="Nodes" />
+      <PageHead title="Nodes">
+        <div className="inline-flex overflow-hidden rounded-md border text-xs">
+          {RANGES.map((r) => (
+            <button key={r.label} onClick={() => setRange(r.secs)}
+              className={`px-2.5 py-1 font-medium ${range === r.secs ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`}>
+              {r.label}
+            </button>
+          ))}
+        </div>
+      </PageHead>
       <QueryState isLoading={q.isLoading} error={q.error}>
         <div className="flex flex-col gap-3">
           {q.data?.length === 0 && <Empty>No nodes enrolled.</Empty>}
@@ -423,10 +456,15 @@ export function Nodes() {
                       <Stat label="OS" value={mm.os} />
                     </div>
                     <div className="mt-3 grid grid-cols-2 gap-3">
-                      <MetricChart label="CPU" values={hist[n.name]?.cpu ?? []}
-                        format={(p) => `${(p / 100 * mm.cpus).toFixed(1)} of ${mm.cpus} cores`} />
-                      <MetricChart label="Memory" values={hist[n.name]?.mem ?? []}
-                        format={(p) => `${gb((p / 100) * mm.mem_total)} of ${gb(mm.mem_total)}`} />
+                      {(() => {
+                        const s = seriesFor(n.name)
+                        return <>
+                          <MetricChart label="CPU" values={s.cpu} sampleSecs={s.sampleSecs}
+                            format={(p) => `${(p / 100 * mm.cpus).toFixed(1)} of ${mm.cpus} cores`} />
+                          <MetricChart label="Memory" values={s.mem} sampleSecs={s.sampleSecs}
+                            format={(p) => `${gb((p / 100) * mm.mem_total)} of ${gb(mm.mem_total)}`} />
+                        </>
+                      })()}
                     </div>
                     {mm.apps.length > 0 && (
                       <div className="mt-3 overflow-x-auto">
