@@ -111,8 +111,8 @@ async fn do_status(state: &AppState) -> Result<Status> {
         .into();
 
     // The images pin the source: ghcr.io/<org>/<repo>/control-plane@… .
-    let (src_org, src_repo) =
-        source_from_image(current.image.as_deref()).unwrap_or_else(|| ("majnet".into(), "majnet".into()));
+    let (src_org, src_repo) = source_from_image(current.image.as_deref())
+        .unwrap_or_else(|| ("majnet".into(), "majnet".into()));
 
     // Best-effort latest + commits — never fail the page over it.
     let mut latest = None;
@@ -168,9 +168,10 @@ async fn do_status(state: &AppState) -> Result<Status> {
 /// `sha-<HEAD>` digest.
 async fn resolve_latest(state: &AppState, src_org: &str, src_repo: &str) -> Result<Pin> {
     let client = state.github.org_client(src_org).await?;
-    let head = crate::git::get_branch_head(&client, &format!("/repos/{src_org}/{src_repo}"), "main")
-        .await?
-        .context("source repo has no main branch")?;
+    let head =
+        crate::git::get_branch_head(&client, &format!("/repos/{src_org}/{src_repo}"), "main")
+            .await?
+            .context("source repo has no main branch")?;
     let (user, pass) = crate::proxy::ghcr_credential(state, src_org).await?;
     let tag = format!("sha-{head}");
     let cp_name = format!("{src_repo}/control-plane");
@@ -367,9 +368,11 @@ async fn do_set_pin(state: &AppState, req: PinRequest, actor: &str) -> Result<St
         .send()
         .await
         .context("committing version.yaml")?;
-    state
-        .store
-        .log_event("control-plane-pin", Some(org), &format!("{label} by {actor}"))?;
+    state.store.log_event(
+        "control-plane-pin",
+        Some(org),
+        &format!("{label} by {actor}"),
+    )?;
     tracing::info!(%label, %actor, "control-plane pin updated");
     Ok(format!(
         "Pinned control plane to {label}. master-1 will roll it out within ~1 min."

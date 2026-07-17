@@ -137,10 +137,7 @@ async fn main() -> Result<()> {
             post(dashboard_api::secrets_post),
         )
         .route("/api/nodes", get(dashboard_api::nodes_get))
-        .route(
-            "/api/control-plane",
-            get(control_plane::status_get),
-        )
+        .route("/api/control-plane", get(control_plane::status_get))
         .route(
             "/api/control-plane/pin",
             axum::routing::put(control_plane::pin_put),
