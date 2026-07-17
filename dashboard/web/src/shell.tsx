@@ -1,8 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, Outlet } from '@tanstack/react-router'
 import { Activity, ArrowUp, Boxes, Cpu, Loader2, Server, Settings, TerminalSquare, X } from 'lucide-react'
 import { useControlPlane, useWhoami } from './api'
 import { TopBar } from './topbar'
+
+// This bundle's build commit (CI-baked; empty in dev).
+const BUNDLE_COMMIT = import.meta.env.VITE_BUILD_COMMIT ?? ''
 
 const NAV = [
   { to: '/', label: 'Projects', icon: Boxes, exact: true, admin: false },
@@ -20,6 +23,18 @@ const base = 'flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm font-medi
 function ControlPlaneBanner() {
   const { data: cp } = useControlPlane()
   const [dismissed, setDismissed] = useState<string | null>(null)
+  // Once a control-plane update has converged, if this tab is still running an
+  // older bundle, hard-reload once to pick up the new dashboard. Guarded per-ref
+  // via sessionStorage so a mid-rollout timing race can't loop.
+  useEffect(() => {
+    if (!cp || cp.converged !== true || !BUNDLE_COMMIT) return
+    if (cp.current.ref.startsWith(BUNDLE_COMMIT.slice(0, 7))) return // already on this build
+    const KEY = 'majnet-cp-reloaded'
+    if (sessionStorage.getItem(KEY) === cp.current.ref) return // already reloaded for this ref
+    sessionStorage.setItem(KEY, cp.current.ref)
+    const t = setTimeout(() => location.reload(), 1500)
+    return () => clearTimeout(t)
+  }, [cp])
   if (!cp) return null
   if (cp.converged === false) {
     return (
