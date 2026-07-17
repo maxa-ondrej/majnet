@@ -68,6 +68,15 @@ platform-admin-only and fully audited, with two modes.**
   > table (DB-first, env fallback — same model as the GHCR token, ADR 0012); a
   > legacy raw `MAJNET_TAILSCALE_API_KEY` is still honored. A **Verify identity**
   > action exercises the credential and resolves the caller live.
+  >
+  > **WebSocket caveat:** Caddy's `forward_auth` injects the identity header on
+  > normal requests but **not on WebSocket upgrades**, so the terminal WS reached
+  > the reconciler unauthenticated (403). The dashboard's nginx resolves identity
+  > itself for the terminal location via `auth_request` → the bot's `/tsauth`
+  > (keyed on the forwarded tailnet IP), preferring an already-injected header so
+  > the `tailscale serve` path is unchanged. It uses a `map` (evaluated lazily,
+  > after `auth_request`); an `if`/`set` runs in the earlier rewrite phase and
+  > would capture an empty value.
 
   ```caddy
   dash.majksa.net {
