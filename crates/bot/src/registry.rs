@@ -44,6 +44,70 @@ struct TokenResp {
     token: String,
 }
 
+/// Resolve a tag to a fully-qualified digest-pinned image ref
+/// (`ghcr.io/<org>/<name>@sha256:…`) via the registry v2 manifest API. Used by
+/// the control-plane update surface to learn the digest of the latest CI build.
+/// `name` is the full package name after the org (e.g. `majnet/control-plane`).
+pub async fn resolve_digest(
+    http: &reqwest::Client,
+    org: &str,
+    name: &str,
+    tag: &str,
+    username: &str,
+    password: &str,
+) -> Result<String> {
+    let token = pull_token(http, org, name, username, password)
+        .await
+        .context("obtaining GHCR pull token")?;
+    // A HEAD would suffice, but GHCR is more reliable on GET; we only read the
+    // Docker-Content-Digest header, not the body.
+    let resp = http
+        .get(manifest_url(org, name, tag))
+        .bearer_auth(&token)
+        .header("Accept", ACCEPT)
+        .send()
+        .await?;
+    let status = resp.status();
+    let digest = resp
+        .headers()
+        .get("docker-content-digest")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    if !status.is_success() {
+        bail!(
+            "resolving {org}/{name}:{tag} ({status}): {}",
+            resp.text().await.unwrap_or_default()
+        );
+    }
+    let digest = digest.context("registry response missing Docker-Content-Digest")?;
+    Ok(format!("ghcr.io/{org}/{name}@{digest}"))
+}
+
+/// A bearer token scoped to pull `org/name`.
+async fn pull_token(
+    http: &reqwest::Client,
+    org: &str,
+    name: &str,
+    username: &str,
+    password: &str,
+) -> Result<String> {
+    let url = format!("{REGISTRY}/token?service=ghcr.io&scope=repository:{org}/{name}:pull");
+    let resp = http
+        .get(&url)
+        .basic_auth(username, Some(password))
+        .send()
+        .await?;
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    anyhow::ensure!(
+        status.is_success(),
+        "GHCR token request failed ({status}): {body}"
+    );
+    Ok(serde_json::from_str::<TokenResp>(&body)
+        .context("parsing GHCR token response")?
+        .token)
+}
+
 /// A bearer token scoped to pull `from` and push+pull `to` within the org.
 async fn auth_token(
     http: &reqwest::Client,

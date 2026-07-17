@@ -1,13 +1,14 @@
 import { Link, Outlet } from '@tanstack/react-router'
-import { Activity, Boxes, Server, Settings } from 'lucide-react'
+import { Activity, Boxes, Cpu, Server, Settings } from 'lucide-react'
 import { useWhoami } from './api'
 import { TopBar } from './topbar'
 
 const NAV = [
-  { to: '/', label: 'Projects', icon: Boxes, exact: true },
-  { to: '/activity', label: 'Activity', icon: Activity, exact: false },
-  { to: '/nodes', label: 'Nodes', icon: Server, exact: false },
-  { to: '/settings', label: 'Settings', icon: Settings, exact: false },
+  { to: '/', label: 'Projects', icon: Boxes, exact: true, admin: false },
+  { to: '/activity', label: 'Activity', icon: Activity, exact: false, admin: false },
+  { to: '/nodes', label: 'Nodes', icon: Server, exact: false, admin: false },
+  { to: '/control-plane', label: 'Control plane', icon: Cpu, exact: false, admin: true },
+  { to: '/settings', label: 'Settings', icon: Settings, exact: false, admin: false },
 ] as const
 
 const base = 'flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm font-medium transition-colors'
@@ -23,7 +24,7 @@ export function Shell() {
           <span className="font-semibold tracking-tight">MajNet</span>
         </div>
         <nav className="flex flex-col gap-0.5 max-md:flex-row">
-          {NAV.map((n) => (
+          {NAV.filter((n) => !n.admin || me?.admin).map((n) => (
             <Link
               key={n.to}
               to={n.to}

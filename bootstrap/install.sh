@@ -201,8 +201,10 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-# Self-update: converge the control plane to the version.yaml pin hourly
-# (ADR 0005/0008 — pulls images, extracts setup; never compiles).
+# Self-update: converge the control plane to the version.yaml pin (ADR 0005/0008
+# — pulls images, extracts setup; never compiles). Polled every ~30s so a
+# dashboard-published pin rolls out within ~1 min; majnet-update is a cheap
+# no-op (one curl + a stamp compare) while the pin is unchanged.
 cat > /etc/systemd/system/majnet-update.service <<'EOF'
 [Unit]
 Description=MajNet control-plane update (ADR 0005/0008)
@@ -214,10 +216,11 @@ ExecStart=/usr/local/bin/majnet-update
 EOF
 cat > /etc/systemd/system/majnet-update.timer <<'EOF'
 [Unit]
-Description=Hourly MajNet control-plane update check
+Description=MajNet control-plane update check (polls version.yaml)
 [Timer]
-OnCalendar=hourly
-RandomizedDelaySec=300
+OnBootSec=30
+OnUnitActiveSec=30
+RandomizedDelaySec=10
 Persistent=true
 [Install]
 WantedBy=timers.target

@@ -16,6 +16,18 @@ export interface PlatformNode {
   name: string; role: string; wireguard_ip: string
   public_endpoint: string; wireguard_pubkey: string
 }
+export interface CpPin { ref: string; image: string | null; dashboard: string | null }
+export interface CpCommit { sha: string; message: string; author: string; date: string }
+export interface CpHistoryEntry { sha: string; message: string; author: string; date: string; current: boolean }
+export interface ControlPlaneStatus {
+  current: CpPin
+  latest: CpPin | null
+  up_to_date: boolean
+  commits: CpCommit[]
+  history: CpHistoryEntry[]
+  source: { org: string; repo: string; compare_url: string | null }
+  check_error: string | null
+}
 export interface ContainerMetric {
   name: string; image: string; state: string
   cpu_pct: number; mem_used: number; mem_limit: number
@@ -162,6 +174,8 @@ export const urls = {
   templateSync: (org: string) => `${BOT}/template-sync/${encodeURIComponent(org)}`,
   projectArchive: (org: string) => `${BOT}/projects/${encodeURIComponent(org)}/archive`,
   projectDelete: (org: string) => `${BOT}/projects/${encodeURIComponent(org)}/delete`,
+  controlPlane: `${BOT}/control-plane`,
+  controlPlanePin: `${BOT}/control-plane/pin`,
 }
 
 // ── query hooks ──────────────────────────────────────────────────────────────
@@ -183,6 +197,8 @@ export const useAppLogs = (org: string, cls: string, app: string, enabled: boole
   useQuery({ queryKey: ['logs', org, cls, app], queryFn: () => getText(urls.appLogs(org, cls, app)), enabled, refetchInterval: 5000 })
 export const useNodes = () =>
   useQuery({ queryKey: ['nodes'], queryFn: () => getJSON<PlatformNode[]>(urls.nodes) })
+export const useControlPlane = () =>
+  useQuery({ queryKey: ['control-plane'], queryFn: () => getJSON<ControlPlaneStatus>(urls.controlPlane), refetchInterval: 20000 })
 export const useAppInfo = (org: string, app: string) =>
   useQuery({ queryKey: ['info', org, app], queryFn: () => getJSON<AppInfo[]>(urls.appInfo(org, app)), refetchInterval: 30000 })
 export const useEvents = (limit = 300) =>
