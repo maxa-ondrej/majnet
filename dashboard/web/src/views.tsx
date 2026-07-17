@@ -274,6 +274,7 @@ export function ProjectDetail() {
       <Crumbs><Link to="/">Projects</Link> / {name}</Crumbs>
       <PageHead title={name} sub={org}>
         <Button asChild variant="outline" size="sm"><a href={`https://github.com/${org}`} target="_blank" rel="noreferrer">GitHub ↗</a></Button>
+        <Button asChild variant="outline" size="sm"><a href={`https://github.com/${org}/ops`} target="_blank" rel="noreferrer">ops repo ↗</a></Button>
         <Button asChild variant="outline" size="sm"><Link to="/projects/$org/deploys" params={{ org }}>Deployments{pending ? ` · ${pending}` : ''}</Link></Button>
         <Button asChild variant="outline" size="sm"><Link to="/projects/$org/members" params={{ org }}>Members</Link></Button>
         <Button asChild size="sm"><Link to="/projects/$org/new-app" params={{ org }}><Plus className="size-4" /> New app</Link></Button>
