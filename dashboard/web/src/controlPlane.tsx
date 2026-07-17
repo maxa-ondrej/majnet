@@ -380,13 +380,12 @@ function CompRow({ name, hint, digest }: { name: string; hint?: string; digest: 
 
 function DiffRow({ name, from, to }: { name: string; from: string; to: string }) {
   return (
-    <div className="flex items-center justify-between gap-2 rounded-md border px-3 py-2">
-      <span className="flex items-center gap-1.5 text-[13px] font-medium"><GitCommit className="size-3.5 text-muted-foreground" />{name}</span>
-      <span className="flex items-center gap-1.5 font-mono text-xs">
-        <span className="text-muted-foreground line-through decoration-muted-foreground/40">{from}</span>
-        <span className="text-muted-foreground">→</span>
-        <span className="text-foreground">{to}</span>
-      </span>
+    <div className="flex min-w-0 flex-col gap-1.5 rounded-md border px-3 py-2">
+      <span className="flex items-center gap-1.5 text-[13px] font-medium"><GitCommit className="size-3.5 shrink-0 text-muted-foreground" />{name}</span>
+      <div className="flex min-w-0 flex-col gap-0.5 font-mono text-xs">
+        <span className="truncate text-muted-foreground line-through decoration-muted-foreground/40">{from}</span>
+        <span className="flex min-w-0 items-center gap-1"><span className="shrink-0 text-muted-foreground">→</span><span className="truncate text-foreground">{to}</span></span>
+      </div>
     </div>
   )
 }
