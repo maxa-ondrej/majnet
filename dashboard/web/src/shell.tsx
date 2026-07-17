@@ -65,8 +65,8 @@ export function Shell() {
   const { data: me } = useWhoami()
   const initials = (me?.login || 'infra').slice(0, 1).toUpperCase()
   return (
-    <div className="grid min-h-screen grid-cols-[240px_1fr] max-md:grid-cols-1">
-      <aside className="flex flex-col gap-1 border-r bg-sidebar p-3 text-sidebar-foreground max-md:flex-row max-md:items-center max-md:gap-2 max-md:overflow-x-auto">
+    <div className="grid h-screen grid-cols-[240px_1fr] overflow-hidden max-md:grid-cols-1 max-md:grid-rows-[auto_1fr]">
+      <aside className="flex flex-col gap-1 overflow-y-auto border-r bg-sidebar p-3 text-sidebar-foreground max-md:flex-row max-md:items-center max-md:gap-2 max-md:overflow-x-auto max-md:overflow-y-hidden">
         <div className="flex items-center gap-2.5 px-2 py-3 max-md:py-0">
           <div className="grid size-8 place-items-center rounded-lg bg-primary/15 font-bold text-primary">M</div>
           <span className="font-semibold tracking-tight">MajNet</span>
@@ -92,11 +92,13 @@ export function Shell() {
           </div>
         </div>
       </aside>
-      <div className="flex min-w-0 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-col overflow-hidden">
         <TopBar />
         {me?.admin && <ControlPlaneBanner />}
-        <main className="w-full max-w-[1400px] p-6 md:px-8 md:py-7">
-          <Outlet />
+        <main className="min-h-0 flex-1 overflow-y-auto">
+          <div className="w-full max-w-[1400px] p-6 md:px-8 md:py-7">
+            <Outlet />
+          </div>
         </main>
       </div>
     </div>
