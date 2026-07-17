@@ -45,6 +45,15 @@ function Deployments() {
   })
   const pending = onboarded.flatMap((p, i) => (results[i]?.data ?? []).map((pr) => ({ p, pr })))
   const events = useEvents()
+  // Tick a re-render every 10s so the 90s "deploying" window ages out even when
+  // the polled events are unchanged — TanStack structural sharing skips
+  // re-renders on identical data, which would otherwise freeze `now` here and
+  // leave the indicator stuck on "Deploying" until some other event arrived.
+  const [, tick] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => tick((t) => t + 1), 10_000)
+    return () => clearInterval(id)
+  }, [])
   const now = Date.now()
   const deploying = (events.data ?? []).filter((e) => e.result.startsWith('deployed') && now - parseAt(e.at) < 90_000)
   const [open, setOpen] = useState(false)
