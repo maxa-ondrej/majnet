@@ -98,8 +98,9 @@ platform-admin-only and fully audited, with two modes.**
   admins can already SSH to nodes and the reconciler is already node-root via
   Docker; the terminal changes convenience, not the trust boundary.
 - **No new credential**; the reconciler's Docker mTLS is reused. Nodes are
-  unchanged and stay minimal. The privileged helper image is pinned by digest
-  (the image invariant) and pre-pulled on nodes.
+  unchanged and stay minimal. The privileged helper image (default
+  `debian:bookworm-slim`, public) is **pulled on demand** if a node doesn't have
+  it — no manual pre-pull; pin it by digest for production.
 - **Transcripts can contain secrets** typed or printed during a session, so the
   transcript store is access-controlled (platform-admin read only) and gets a
   defined retention — a new sensitive data class to protect.
@@ -113,5 +114,11 @@ platform-admin-only and fully audited, with two modes.**
 
 ## Open items for implementation
 - Transcript storage shape + retention policy (DB table vs file; how long).
-- Helper image choice + digest, and how it's kept pre-pulled on nodes.
+- Helper image: pulled on demand (done); still pin a digest for production.
 - Idle/absolute session timeouts (deferred; not gating v1).
+
+## Notes
+- The shell runs **interactive** (`bash -i`, host `bash -il`, else `sh -i`) with a
+  real TTY, so it shows a prompt and streams errors. An earlier
+  `exec bash 2>/dev/null` fallback accidentally sent the shell's own stderr to
+  `/dev/null`, which made bash non-interactive (no prompt) and swallowed errors.

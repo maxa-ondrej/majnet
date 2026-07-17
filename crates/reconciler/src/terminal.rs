@@ -225,7 +225,7 @@ async fn resolve(state: &AppState, q: &TermQuery, session_id: i64) -> Result<Tar
                     "-p",
                     "--",
                     "/bin/bash",
-                    "-l",
+                    "-il",
                 ]
                 .into_iter()
                 .map(String::from)
@@ -253,11 +253,14 @@ async fn resolve(state: &AppState, q: &TermQuery, session_id: i64) -> Result<Tar
             Ok(Target {
                 docker,
                 container,
-                // Prefer bash, fall back to sh — app images vary.
+                // Prefer bash, fall back to sh — app images vary. Detect bash by
+                // PATH lookup (not `exec bash 2>/dev/null`, which would send the
+                // *shell's own* stderr to /dev/null → non-interactive, no prompt,
+                // errors swallowed). `-i` forces an interactive prompt.
                 cmd: vec![
                     "/bin/sh".into(),
                     "-c".into(),
-                    "exec /bin/bash 2>/dev/null || exec /bin/sh".into(),
+                    "if command -v bash >/dev/null 2>&1; then exec bash -i; else exec sh -i 2>/dev/null || exec sh; fi".into(),
                 ],
                 helper: None,
             })
@@ -267,10 +270,12 @@ async fn resolve(state: &AppState, q: &TermQuery, session_id: i64) -> Result<Tar
 }
 
 /// Start a `--privileged --pid=host` helper running `sleep infinity`, so we can
-/// `exec nsenter` into the host namespaces through it. The image must be present
-/// on the node (pre-pulled; pin by digest in production).
+/// `exec nsenter` into the host namespaces through it. The image is pulled on
+/// demand if the node doesn't have it yet (the default `debian:bookworm-slim` is
+/// public; pin by digest in production).
 async fn start_host_helper(docker: &Docker, image: &str, name: &str) -> Result<()> {
     use bollard::query_parameters::{CreateContainerOptionsBuilder, StartContainerOptions};
+    ensure_helper_image(docker, image).await?;
     let options = CreateContainerOptionsBuilder::default().name(name).build();
     let config = ContainerCreateBody {
         image: Some(image.to_string()),
@@ -291,6 +296,30 @@ async fn start_host_helper(docker: &Docker, image: &str, name: &str) -> Result<(
         .start_container(name, None::<StartContainerOptions>)
         .await
         .context("starting host-shell helper")?;
+    Ok(())
+}
+
+/// Pull the host-shell helper image if the node doesn't already have it. The
+/// default (`debian:bookworm-slim`) is public, so no registry auth is needed —
+/// unlike app images (ADR 0012), the reconciler pulls this one directly.
+async fn ensure_helper_image(docker: &Docker, image: &str) -> Result<()> {
+    use bollard::query_parameters::CreateImageOptions;
+    use futures_util::TryStreamExt;
+    if docker.inspect_image(image).await.is_ok() {
+        return Ok(());
+    }
+    docker
+        .create_image(
+            Some(CreateImageOptions {
+                from_image: Some(image.to_string()),
+                ..Default::default()
+            }),
+            None,
+            None,
+        )
+        .try_collect::<Vec<_>>()
+        .await
+        .with_context(|| format!("pulling host-shell helper image {image}"))?;
     Ok(())
 }
 

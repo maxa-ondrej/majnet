@@ -58,9 +58,17 @@ pub async fn sync_all(state: &AppState) -> Result<()> {
     }
 
     // Membership drives the access network too (§5): one identity, two syncs.
+    // Non-fatal: an ACL push failure (e.g. an OAuth client scoped for device
+    // reads only) must not abort the whole org sync — log and carry on, like the
+    // ingress cert/DNS steps below.
     if let Some(people_yaml) = platform.get("people.yaml") {
         let people = majnet_common::platform::PeopleFile::parse(people_yaml)?;
-        crate::tailscale::sync_acl(state, &people, &synced).await?;
+        if let Err(e) = crate::tailscale::sync_acl(state, &people, &synced).await {
+            tracing::error!(error = %format!("{e:#}"), "Tailscale ACL sync failed");
+            state
+                .store
+                .log_event("acl-sync", None, &format!("FAILED: {e:#}"))?;
+        }
     }
 
     // Per-project VPN ingress wildcard cert (ADR 0013): issue/renew
