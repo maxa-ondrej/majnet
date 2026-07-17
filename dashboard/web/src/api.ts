@@ -1,6 +1,6 @@
 // Typed client for the bot + reconciler WG-internal APIs, proxied by nginx at
 // /api/bot and /api/recon. Every type mirrors the Rust serde output.
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, keepPreviousData } from '@tanstack/react-query'
 
 const BOT = '/api/bot/api'
 const RECON = '/api/recon/api'
@@ -19,6 +19,7 @@ export interface PlatformNode {
 export interface CpPin { ref: string; image: string | null; dashboard: string | null }
 export interface CpCommit { sha: string; message: string; author: string; date: string }
 export interface CpHistoryEntry { sha: string; message: string; author: string; date: string; current: boolean }
+export interface CpRunning { version: string | null; commit: string | null; build_time: string | null }
 export interface ControlPlaneStatus {
   current: CpPin
   latest: CpPin | null
@@ -26,6 +27,9 @@ export interface ControlPlaneStatus {
   commits: CpCommit[]
   history: CpHistoryEntry[]
   source: { org: string; repo: string; compare_url: string | null }
+  running: CpRunning
+  /** running build matches the pinned ref; null when the running build is unknown */
+  converged: boolean | null
   check_error: string | null
 }
 export interface ContainerMetric {
@@ -198,7 +202,17 @@ export const useAppLogs = (org: string, cls: string, app: string, enabled: boole
 export const useNodes = () =>
   useQuery({ queryKey: ['nodes'], queryFn: () => getJSON<PlatformNode[]>(urls.nodes) })
 export const useControlPlane = () =>
-  useQuery({ queryKey: ['control-plane'], queryFn: () => getJSON<ControlPlaneStatus>(urls.controlPlane), refetchInterval: 20000 })
+  useQuery({
+    queryKey: ['control-plane'],
+    queryFn: () => getJSON<ControlPlaneStatus>(urls.controlPlane),
+    // Poll fast while a rollout is in flight (running != pinned) so the progress
+    // reflects reality; ease off once converged. Keep the last good data across
+    // the brief bot/dashboard blip mid-rollout so the progress bar never blanks.
+    refetchInterval: (q) => (q.state.data?.converged === false ? 3000 : 20000),
+    placeholderData: keepPreviousData,
+    retry: true,
+    retryDelay: 2000,
+  })
 export const useAppInfo = (org: string, app: string) =>
   useQuery({ queryKey: ['info', org, app], queryFn: () => getJSON<AppInfo[]>(urls.appInfo(org, app)), refetchInterval: 30000 })
 export const useEvents = (limit = 300) =>

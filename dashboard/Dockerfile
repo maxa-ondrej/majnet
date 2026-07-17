@@ -3,6 +3,14 @@
 # (which also proxies /api/bot and /api/recon to the WG-internal APIs).
 FROM node:22-slim AS build
 WORKDIR /app
+# Build metadata (CI-injected) baked into the bundle so the page can tell when
+# it's a stale cached build vs the one that's actually deployed (design §16).
+ARG VERSION=dev
+ARG GIT_COMMIT=unknown
+ARG BUILD_TIME=unknown
+ENV VITE_BUILD_VERSION=$VERSION \
+    VITE_BUILD_COMMIT=$GIT_COMMIT \
+    VITE_BUILD_TIME=$BUILD_TIME
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/ ./

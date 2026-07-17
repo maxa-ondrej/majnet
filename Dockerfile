@@ -37,5 +37,14 @@ RUN apt-get update \
 # bot + reconciler run as containers; setup rides along so majnet-update can
 # extract it to the host (it drives systemctl/wireguard, so it stays native).
 COPY --from=builder /out/majnet-bot /out/majnet-reconciler /out/majnet-setup /usr/local/bin/
+# Build metadata (CI-injected) so the bot can report what's running at /info —
+# the control plane's own version signal, mirroring apps (design §16). bot and
+# reconciler share this image, so one commit describes both.
+ARG VERSION=dev
+ARG GIT_COMMIT=unknown
+ARG BUILD_TIME=unknown
+ENV MAJNET_BUILD_VERSION=$VERSION \
+    MAJNET_BUILD_COMMIT=$GIT_COMMIT \
+    MAJNET_BUILD_TIME=$BUILD_TIME
 # Overridden per service in compose; harmless default.
 CMD ["majnet-bot"]

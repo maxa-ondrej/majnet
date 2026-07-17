@@ -77,6 +77,34 @@ pub struct Source {
     pub compare_url: Option<String>,
 }
 
+/// What the control plane reports it is actually running — the bot's own build
+/// metadata, CI-baked into the image (`MAJNET_BUILD_*`). bot + reconciler share
+/// the image, so this one commit describes both. `None` fields on a build made
+/// before the metadata was baked in.
+#[derive(Debug, Clone, Serialize)]
+pub struct Running {
+    pub version: Option<String>,
+    pub commit: Option<String>,
+    pub build_time: Option<String>,
+}
+
+impl Running {
+    fn from_env() -> Self {
+        // Treat the Dockerfile placeholders as "unknown".
+        fn var(key: &str) -> Option<String> {
+            std::env::var(key)
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty() && v != "unknown" && v != "dev")
+        }
+        Running {
+            version: var("MAJNET_BUILD_VERSION"),
+            commit: var("MAJNET_BUILD_COMMIT"),
+            build_time: var("MAJNET_BUILD_TIME"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Status {
     pub current: Pin,
@@ -85,6 +113,11 @@ pub struct Status {
     pub commits: Vec<Commit>,
     pub history: Vec<HistoryEntry>,
     pub source: Source,
+    /// What's actually running right now (the bot's own build).
+    pub running: Running,
+    /// Whether the running build matches the pinned ref. `None` when the running
+    /// commit is unknown (pre-metadata build) so the UI can't tell.
+    pub converged: Option<bool>,
     /// Why `latest` couldn't be resolved, if it couldn't.
     pub check_error: Option<String>,
 }
@@ -149,6 +182,13 @@ async fn do_status(state: &AppState) -> Result<Status> {
         Vec::new()
     });
 
+    // Running-vs-pinned: the honest "converged / still rolling" signal.
+    let running = Running::from_env();
+    let converged = running
+        .commit
+        .as_deref()
+        .map(|rc| commit_eq(rc, current.git_ref.trim()));
+
     Ok(Status {
         current,
         latest,
@@ -160,8 +200,17 @@ async fn do_status(state: &AppState) -> Result<Status> {
             repo: src_repo,
             compare_url,
         },
+        running,
+        converged,
         check_error,
     })
+}
+
+/// Two commit refs describe the same commit if either is a prefix of the other
+/// (a full sha vs a short sha), compared on ≥7 chars.
+fn commit_eq(a: &str, b: &str) -> bool {
+    let n = 7.min(a.len()).min(b.len());
+    n >= 7 && a[..n].eq_ignore_ascii_case(&b[..n])
 }
 
 /// Resolve the latest main build: the source `main` HEAD + each image's
@@ -486,6 +535,19 @@ mod tests {
             dashboard: Some("ghcr.io/majnet/majnet/dashboard@sha256:2c5d81a99999".into()),
         };
         assert_eq!(pin_label(&p), "a1b2c3d (cp 7f3a9e2, dash 2c5d81a)");
+    }
+
+    #[test]
+    fn commit_eq_matches_short_and_full() {
+        assert!(commit_eq(
+            "f31e9b6c86b44d18501ee02b00ae451ad9d5ae8e",
+            "f31e9b6"
+        ));
+        assert!(commit_eq("f31e9b6", "f31e9b6c86b44d18501ee02b"));
+        assert!(commit_eq("ABCDEF1234", "abcdef1"));
+        assert!(!commit_eq("f31e9b6", "81867c8"));
+        // Too short to be confident.
+        assert!(!commit_eq("f31e9", "f31e9"));
     }
 
     #[test]

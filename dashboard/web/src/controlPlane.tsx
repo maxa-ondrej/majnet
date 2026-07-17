@@ -2,12 +2,19 @@
 // own services (bot · reconciler · dashboard). Updates go through git: publishing
 // commits a new pin to platform/version.yaml; master-1's majnet-update timer
 // applies it. Nothing here executes on the host.
-import { useEffect, useState } from 'react'
+//
+// The rollout recreates the control-plane containers (a few seconds of control-
+// plane downtime; deployed apps keep running). The progress here is driven by a
+// real signal — the bot reports its running build at /api/control-plane, so
+// `converged=false` means the running build doesn't match the pinned one yet.
+// This page is a client-side SPA, so it survives the dashboard's own restart and
+// keeps polling across the blip (see useControlPlane's keepPreviousData).
+import { useEffect, useRef, useState } from 'react'
 import {
-  ArrowUp, Cpu, GitCommit, History, Info, RefreshCw, ServerCog, TriangleAlert,
+  ArrowUp, Cpu, GitCommit, History, Info, Loader2, RefreshCw, RotateCw, ServerCog, TriangleAlert,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { useControlPlane, useNodes, send, urls, type CpPin, type CpCommit } from './api'
+import { useControlPlane, useNodes, send, urls, type CpPin, type CpCommit, type ControlPlaneStatus } from './api'
 import { useApiMutation } from './mutations'
 import { PageHead } from './views'
 import { StatusBadge, QueryState, ConfirmButton } from './ui'
@@ -20,6 +27,7 @@ function digestLabel(img: string | null): string {
   return img.slice(img.lastIndexOf(':') + 1) || img
 }
 const shortRef = (r: string) => r.slice(0, 7)
+const BUNDLE_COMMIT = import.meta.env.VITE_BUILD_COMMIT ?? ''
 
 function relTime(at: string): string {
   const t = Date.parse(at)
@@ -48,30 +56,111 @@ function Stat({ label, children }: { label: string; children: React.ReactNode })
   )
 }
 
+// ── rollout progress ──────────────────────────────────────────────────────────
+// Honest progress: a time-based bar that eases toward ~90% over the expected
+// rollout window and only completes when the real `converged` signal flips true.
+const ROLLOUT_ESTIMATE_MS = 75_000
+
+function RolloutProgress({ cp, node, stale, reconnecting }: {
+  cp: ControlPlaneStatus; node: string; stale: boolean; reconnecting: boolean
+}) {
+  const startRef = useRef<number>(Date.now())
+  const [, tick] = useState(0)
+  // Re-render on a timer so the bar advances between polls.
+  useEffect(() => {
+    const id = setInterval(() => tick((n) => n + 1), 500)
+    return () => clearInterval(id)
+  }, [])
+
+  const elapsed = Date.now() - startRef.current
+  const pct = Math.min(90, Math.round((elapsed / ROLLOUT_ESTIMATE_MS) * 90))
+  const running = cp.running.commit ? shortRef(cp.running.commit) : 'unknown'
+
+  return (
+    <Section>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <StatusBadge tone="accent"><Loader2 className="size-3.5 animate-spin" /> Rolling out</StatusBadge>
+        <span className="text-[13px] text-muted-foreground">
+          · <span className="font-mono">{node}</span> is converging to <span className="font-mono text-foreground">{shortRef(cp.current.ref)}</span>
+        </span>
+      </div>
+
+      <div className="mt-3.5 h-2 overflow-hidden rounded-full bg-muted">
+        <div
+          className="h-full rounded-full bg-primary transition-[width] duration-500 ease-out"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+
+      <div className="mt-3 flex flex-col gap-2">
+        <Step done label="Pin committed" detail={`version.yaml → ${shortRef(cp.current.ref)}`} />
+        <Step active label="Recreating control-plane containers" detail="bot · reconciler · dashboard (a few seconds of control-plane downtime; apps keep running)" />
+        <Step label="Converged" detail={`running build ${running} → ${shortRef(cp.current.ref)}`} />
+      </div>
+
+      {reconnecting && (
+        <div className="mt-3 flex items-center gap-2 text-[12.5px] text-muted-foreground">
+          <Loader2 className="size-3.5 animate-spin" /> Reconnecting to the control plane…
+        </div>
+      )}
+      {stale && (
+        <div className="mt-3 flex items-start gap-2 rounded-md bg-warning/10 px-3 py-2 text-[12.5px] text-foreground/80">
+          <RotateCw className="mt-0.5 size-3.5 shrink-0 text-warning" />
+          <div>This page is running an older bundle. Once the rollout finishes, reload to pick up the new dashboard.</div>
+        </div>
+      )}
+    </Section>
+  )
+}
+
+function Step({ done, active, label, detail }: { done?: boolean; active?: boolean; label: string; detail?: string }) {
+  const dot = done ? 'bg-success text-primary-foreground' : active ? 'border-2 border-primary text-primary' : 'border-2 border-border text-muted-foreground'
+  return (
+    <div className="flex items-start gap-2.5">
+      <span className={`mt-0.5 grid size-4 shrink-0 place-items-center rounded-full text-[9px] ${dot}`}>
+        {done ? '✓' : active ? <Loader2 className="size-2.5 animate-spin" /> : ''}
+      </span>
+      <div className="min-w-0">
+        <div className={`text-[13px] ${active || done ? 'font-medium' : 'text-muted-foreground'}`}>{label}</div>
+        {detail && <div className="text-[12px] text-muted-foreground">{detail}</div>}
+      </div>
+    </div>
+  )
+}
+
 export function ControlPlane() {
   const q = useControlPlane()
   const nodes = useNodes()
-  const mainNode = nodes.data?.find((n) => n.role === 'main')?.name
+  const mainNode = nodes.data?.find((n) => n.role === 'main')?.name ?? 'master-1'
 
-  // A brief "rolling out" banner after a successful publish — the host converges
-  // out of band (~1 min), so the pin flips to up-to-date before the rollout ends.
-  const [rollingOut, setRollingOut] = useState<number | null>(null)
+  // A short optimistic window right after publishing, before the bot has
+  // restarted onto the new pin and can report converged=false itself.
+  const [justPublished, setJustPublished] = useState<number | null>(null)
   useEffect(() => {
-    if (rollingOut == null) return
-    const id = setTimeout(() => setRollingOut(null), 90_000)
+    if (justPublished == null) return
+    const id = setTimeout(() => setJustPublished(null), 20_000)
     return () => clearTimeout(id)
-  }, [rollingOut])
+  }, [justPublished])
 
   const publish = useApiMutation({
     invalidate: [['control-plane'], ['events'], ['botEvents']],
-    onDone: () => setRollingOut(Date.now()),
+    onDone: () => setJustPublished(Date.now()),
   })
 
   const cp = q.data
   const src = cp?.source
   const commitUrl = (ref: string) => (src ? `https://github.com/${src.org}/${src.repo}/commit/${ref}` : '#')
 
+  // Rolling out when the bot reports the running build != pinned, or in the
+  // optimistic post-publish window. The already-loaded SPA survives the
+  // dashboard restart; q keeps its last data across the blip.
+  const rolling = cp != null && (cp.converged === false || (justPublished != null && cp.converged !== true))
+  const reconnecting = q.isError && cp != null
+  // The loaded bundle is stale if it doesn't match the pinned build.
+  const stale = !!BUNDLE_COMMIT && cp != null && !cp.current.ref.startsWith(BUNDLE_COMMIT.slice(0, 7))
+
   const headStatus = !cp ? null
+    : rolling ? <StatusBadge tone="accent"><Loader2 className="size-3.5 animate-spin" /> Rolling out</StatusBadge>
     : cp.up_to_date ? <StatusBadge tone="success" dot>Up to date</StatusBadge>
     : cp.latest ? <StatusBadge tone="warn">Update available</StatusBadge>
     : <StatusBadge tone="muted">Couldn’t check</StatusBadge>
@@ -79,7 +168,8 @@ export function ControlPlane() {
   return (
     <>
       <PageHead title="Control plane">{headStatus}</PageHead>
-      <QueryState isLoading={q.isLoading} error={q.error}>
+      {/* Once we have data, keep showing it even if a refetch errors mid-rollout. */}
+      <QueryState isLoading={q.isLoading} error={cp ? null : q.error}>
         {cp && (
           <div className="mx-auto flex max-w-3xl flex-col gap-4">
             {/* How updates work */}
@@ -87,20 +177,13 @@ export function ControlPlane() {
               <Info className="mt-0.5 size-4 shrink-0" />
               <div>
                 Updates go through git, like everything else. Publishing commits the new pin to{' '}
-                <span className="font-mono">platform/version.yaml</span>; <span className="font-mono">{mainNode ?? 'master-1'}</span>’s
-                updater picks up the change and runs the blue-green rollout. Nothing executes on the host from here.
+                <span className="font-mono">platform/version.yaml</span>; <span className="font-mono">{mainNode}</span>’s updater
+                picks up the change (within ~1 min) and recreates the control-plane containers. Nothing executes on the host from here.
               </div>
             </div>
 
-            {rollingOut != null && (
-              <div className="flex items-start gap-2.5 rounded-lg border border-primary/30 bg-primary/10 px-3.5 py-3 text-[13px] leading-relaxed">
-                <ServerCog className="mt-0.5 size-4 shrink-0 text-primary" />
-                <div>
-                  Rollout in progress on <span className="font-mono">{mainNode ?? 'master-1'}</span> — it converges within
-                  ~1 minute. The dashboard restarts last, so this page may briefly disconnect and reconnect.
-                </div>
-              </div>
-            )}
+            {/* Live rollout progress — the real signal */}
+            {rolling && <RolloutProgress cp={cp} node={mainNode} stale={stale} reconnecting={reconnecting} />}
 
             {/* Running now */}
             <Section>
@@ -113,6 +196,12 @@ export function ControlPlane() {
                     {shortRef(cp.current.ref)}
                   </a>
                 </span>
+                {cp.running.version && (
+                  <span className="ml-auto text-[12.5px] text-muted-foreground">
+                    build <span className="font-mono text-foreground">{cp.running.version}</span>
+                    {cp.running.build_time ? ` · ${relTime(cp.running.build_time)}` : ''}
+                  </span>
+                )}
               </div>
               <Sep />
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -121,14 +210,16 @@ export function ControlPlane() {
               </div>
               <Sep />
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                <Stat label="Node"><span className="font-mono">{mainNode ?? '—'}</span></Stat>
+                <Stat label="Node"><span className="font-mono">{mainNode}</span></Stat>
                 <Stat label="Root org"><span className="font-mono">{src?.org ?? '—'}</span></Stat>
-                <Stat label="Source"><span className="font-mono">{src ? `${src.org}/${src.repo}` : '—'}</span></Stat>
+                <Stat label="Running build">
+                  <span className="font-mono">{cp.running.commit ? shortRef(cp.running.commit) : '—'}</span>
+                </Stat>
               </div>
             </Section>
 
             {/* Up to date */}
-            {cp.up_to_date && (
+            {!rolling && cp.up_to_date && (
               <Section>
                 <div className="flex flex-wrap items-center gap-3">
                   <StatusBadge tone="success" dot>Up to date</StatusBadge>
@@ -141,7 +232,7 @@ export function ControlPlane() {
             )}
 
             {/* Couldn't check */}
-            {!cp.latest && cp.check_error && (
+            {!rolling && !cp.latest && cp.check_error && (
               <Section>
                 <div className="flex items-start gap-2.5 text-[13px]">
                   <TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning" />
@@ -157,7 +248,7 @@ export function ControlPlane() {
             )}
 
             {/* Update available */}
-            {cp.latest && !cp.up_to_date && (
+            {!rolling && cp.latest && !cp.up_to_date && (
               <Section>
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                   <StatusBadge tone="warn"><ArrowUp className="size-3.5" /> Update available</StatusBadge>
@@ -192,7 +283,7 @@ export function ControlPlane() {
                 <div className="flex flex-wrap items-center gap-3">
                   <ConfirmButton
                     title={`Update control plane to ${shortRef(cp.latest.ref)}?`}
-                    description="This commits a new pin to platform/version.yaml. master-1 will pull the images and roll out bot, reconciler, and dashboard behind health gates. The dashboard restarts last, so this page may briefly disconnect."
+                    description="This commits a new pin to platform/version.yaml. master-1 recreates the control-plane containers (bot, reconciler, dashboard) — a few seconds of control-plane downtime; your deployed apps keep running. This page tracks the rollout live."
                     confirmText="Update"
                     onConfirm={() => publish.mutate(() => send(urls.controlPlanePin, { method: 'PUT', json: pinBody(cp.latest!) }))}
                     disabled={publish.isPending}
