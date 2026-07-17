@@ -15,9 +15,10 @@
 
 use anyhow::{Context, Result};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
+use axum::Json;
 use bollard::models::{ContainerCreateBody, ExecConfig, HostConfig};
 use bollard::Docker;
 use futures_util::{SinkExt, StreamExt};
@@ -27,6 +28,8 @@ use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 
 use crate::AppState;
+
+type ApiError = (StatusCode, String);
 
 #[derive(Debug, Deserialize)]
 pub struct TermQuery {
@@ -55,6 +58,46 @@ pub async fn terminal_ws(
             tracing::warn!(error = %format!("{e:#}"), "terminal session error");
         }
     }))
+}
+
+/// `GET /api/terminal/sessions` (platform-admin) — recent recorded sessions.
+pub async fn sessions_get(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<crate::state::TerminalSession>>, ApiError> {
+    crate::authz::require_platform_admin(&state, &headers)
+        .await
+        .map_err(|e| (StatusCode::FORBIDDEN, format!("{e:#}")))?;
+    state
+        .store
+        .terminal_sessions(200)
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))
+}
+
+/// `GET /api/terminal/transcript/{id}` (platform-admin) — the full recorded I/O
+/// for a session (raw PTY output; the caller strips ANSI for display).
+pub async fn transcript_get(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<String, ApiError> {
+    crate::authz::require_platform_admin(&state, &headers)
+        .await
+        .map_err(|e| (StatusCode::FORBIDDEN, format!("{e:#}")))?;
+    let path = state
+        .config
+        .data_dir
+        .join("transcripts")
+        .join(format!("{id}.log"));
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err((
+            StatusCode::NOT_FOUND,
+            "no transcript for this session".into(),
+        )),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}"))),
+    }
 }
 
 /// What we resolved a request into: the node's Docker client + the container to

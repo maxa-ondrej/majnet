@@ -5,11 +5,27 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Terminal as Xterm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { Cpu, Info, ServerCog, TerminalSquare, TriangleAlert } from 'lucide-react'
+import { Cpu, History, Info, Loader2, ServerCog, TerminalSquare, TriangleAlert } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { useNodes, terminalWsUrl } from './api'
+import { Sheet, SheetBody, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import { useNodes, useTerminalSessions, getText, terminalWsUrl, urls, type TerminalSession } from './api'
 import { PageHead } from './views'
 import { StatusBadge } from './ui'
+
+// Strip ANSI/VT escape sequences so a recorded transcript reads as plain text.
+const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\x1b[=>]/g, '')
+
+// Relative time from a SQLite UTC datetime ("YYYY-MM-DD HH:MM:SS").
+function relTime(at: string): string {
+  const t = Date.parse(at.replace(' ', 'T') + 'Z')
+  if (Number.isNaN(t)) return at
+  const s = Math.round((Date.now() - t) / 1000)
+  if (s < 60) return 'just now'
+  const m = Math.round(s / 60)
+  if (m < 60) return `${m}m ago`
+  const h = Math.round(m / 60)
+  return h < 24 ? `${h}h ago` : `${Math.round(h / 24)}d ago`
+}
 
 type Mode = 'host' | 'container'
 interface Target {
@@ -216,8 +232,74 @@ export function Terminal() {
             </div>
           </>
         )}
+
+        <Sessions />
       </div>
     </>
+  )
+}
+
+// ── recorded sessions (audit) ─────────────────────────────────────────────────
+function fmtDur(s: TerminalSession): string {
+  if (!s.ended_at) return 'open'
+  const ms = Date.parse(s.ended_at.replace(' ', 'T') + 'Z') - Date.parse(s.started_at.replace(' ', 'T') + 'Z')
+  const sec = Math.max(0, Math.round(ms / 1000))
+  return sec < 60 ? `${sec}s` : `${Math.round(sec / 60)}m`
+}
+const fmtBytes = (b: number | null) => (b == null ? '—' : b < 1024 ? `${b} B` : `${(b / 1024).toFixed(1)} KB`)
+
+function Sessions() {
+  const q = useTerminalSessions()
+  const [open, setOpen] = useState<TerminalSession | null>(null)
+  const [text, setText] = useState('')
+  const [loading, setLoading] = useState(false)
+  const rows = q.data ?? []
+
+  const view = async (s: TerminalSession) => {
+    setOpen(s); setText(''); setLoading(true)
+    try { setText(stripAnsi(await getText(urls.terminalTranscript(s.id)))) }
+    catch (e) { setText(`(failed to load transcript: ${(e as Error).message})`) }
+    finally { setLoading(false) }
+  }
+
+  return (
+    <div className="rounded-lg border bg-card px-4 py-4">
+      <div className="flex items-center gap-2">
+        <History className="size-4 text-muted-foreground" />
+        <h2 className="text-sm font-semibold">Recent sessions</h2>
+        <span className="text-[13px] text-muted-foreground">· every session is recorded</span>
+      </div>
+      <div className="my-3 h-px bg-border" />
+      {rows.length === 0 && <div className="py-2 text-[13px] text-muted-foreground">No sessions recorded yet.</div>}
+      <div className="flex flex-col">
+        {rows.map((s) => (
+          <button key={s.id} onClick={() => view(s)}
+            className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t py-2.5 text-left first:border-t-0 hover:bg-accent">
+            <StatusBadge tone={s.mode === 'host' ? 'warn' : 'muted'}>{s.mode === 'host' ? 'host' : 'exec'}</StatusBadge>
+            <span className="font-mono text-[13px]">{s.target}</span>
+            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">by {s.actor}</span>
+            <span className="text-xs text-muted-foreground" title={s.started_at}>{relTime(s.started_at)}</span>
+            <span className="w-10 text-right font-mono text-xs text-muted-foreground">{fmtDur(s)}</span>
+            <span className="w-16 text-right font-mono text-xs text-muted-foreground">{fmtBytes(s.bytes)}</span>
+          </button>
+        ))}
+      </div>
+
+      <Sheet open={!!open} onOpenChange={(o) => { if (!o) setOpen(null) }}>
+        <SheetContent className="w-full sm:max-w-2xl">
+          <SheetHeader>
+            <SheetTitle>Transcript · <span className="font-mono text-sm">{open?.target}</span></SheetTitle>
+          </SheetHeader>
+          <SheetBody>
+            {loading ? (
+              <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" /> Loading…</div>
+            ) : (
+              <pre className="max-h-[70vh] overflow-auto rounded-md bg-[#181a20] p-3 font-mono text-xs leading-relaxed text-[#d7dae0] whitespace-pre-wrap break-words">{text || '(empty)'}</pre>
+            )}
+          </SheetBody>
+        </SheetContent>
+      </Sheet>
+    </div>
   )
 }
 

@@ -51,6 +51,20 @@ pub struct AppInfo {
     pub at: String,
 }
 
+/// One recorded terminal session (ADR 0016) — the audit row; the transcript
+/// itself lives at `data_dir/transcripts/<id>.log`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TerminalSession {
+    pub id: i64,
+    pub actor: String,
+    pub node: String,
+    pub mode: String,
+    pub target: String,
+    pub started_at: String,
+    pub ended_at: Option<String>,
+    pub bytes: Option<i64>,
+}
+
 impl Store {
     pub fn open(dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(dir)?;
@@ -258,6 +272,30 @@ impl Store {
             rusqlite::params![id, bytes as i64],
         )?;
         Ok(())
+    }
+
+    /// Recent terminal sessions, newest first (for the dashboard audit view).
+    pub fn terminal_sessions(&self, limit: u32) -> Result<Vec<TerminalSession>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, actor, node, mode, target, started_at, ended_at, bytes
+             FROM terminal_sessions ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = stmt
+            .query_map([limit], |r| {
+                Ok(TerminalSession {
+                    id: r.get(0)?,
+                    actor: r.get(1)?,
+                    node: r.get(2)?,
+                    mode: r.get(3)?,
+                    target: r.get(4)?,
+                    started_at: r.get(5)?,
+                    ended_at: r.get(6)?,
+                    bytes: r.get(7)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     // ── Ephemeral lifecycle tracking (§8: 48 h grace, 7 d hard TTL) ────────

@@ -19,6 +19,10 @@ export interface PlatformNode {
 export interface CpPin { ref: string; image: string | null; dashboard: string | null }
 export interface CpCommit { sha: string; message: string; author: string; date: string }
 export interface CpHistoryEntry { sha: string; message: string; author: string; date: string; current: boolean }
+export interface TerminalSession {
+  id: number; actor: string; node: string; mode: string; target: string
+  started_at: string; ended_at: string | null; bytes: number | null
+}
 export interface CpRunning { version: string | null; commit: string | null; build_time: string | null }
 export interface ControlPlaneStatus {
   current: CpPin
@@ -106,7 +110,7 @@ export async function send(
   return text
 }
 
-async function getText(url: string): Promise<string> {
+export async function getText(url: string): Promise<string> {
   const r = await fetch(url)
   const text = await r.text()
   if (!r.ok) throw new Error(text || `${r.status} ${r.statusText}`)
@@ -180,6 +184,8 @@ export const urls = {
   projectDelete: (org: string) => `${BOT}/projects/${encodeURIComponent(org)}/delete`,
   controlPlane: `${BOT}/control-plane`,
   controlPlanePin: `${BOT}/control-plane/pin`,
+  terminalSessions: `${RECON}/terminal/sessions`,
+  terminalTranscript: (id: number) => `${RECON}/terminal/transcript/${id}`,
 }
 
 // ── query hooks ──────────────────────────────────────────────────────────────
@@ -210,6 +216,8 @@ export function terminalWsUrl(params: Record<string, string | undefined>): strin
   return `${proto}://${location.host}/api/recon/api/terminal?${qs.toString()}`
 }
 
+export const useTerminalSessions = () =>
+  useQuery({ queryKey: ['terminal-sessions'], queryFn: () => getJSON<TerminalSession[]>(urls.terminalSessions), refetchInterval: 20000 })
 export const useControlPlane = () =>
   useQuery({
     queryKey: ['control-plane'],

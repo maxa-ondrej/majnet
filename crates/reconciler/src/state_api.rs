@@ -26,6 +26,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/metrics", get(metrics_get))
         .route("/api/logs/{project}/{class}/{app}", get(logs_get))
         .route("/api/terminal", get(crate::terminal::terminal_ws))
+        .route("/api/terminal/sessions", get(crate::terminal::sessions_get))
+        .route(
+            "/api/terminal/transcript/{id}",
+            get(crate::terminal::transcript_get),
+        )
         .route("/api/info/{org}/{app}", get(info_get))
         .route("/api/settings/alerts", get(alerts_get).post(alerts_set))
         .route("/api/settings/alerts/test", post(alerts_test))
