@@ -151,6 +151,14 @@ async fn main() -> Result<()> {
             get(dashboard_api::registry_status).post(dashboard_api::registry_set),
         )
         .route(
+            "/api/platform/tailscale",
+            get(tailscale::tailscale_status).post(tailscale::tailscale_set),
+        )
+        .route(
+            "/api/platform/tailscale/verify",
+            post(tailscale::tailscale_verify),
+        )
+        .route(
             "/api/imports/{org}/{app}/retry",
             post(dashboard_api::imports_retry),
         )

@@ -24,8 +24,18 @@ pub struct Config {
     /// Root platform org (registry + platform config live here) — §2.
     pub root_org: String,
     /// Tailscale API key (the bot's second credential, §6). Empty = TS sync off.
+    /// Legacy raw access token; prefer an OAuth client (below), which the bot
+    /// can auto-renew. Both may also be set from the dashboard Settings page,
+    /// which overrides these env bootstraps (stored in the bot's `config` table).
     pub tailscale_api_key: Option<String>,
-    /// Tailnet name, e.g. `example.com` or `tail1234.ts.net`.
+    /// Tailscale OAuth client credentials — the self-renewing alternative to a
+    /// raw access token. The secret is long-lived; the bot mints short-lived
+    /// API tokens from it on demand (client-credentials grant). `None` unless
+    /// bootstrapped via env — the usual path is the Settings page.
+    pub tailscale_oauth_client_id: Option<String>,
+    pub tailscale_oauth_client_secret: Option<String>,
+    /// Tailnet name, e.g. `example.com` or `tail1234.ts.net`. `-` = the
+    /// authenticated identity's default tailnet.
     pub tailnet: Option<String>,
     /// Cloudflare API token (the bot's third external credential, §6 / ADR
     /// 0007): Zone→DNS→Edit + Zone→SSL and Certificates→Edit. `None` = custom
@@ -72,8 +82,18 @@ impl Config {
                 .unwrap_or_else(|_| "/var/lib/majnet-bot".into())
                 .into(),
             root_org: std::env::var("MAJNET_ROOT_ORG").unwrap_or_else(|_| "majksa-platform".into()),
-            tailscale_api_key: std::env::var("MAJNET_TAILSCALE_API_KEY").ok(),
-            tailnet: std::env::var("MAJNET_TAILNET").ok(),
+            tailscale_api_key: std::env::var("MAJNET_TAILSCALE_API_KEY")
+                .ok()
+                .filter(|v| !v.is_empty()),
+            tailscale_oauth_client_id: std::env::var("MAJNET_TAILSCALE_OAUTH_CLIENT_ID")
+                .ok()
+                .filter(|v| !v.is_empty()),
+            tailscale_oauth_client_secret: std::env::var("MAJNET_TAILSCALE_OAUTH_CLIENT_SECRET")
+                .ok()
+                .filter(|v| !v.is_empty()),
+            tailnet: std::env::var("MAJNET_TAILNET")
+                .ok()
+                .filter(|v| !v.is_empty()),
             cloudflare_token: std::env::var("MAJNET_CLOUDFLARE_TOKEN")
                 .ok()
                 .filter(|v| !v.is_empty()),

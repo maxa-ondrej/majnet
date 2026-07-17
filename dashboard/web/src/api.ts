@@ -170,6 +170,8 @@ export const urls = {
     `${BOT}/releases/${encodeURIComponent(org)}/${encodeURIComponent(app)}/backfill`,
   version: `${BOT}/platform/version`,
   registry: `${BOT}/platform/registry`,
+  tailscale: `${BOT}/platform/tailscale`,
+  tailscaleVerify: `${BOT}/platform/tailscale/verify`,
   setupEnroll: '/api/setup/enroll.json',
   promote: (org: string, app: string) => `${BOT}/promote/${encodeURIComponent(org)}/${encodeURIComponent(app)}`,
   rollback: (org: string) => `${BOT}/rollback/${encodeURIComponent(org)}`,
@@ -261,6 +263,11 @@ export const useVersion = () =>
   useQuery({ queryKey: ['version'], queryFn: () => getText(urls.version) })
 export const useRegistry = () =>
   useQuery({ queryKey: ['registry'], queryFn: () => getJSON<RegistryStatus>(urls.registry) })
+
+export interface TailscaleStatus { configured: boolean; mode: 'oauth' | 'token' | 'none'; tailnet: string | null }
+export interface TailscaleVerify { tailnet: string; devices: number; you: string | null }
+export const useTailscale = () =>
+  useQuery({ queryKey: ['tailscale'], queryFn: () => getJSON<TailscaleStatus>(urls.tailscale) })
 export const useReleases = (org: string, app: string) =>
   useQuery({ queryKey: ['releases', org, app], queryFn: () => getJSON<StoredRelease[]>(urls.releases(org, app)) })
 export const useArchivedApps = (org: string) =>

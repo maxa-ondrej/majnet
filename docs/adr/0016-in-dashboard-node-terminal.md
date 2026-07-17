@@ -60,6 +60,15 @@ platform-admin-only and fully audited, with two modes.**
   credential) and returns the header for Caddy to inject. Caddy strips any
   client-supplied identity header first, so the value is authoritative.
 
+  > **Credential source (updated):** the Tailscale credential `/tsauth` uses is
+  > configured from the dashboard **Settings → Tailnet identity** (platform-admin),
+  > not hand-edited into `bot.env`. It is a self-renewing **OAuth client**: the bot
+  > mints short-lived API tokens from a long-lived client secret on demand and
+  > caches them, so nothing needs manual rotation. Stored in the bot's `config`
+  > table (DB-first, env fallback — same model as the GHCR token, ADR 0012); a
+  > legacy raw `MAJNET_TAILSCALE_API_KEY` is still honored. A **Verify identity**
+  > action exercises the credential and resolves the caller live.
+
   ```caddy
   dash.majksa.net {
       tls /etc/caddy/certs/dash.crt /etc/caddy/certs/dash.key
