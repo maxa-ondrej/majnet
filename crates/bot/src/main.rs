@@ -129,6 +129,7 @@ async fn main() -> Result<()> {
             post(dashboard_api::app_delete_post),
         )
         .route("/api/archived/{org}", get(dashboard_api::archived_get))
+        .route("/api/events", get(dashboard_api::events_get))
         .route("/api/template-sync/{org}", post(template_sync::sync_post))
         .route(
             "/api/secrets/{org}/{app}",

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { ChevronRight, Plus, Loader2, CheckCircle2, Circle, AlertCircle, MoreVertical, Boxes, Rocket, Trash2, Archive, GitPullRequest, RefreshCw, PenLine } from 'lucide-react'
-import { send, urls, useApps, useAppInfo, useArchivedApps, useDeploys, useEvents, useImports, useNodeMetrics, useNodes, useProjects, useWhoami, parseAt, IMPORT_STEPS, type ImportStatus, type Event } from './api'
+import { send, urls, useApps, useAppInfo, useArchivedApps, useBotEvents, useDeploys, useEvents, useImports, useNodeMetrics, useNodes, useProjects, useWhoami, parseAt, IMPORT_STEPS, type ImportStatus, type Event } from './api'
 import { useApiMutation } from './mutations'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -542,10 +542,13 @@ const DOT_TONE: Record<EvTone, string> = {
 }
 
 export function Activity() {
-  const q = useEvents(100)
+  const recon = useEvents(100)
+  const bot = useBotEvents()
   const [kind, setKind] = useState<'all' | EvKind>('all')
   const [proj, setProj] = useState('all')
-  const events = q.data ?? []
+  // Merge the reconciler (converge/gc/purge) + bot (archive/rename/render-PR/
+  // template-sync/org-sync) event streams into one time-ordered feed.
+  const events = [...(recon.data ?? []), ...(bot.data ?? [])].sort((a, b) => parseAt(b.at) - parseAt(a.at))
   const projectList = [...new Set(events.map((e) => e.project).filter(Boolean))].sort()
   // Prefer the stored `kind` (set at write time); fall back to the classifier.
   const kindOf = (e: Event): EvKind => (e.kind as EvKind) || classify(e).kind
@@ -579,7 +582,7 @@ export function Activity() {
         </div>
       </PageHead>
 
-      <QueryState isLoading={q.isLoading} error={q.error}>
+      <QueryState isLoading={recon.isLoading && bot.isLoading} error={recon.error && bot.error ? recon.error : null}>
         {filtered.length === 0 && <Empty>No matching activity.</Empty>}
         {groups.map((g, gi) => (
           <div key={gi}>

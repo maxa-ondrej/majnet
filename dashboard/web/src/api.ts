@@ -128,6 +128,7 @@ export const urls = {
   appInfo: (org: string, app: string) =>
     `${RECON}/info/${encodeURIComponent(org)}/${encodeURIComponent(app)}`,
   events: (limit = 300) => `${RECON}/events?limit=${limit}`,
+  botEvents: `${BOT}/events`,
   deploys: (org: string) => `${BOT}/deploys/${encodeURIComponent(org)}`,
   deployMerge: (org: string, n: number) => `${BOT}/deploys/${encodeURIComponent(org)}/${n}/merge`,
   deployClose: (org: string, n: number) => `${BOT}/deploys/${encodeURIComponent(org)}/${n}/close`,
@@ -186,6 +187,8 @@ export const useAppInfo = (org: string, app: string) =>
   useQuery({ queryKey: ['info', org, app], queryFn: () => getJSON<AppInfo[]>(urls.appInfo(org, app)), refetchInterval: 30000 })
 export const useEvents = (limit = 300) =>
   useQuery({ queryKey: ['events', limit], queryFn: () => getJSON<Event[]>(urls.events(limit)), refetchInterval: 15000 })
+export const useBotEvents = () =>
+  useQuery({ queryKey: ['botEvents'], queryFn: () => getJSON<Event[]>(urls.botEvents), refetchInterval: 15000 })
 export const useDeploys = (org: string) =>
   useQuery({
     queryKey: ['deploys', org],

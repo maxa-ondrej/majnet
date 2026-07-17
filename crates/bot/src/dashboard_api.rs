@@ -1732,6 +1732,19 @@ pub async fn archived_get(
     Ok(Json(names))
 }
 
+/// `GET /api/events` — recent bot-side log events (archive/rename/render-PR/
+/// template-sync/org-sync…), shaped to merge with the reconciler's `/api/events`
+/// in the dashboard Activity feed.
+pub async fn events_get(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<crate::state::ActivityEvent>>, ApiError> {
+    state
+        .store
+        .recent_events(200)
+        .map(Json)
+        .map_err(bad_gateway)
+}
+
 /// `POST /api/apps/{org}/{app}/delete` — permanently delete an ARCHIVED app
 /// (admin). Purges its runtime + volumes + databases (reconciler), deletes the
 /// GitHub source repo, and removes the archived manifests. Irreversible.

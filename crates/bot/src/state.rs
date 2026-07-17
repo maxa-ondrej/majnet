@@ -16,6 +16,30 @@ pub struct Store {
     conn: Mutex<Connection>,
 }
 
+/// A bot-side log event shaped like the reconciler's `/api/events` rows, so the
+/// dashboard Activity feed can merge both streams. The bot has no node/commit,
+/// so `action` = the logged kind, `result` = the detail, `project` = the org.
+#[derive(Debug, serde::Serialize)]
+pub struct ActivityEvent {
+    pub at: String,
+    pub commit: String,
+    pub project: String,
+    pub node: String,
+    pub action: String,
+    pub result: String,
+    pub kind: String,
+}
+
+/// Coarse activity type for a bot event (the feed's `deploy | remove | config`).
+/// The bot never deploys; deletions are removals, everything else is config.
+pub fn event_kind(action: &str) -> &'static str {
+    if action.contains("delete") {
+        "remove"
+    } else {
+        "config"
+    }
+}
+
 /// A release as recorded in the store (ADR 0009), also the dashboard shape. A
 /// release is a `vX.Y.Z`-tagged image publish; the migration lives in the ops
 /// overlay, not here.
@@ -95,6 +119,30 @@ impl Store {
             rusqlite::params![kind, org, detail],
         )?;
         Ok(())
+    }
+
+    /// Recent bot events for the dashboard Activity feed, newest first, shaped to
+    /// merge with the reconciler's `/api/events`.
+    pub fn recent_events(&self, limit: u32) -> Result<Vec<ActivityEvent>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT at, kind, org, detail FROM events ORDER BY seq DESC LIMIT ?1")?;
+        let rows = stmt.query_map([limit], |row| {
+            let at: String = row.get(0)?;
+            let action: String = row.get(1)?;
+            let org: Option<String> = row.get(2)?;
+            let result: String = row.get(3)?;
+            Ok(ActivityEvent {
+                at,
+                commit: String::new(),
+                project: org.unwrap_or_default(),
+                node: String::new(),
+                kind: event_kind(&action).to_string(),
+                action,
+                result,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// Record (or update) a release for `org/app` (ADR 0009). Keyed by version,
