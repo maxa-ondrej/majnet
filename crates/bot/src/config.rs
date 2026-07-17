@@ -37,6 +37,10 @@ pub struct Config {
     /// Tailnet name, e.g. `example.com` or `tail1234.ts.net`. `-` = the
     /// authenticated identity's default tailnet.
     pub tailnet: Option<String>,
+    /// Opt in to letting the bot manage (overwrite) the tailnet ACL. Off by
+    /// default — the generated tag-based policy replaces the whole ACL and would
+    /// lock out an untagged / manually-managed tailnet. Usually set from Settings.
+    pub tailscale_manage_acl: bool,
     /// Cloudflare API token (the bot's third external credential, §6 / ADR
     /// 0007): Zone→DNS→Edit + Zone→SSL and Certificates→Edit. `None` = custom
     /// domains stay a manual step (no automated DNS / origin certs).
@@ -94,6 +98,9 @@ impl Config {
             tailnet: std::env::var("MAJNET_TAILNET")
                 .ok()
                 .filter(|v| !v.is_empty()),
+            tailscale_manage_acl: std::env::var("MAJNET_TAILSCALE_MANAGE_ACL")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false),
             cloudflare_token: std::env::var("MAJNET_CLOUDFLARE_TOKEN")
                 .ok()
                 .filter(|v| !v.is_empty()),

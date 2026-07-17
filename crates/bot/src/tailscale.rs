@@ -66,12 +66,19 @@ pub fn render_acl(people: &PeopleFile, projects: &[(String, ProjectConfig)]) -> 
     json!({ "groups": groups, "tagOwners": tag_owners, "acls": acls })
 }
 
-/// Push the rendered policy. Skipped (with a warning) when no API key is set.
+/// Push the rendered policy. Opt-in only (default off): the generated tag-based
+/// ACL overwrites whatever is in the tailnet, which locks people out of an
+/// untagged / manually-managed tailnet, so it never runs unless an admin has
+/// explicitly enabled ACL management. Also skipped when no credential is set.
 pub async fn sync_acl(
     state: &AppState,
     people: &PeopleFile,
     projects: &[(String, ProjectConfig)],
 ) -> Result<()> {
+    if !acl_sync_enabled(state) {
+        tracing::debug!("Tailscale ACL management disabled — skipping ACL sync");
+        return Ok(());
+    }
     let Some(tailnet) = ts_tailnet(state) else {
         tracing::warn!("Tailscale credentials unset — skipping ACL sync");
         return Ok(());
@@ -278,6 +285,16 @@ fn ts_cred(state: &AppState) -> Option<TsCred> {
         .map(TsCred::Token)
 }
 
+/// Whether the bot is allowed to overwrite the tailnet ACL. Off by default —
+/// an explicit opt-in (Settings), since the generated ACL replaces the whole
+/// policy. DB-first, env fallback (`MAJNET_TAILSCALE_MANAGE_ACL`).
+fn acl_sync_enabled(state: &AppState) -> bool {
+    match cfg(state, "ts_manage_acl") {
+        Some(v) => v == "1" || v.eq_ignore_ascii_case("true"),
+        None => state.config.tailscale_manage_acl,
+    }
+}
+
 /// The effective tailnet, or `None` when no credential is configured. Defaults
 /// to `-` (the identity's default tailnet) when a credential is set but the
 /// tailnet is left blank.
@@ -367,6 +384,8 @@ pub struct TailscaleStatus {
     mode: &'static str,
     /// The tailnet in effect (or the stored value), for display.
     tailnet: Option<String>,
+    /// Whether the bot manages (overwrites) the tailnet ACL. Off by default.
+    manage_acl: bool,
 }
 
 /// `GET /api/platform/tailscale` — whether Tailnet identity is configured.
@@ -381,6 +400,7 @@ pub async fn tailscale_status(State(state): State<Arc<AppState>>) -> axum::Json<
         configured,
         mode,
         tailnet,
+        manage_acl: acl_sync_enabled(&state),
     })
 }
 
@@ -392,6 +412,9 @@ pub struct TailscaleReq {
     client_secret: Option<String>,
     #[serde(default)]
     tailnet: Option<String>,
+    /// Opt in to (or out of) letting the bot manage the tailnet ACL.
+    #[serde(default)]
+    manage_acl: Option<bool>,
 }
 
 /// `POST /api/platform/tailscale` — set the OAuth client + tailnet (platform
@@ -438,6 +461,14 @@ pub async fn tailscale_set(
     {
         store("tailnet", tn)?;
         changed.push("tailnet");
+    }
+    if let Some(manage) = req.manage_acl {
+        store("ts_manage_acl", if manage { "1" } else { "0" })?;
+        changed.push(if manage {
+            "ACL management on"
+        } else {
+            "ACL management off"
+        });
     }
     if changed.is_empty() {
         return Err((StatusCode::BAD_REQUEST, "no changes provided".into()));

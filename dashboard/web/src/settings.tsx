@@ -23,10 +23,10 @@ const WORKER_ROLES = ['prod', 'private'] as const
 // Every editable setting on the page, tracked centrally so one save bar can
 // commit them all. Secret fields are write-only (baseline = ''); the rest load
 // their baseline from the server.
-type Field = 'ghcr_token' | 'ts_client_id' | 'ts_client_secret' | 'tailnet' | 'webhook' | 'cpu_pct' | 'mem_pct'
+type Field = 'ghcr_token' | 'ts_client_id' | 'ts_client_secret' | 'tailnet' | 'ts_manage_acl' | 'webhook' | 'cpu_pct' | 'mem_pct'
 const GROUPS = {
   registry: ['ghcr_token'],
-  tailscale: ['ts_client_id', 'ts_client_secret', 'tailnet'],
+  tailscale: ['ts_client_id', 'ts_client_secret', 'tailnet', 'ts_manage_acl'],
   alerts: ['webhook', 'cpu_pct', 'mem_pct'],
 } satisfies Record<string, Field[]>
 
@@ -34,6 +34,7 @@ export interface Form {
   val: (f: Field) => string
   dirty: (f: Field) => boolean
   set: (f: Field) => (e: React.ChangeEvent<HTMLInputElement>) => void
+  setVal: (f: Field, v: string) => void
   groupDirty: (fields: readonly Field[]) => boolean
 }
 
@@ -49,6 +50,7 @@ export function Settings() {
   const base: Record<Field, string> = {
     ghcr_token: '', ts_client_id: '', ts_client_secret: '', webhook: '',
     tailnet: ts.data?.tailnet ?? '',
+    ts_manage_acl: ts.data?.manage_acl ? '1' : '0',
     cpu_pct: alerts.data?.cpu_pct != null ? String(alerts.data.cpu_pct) : '',
     mem_pct: alerts.data?.mem_pct != null ? String(alerts.data.mem_pct) : '',
   }
@@ -59,8 +61,9 @@ export function Settings() {
   const dirty = (f: Field) => f in changes && changes[f] !== base[f]
   const set = (f: Field) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setChanges((c) => ({ ...c, [f]: e.target.value }))
+  const setVal = (f: Field, v: string) => setChanges((c) => ({ ...c, [f]: v }))
   const groupDirty = (fields: readonly Field[]) => fields.some(dirty)
-  const form: Form = { val, dirty, set, groupDirty }
+  const form: Form = { val, dirty, set, setVal, groupDirty }
 
   const dirtyCount = (Object.keys(base) as Field[]).filter(dirty).length
 
@@ -86,6 +89,7 @@ export function Settings() {
     if (dirty('ts_client_id')) tsBody.client_id = val('ts_client_id').trim()
     if (dirty('ts_client_secret')) tsBody.client_secret = val('ts_client_secret').trim()
     if (dirty('tailnet')) tsBody.tailnet = val('tailnet').trim()
+    if (dirty('ts_manage_acl')) tsBody.manage_acl = val('ts_manage_acl') === '1'
     await run('Tailnet identity', GROUPS.tailscale, tsBody, urls.tailscale, 'tailscale')
 
     const alBody: Record<string, unknown> = {}
@@ -221,6 +225,18 @@ function TailscaleSection({ form, tailnetChangesPending }: { form: Form; tailnet
         <p className="text-xs text-muted-foreground">
           Create an <strong>OAuth client</strong> (not an access token) with the <code className="font-mono">devices:read</code> scope in the Tailscale admin console. The secret is long-lived — the bot mints short-lived tokens from it, so it never needs manual renewal.
         </p>
+
+        <label className="flex items-start gap-2.5 rounded-lg border p-3">
+          <input type="checkbox" className="mt-0.5 size-4 accent-primary"
+            checked={form.val('ts_manage_acl') === '1'}
+            onChange={(e) => form.setVal('ts_manage_acl', e.target.checked ? '1' : '0')} />
+          <span className="text-xs">
+            <span className="font-medium text-foreground">Let MajNet manage the tailnet ACL</span>
+            <span className="mt-0.5 block text-muted-foreground">
+              Off by default. When on, MajNet <strong>overwrites your entire Tailscale access policy</strong> with one generated from <code className="font-mono">people.yaml</code> — a tag-based policy that assumes tagged nodes. Leave off if you manage the ACL yourself; an untagged tailnet would lock everyone out. Also needs <code className="font-mono">policy_file:write</code> on the OAuth client.
+            </span>
+          </span>
+        </label>
         {result && (
           <div className="rounded-lg border border-success/30 bg-success/10 px-3 py-2.5 text-[13px]">
             {result.you

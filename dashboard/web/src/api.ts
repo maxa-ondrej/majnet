@@ -264,7 +264,7 @@ export const useVersion = () =>
 export const useRegistry = () =>
   useQuery({ queryKey: ['registry'], queryFn: () => getJSON<RegistryStatus>(urls.registry) })
 
-export interface TailscaleStatus { configured: boolean; mode: 'oauth' | 'token' | 'none'; tailnet: string | null }
+export interface TailscaleStatus { configured: boolean; mode: 'oauth' | 'token' | 'none'; tailnet: string | null; manage_acl: boolean }
 export interface TailscaleVerify { tailnet: string; devices: number; you: string | null }
 export const useTailscale = () =>
   useQuery({ queryKey: ['tailscale'], queryFn: () => getJSON<TailscaleStatus>(urls.tailscale) })
