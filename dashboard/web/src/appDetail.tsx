@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import {
-  RotateCw, ScrollText, KeyRound, SlidersHorizontal, ArrowUpFromLine, MoreVertical,
+  RotateCw, ScrollText, KeyRound, SlidersHorizontal, ArrowUpFromLine, MoreVertical, TerminalSquare,
 } from 'lucide-react'
 import {
   send, urls, useApps, useAppInfo, useAppLogs, useAppSecrets, useEvents, useImports,
-  useManifest, useNodeMetrics, useProjects, useReleases, type AppInfo, type ManifestFile,
+  useManifest, useNodeMetrics, useProjects, useReleases, useWhoami, type AppInfo, type ManifestFile,
 } from './api'
 import { useApiMutation } from './mutations'
 import { ConfirmButton, ExtLink, QueryState, short, StatusBadge } from './ui'
@@ -54,6 +54,7 @@ export function AppDetail() {
   const info = useAppInfo(org, app)
   const metrics = useNodeMetrics()
   const project = useProjects().data?.find((p) => p.org === org)?.name
+  const isAdmin = useWhoami().data?.admin ?? false
   const appEvents = (events.data ?? []).filter((e) => e.action.trim().split(/\s+/).pop() === app)
   const imageOf = (f?: ManifestFile) => (f?.data as { image?: string } | null)?.image
   const prodImage = imageOf(manifest.data?.['production.yaml']) ?? imageOf(manifest.data?.['base.yaml'])
@@ -172,7 +173,7 @@ export function AppDetail() {
           </div>
 
           <EnvironmentZone
-            app={app} env={env}
+            app={app} env={env} org={org} isAdmin={isAdmin}
             containers={containersFor(env)}
             version={versionFor(env)}
             domains={env === 'production' ? (a?.domains ?? []) : []}
@@ -272,9 +273,9 @@ function SectionHead({ title, hint }: { title: string; hint?: string }) {
 
 // ── the environment section, scoped to the selected class ─────────────────────
 function EnvironmentZone({
-  app, env, containers, version, domains, adminerUrl, onLogs, onSecrets, restart, busy,
+  app, env, org, isAdmin, containers, version, domains, adminerUrl, onLogs, onSecrets, restart, busy,
 }: {
-  app: string; env: string
+  app: string; env: string; org: string; isAdmin: boolean
   containers: { name: string; image: string; state: string; cpu_pct: number; mem_used: number; mem_limit: number }[]
   version: string | null; domains: string[]; adminerUrl: string | null
   onLogs: () => void; onSecrets: () => void; restart: () => void; busy: boolean
@@ -321,6 +322,11 @@ function EnvironmentZone({
               confirmText="Restart" onConfirm={restart}><RotateCw className="size-4" /> Restart</ConfirmButton>
             <Button variant="outline" size="sm" onClick={onLogs}><ScrollText className="size-4" /> Logs</Button>
             <Button variant="outline" size="sm" onClick={onSecrets}><KeyRound className="size-4" /> Secrets</Button>
+            {isAdmin && (
+              <Button asChild variant="outline" size="sm">
+                <Link to="/terminal" search={{ mode: 'container', project: org, app, class: env }}><TerminalSquare className="size-4" /> Exec</Link>
+              </Button>
+            )}
             {adminerUrl && <Button asChild variant="outline" size="sm"><a href={adminerUrl} target="_blank" rel="noreferrer">Open in Adminer ↗</a></Button>}
           </div>
         </CardContent></Card>

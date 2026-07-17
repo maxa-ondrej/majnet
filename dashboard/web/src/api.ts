@@ -201,6 +201,15 @@ export const useAppLogs = (org: string, cls: string, app: string, enabled: boole
   useQuery({ queryKey: ['logs', org, cls, app], queryFn: () => getText(urls.appLogs(org, cls, app)), enabled, refetchInterval: 5000 })
 export const useNodes = () =>
   useQuery({ queryKey: ['nodes'], queryFn: () => getJSON<PlatformNode[]>(urls.nodes) })
+// WebSocket URL for the reconciler terminal (ADR 0016), same origin as the
+// dashboard (tailscale serve injects identity; nginx upgrades /api/recon/api/terminal).
+export function terminalWsUrl(params: Record<string, string | undefined>): string {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+  const qs = new URLSearchParams()
+  for (const [k, v] of Object.entries(params)) if (v) qs.set(k, v)
+  return `${proto}://${location.host}/api/recon/api/terminal?${qs.toString()}`
+}
+
 export const useControlPlane = () =>
   useQuery({
     queryKey: ['control-plane'],

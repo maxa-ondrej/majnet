@@ -1,5 +1,5 @@
 import { Link, Outlet } from '@tanstack/react-router'
-import { Activity, Boxes, Cpu, Server, Settings } from 'lucide-react'
+import { Activity, Boxes, Cpu, Server, Settings, TerminalSquare } from 'lucide-react'
 import { useWhoami } from './api'
 import { TopBar } from './topbar'
 
@@ -8,6 +8,7 @@ const NAV = [
   { to: '/activity', label: 'Activity', icon: Activity, exact: false, admin: false },
   { to: '/nodes', label: 'Nodes', icon: Server, exact: false, admin: false },
   { to: '/control-plane', label: 'Control plane', icon: Cpu, exact: false, admin: true },
+  { to: '/terminal', label: 'Terminal', icon: TerminalSquare, exact: false, admin: true },
   { to: '/settings', label: 'Settings', icon: Settings, exact: false, admin: false },
 ] as const
 

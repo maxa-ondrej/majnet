@@ -239,6 +239,27 @@ impl Store {
         Ok(())
     }
 
+    /// Open a terminal session audit row (ADR 0016); returns its id, used as the
+    /// transcript filename.
+    pub fn terminal_open(&self, actor: &str, node: &str, mode: &str, target: &str) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO terminal_sessions (actor, node, mode, target) VALUES (?1, ?2, ?3, ?4)",
+            [actor, node, mode, target],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Close a terminal session audit row, stamping the end time + transcript size.
+    pub fn terminal_close(&self, id: i64, bytes: u64) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE terminal_sessions SET ended_at = datetime('now'), bytes = ?2 WHERE id = ?1",
+            rusqlite::params![id, bytes as i64],
+        )?;
+        Ok(())
+    }
+
     // ── Ephemeral lifecycle tracking (§8: 48 h grace, 7 d hard TTL) ────────
 
     /// Manifest present this cycle: (re)register, clear any grace countdown.
