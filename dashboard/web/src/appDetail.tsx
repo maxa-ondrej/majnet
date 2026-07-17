@@ -20,7 +20,7 @@ import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
 import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Sheet, SheetBody, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 
@@ -130,6 +130,10 @@ export function AppDetail() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              <DropdownMenuItem onSelect={() => deploy.mutate(() => send(urls.releaseCut(org, app, 'patch')))}>Cut release · patch</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => deploy.mutate(() => send(urls.releaseCut(org, app, 'minor')))}>Cut release · minor</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => deploy.mutate(() => send(urls.releaseCut(org, app, 'major')))}>Cut release · major</DropdownMenuItem>
+              <DropdownMenuSeparator />
               <DropdownMenuItem onSelect={() => setRenameOpen(true)}>Rename app…</DropdownMenuItem>
               <DropdownMenuItem
                 variant="destructive"

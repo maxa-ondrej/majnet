@@ -8,7 +8,7 @@
 //! chosen version into `production.yaml`.
 
 use anyhow::{Context, Result};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use majnet_common::project::Role;
@@ -18,6 +18,95 @@ use crate::state::StoredRelease;
 use crate::AppState;
 
 type ApiError = (StatusCode, String);
+
+// ── shared versioning: platform-cut releases (semver) ─────────────────────────
+// One consistent scheme for every app: the bot computes the next semver from the
+// last recorded release and creates the `vX.Y.Z` tag (App-signed, through git),
+// which triggers app-release.yaml → build → `record` → then `promote`. The bump
+// is chosen explicitly here; a future `auto` mode can derive it from
+// conventional commits (option 2) without changing this shape.
+
+type Ver = (u64, u64, u64);
+
+fn parse_semver(tag: &str) -> Option<Ver> {
+    let core = tag.strip_prefix('v')?.split(['-', '+']).next()?;
+    let mut it = core.split('.');
+    let x = it.next()?.parse().ok()?;
+    let y = it.next()?.parse().ok()?;
+    let z = it.next()?.parse().ok()?;
+    it.next().is_none().then_some((x, y, z))
+}
+
+/// The next version string for a `bump` over the highest recorded release
+/// (`None` = first release). Returns `X.Y.Z` (no `v` prefix).
+fn next_version(last: Option<Ver>, bump: &str) -> Result<String> {
+    let (x, y, z) = last.unwrap_or((0, 0, 0));
+    let (x, y, z) = match bump {
+        "major" => (x + 1, 0, 0),
+        "minor" => (x, y + 1, 0),
+        "patch" => (x, y, z + 1),
+        other => anyhow::bail!("bump must be patch|minor|major, got '{other}'"),
+    };
+    Ok(format!("{x}.{y}.{z}"))
+}
+
+#[derive(serde::Deserialize)]
+pub struct CutQuery {
+    #[serde(default = "default_bump")]
+    pub bump: String,
+}
+fn default_bump() -> String {
+    "patch".into()
+}
+
+/// `POST /api/releases/{org}/{app}/cut?bump=patch|minor|major` — cut a release:
+/// compute the next semver from the last recorded release and create the
+/// `vX.Y.Z` tag on the app repo's `main` HEAD. CI (app-release.yaml) builds it,
+/// the package webhook records it, then it can be promoted. Project-admin gated.
+pub async fn cut(
+    State(state): State<Arc<AppState>>,
+    Path((org, app)): Path<(String, String)>,
+    Query(q): Query<CutQuery>,
+    headers: HeaderMap,
+) -> Result<String, ApiError> {
+    let actor = crate::authz::require(&state, &headers, &org, Role::Admin)
+        .await
+        .map_err(|e| (StatusCode::FORBIDDEN, format!("{e:#}")))?;
+    do_cut(&state, &org, &app, &q.bump, &actor)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e:#}")))
+}
+
+async fn do_cut(state: &AppState, org: &str, app: &str, bump: &str, actor: &str) -> Result<String> {
+    let last = state
+        .store
+        .releases(org, app)?
+        .iter()
+        .filter_map(|r| parse_semver(&r.version))
+        .max();
+    let next = format!("v{}", next_version(last, bump)?);
+    let client = state.github.org_client(org).await?;
+    let repo = format!("/repos/{org}/{app}");
+    let head = crate::git::get_branch_head(&client, &repo, "main")
+        .await?
+        .context("app repo has no main branch")?;
+    let _: serde_json::Value = client
+        .post(
+            format!("{repo}/git/refs"),
+            Some(&serde_json::json!({ "ref": format!("refs/tags/{next}"), "sha": head })),
+        )
+        .await
+        .with_context(|| format!("creating tag {next} (does it already exist?)"))?;
+    state.store.log_event(
+        "release-cut",
+        Some(org),
+        &format!("{app} {next} by {actor}"),
+    )?;
+    tracing::info!(org, app, %next, actor, "cut release");
+    Ok(format!(
+        "Cut {next} — CI is building it; it'll appear in Releases, then Promote to production."
+    ))
+}
 
 /// Record a `vX.Y.Z` release seen on a `registry_package` publish: resolve the
 /// tag's commit (best-effort provenance), store it, and re-point stable at the
@@ -266,7 +355,22 @@ pub async fn promote(
 
 #[cfg(test)]
 mod tests {
-    use super::production_overlay;
+    use super::{next_version, parse_semver, production_overlay};
+
+    #[test]
+    fn semver_parse_and_bump() {
+        assert_eq!(parse_semver("v1.4.2"), Some((1, 4, 2)));
+        assert_eq!(parse_semver("v0.0.3"), Some((0, 0, 3)));
+        assert_eq!(parse_semver("v1.2.3-rc1"), Some((1, 2, 3)));
+        assert_eq!(parse_semver("latest"), None);
+        assert_eq!(parse_semver("v1.2"), None);
+        assert_eq!(next_version(Some((0, 0, 3)), "patch").unwrap(), "0.0.4");
+        assert_eq!(next_version(Some((0, 0, 3)), "minor").unwrap(), "0.1.0");
+        assert_eq!(next_version(Some((1, 4, 2)), "major").unwrap(), "2.0.0");
+        assert_eq!(next_version(None, "patch").unwrap(), "0.0.1");
+        assert_eq!(next_version(None, "minor").unwrap(), "0.1.0");
+        assert!(next_version(None, "huge").is_err());
+    }
 
     const NEW: &str = "ghcr.io/o/a@sha256:new";
 

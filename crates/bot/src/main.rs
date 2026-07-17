@@ -155,6 +155,7 @@ async fn main() -> Result<()> {
             post(dashboard_api::imports_retry),
         )
         .route("/api/releases/{org}/{app}", get(releases::list))
+        .route("/api/releases/{org}/{app}/cut", post(releases::cut))
         .route(
             "/api/releases/{org}/{app}/backfill",
             post(releases::backfill_post),
