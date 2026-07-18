@@ -7,7 +7,7 @@ import { Link } from '@tanstack/react-router'
 import { Boxes, Check, Cpu, EyeOff, GripVertical, Layers, Pencil, Plus, RotateCcw, Server } from 'lucide-react'
 import {
   getJSON, parseAt, urls,
-  useBotEvents, useControlPlane, useDashboardLayout, useEvents, useMetricsHistory, useNodeMetrics, useProjects, useWhoami,
+  useAlertSettings, useBotEvents, useControlPlane, useDashboardLayout, useEvents, useMetricsHistory, useNodeMetrics, useProjects, useWhoami,
   saveDashboardLayout, type DashboardLayout, type DeployPr, type Event, type NodeMetrics,
 } from './api'
 import { classify, DOT_TONE, PageHead, relTime } from './views'
@@ -162,6 +162,33 @@ function ControlPlaneWidget() {
   )
 }
 
+function AlertsWidget() {
+  const a = useAlertSettings()
+  const m = useNodeMetrics()
+  const cpuThr = a.data?.cpu_pct ?? 90
+  const memThr = a.data?.mem_pct ?? 90
+  const nodes = (m.data ?? []).filter((n) => n.reachable)
+  const over = nodes.filter(
+    (n) => n.host_cpu_pct >= cpuThr || (n.mem_total > 0 && (n.mem_used / n.mem_total) * 100 >= memThr),
+  )
+  return (
+    <div className="flex flex-col gap-2 text-sm">
+      <Row k="Status">
+        {m.isLoading ? '…' : over.length
+          ? <StatusBadge tone="warn" dot>{over.length} node{over.length === 1 ? '' : 's'} over threshold</StatusBadge>
+          : <StatusBadge tone="success" dot>all nominal</StatusBadge>}
+      </Row>
+      <Row k="Discord">
+        {a.isLoading ? '…' : a.data?.webhook_set
+          ? <StatusBadge tone="success">configured</StatusBadge>
+          : <span className="text-muted-foreground">not set</span>}
+      </Row>
+      <Row k="Thresholds"><span className="text-muted-foreground tabular-nums">CPU {cpuThr}% · MEM {memThr}%</span></Row>
+      {over.length > 0 && <div className="text-xs text-muted-foreground">Over: {over.map((n) => n.name).join(', ')}</div>}
+    </div>
+  )
+}
+
 function ActivityWidget() {
   const recon = useEvents(60)
   const bot = useBotEvents()
@@ -210,6 +237,7 @@ const WIDGETS: WidgetDef[] = [
   { id: 'fleet', title: 'Fleet health', Body: FleetWidget },
   { id: 'deployments', title: 'Deployments', Body: DeploymentsWidget },
   { id: 'controlplane', title: 'Control plane', Body: ControlPlaneWidget, adminOnly: true },
+  { id: 'alerts', title: 'Alerts', Body: AlertsWidget },
   { id: 'activity', title: 'Recent activity', Body: ActivityWidget },
 ]
 const DEFAULT_LG: Layout[] = [
@@ -220,6 +248,7 @@ const DEFAULT_LG: Layout[] = [
   { i: 'fleet', x: 0, y: 1, w: 6, h: 3, minW: 3, minH: 2 },
   { i: 'deployments', x: 6, y: 1, w: 6, h: 3, minW: 3, minH: 2 },
   { i: 'controlplane', x: 0, y: 4, w: 6, h: 2, minW: 3, minH: 2 },
+  { i: 'alerts', x: 0, y: 6, w: 6, h: 2, minW: 3, minH: 2 },
   { i: 'activity', x: 6, y: 4, w: 6, h: 3, minW: 3, minH: 2 },
 ]
 const DEFAULT_BY_ID = Object.fromEntries(DEFAULT_LG.map((l) => [l.i, l]))
