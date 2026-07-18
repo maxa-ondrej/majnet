@@ -60,8 +60,12 @@ impl Config {
             docker_local: std::env::var("MAJNET_DOCKER_LOCAL")
                 .is_ok_and(|v| v == "1" || v == "true"),
             snapshot_dir: std::env::var("MAJNET_SNAPSHOT_DIR").ok().map(Into::into),
-            term_helper_image: std::env::var("MAJNET_TERM_HELPER_IMAGE")
-                .unwrap_or_else(|_| "debian:bookworm-slim".into()),
+            // Digest-pinned (the platform's image invariant) — reproducible and
+            // supply-chain-fixed; bump the digest to update. Override with
+            // MAJNET_TERM_HELPER_IMAGE.
+            term_helper_image: std::env::var("MAJNET_TERM_HELPER_IMAGE").unwrap_or_else(|_| {
+                "debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818".into()
+            }),
         })
     }
 }

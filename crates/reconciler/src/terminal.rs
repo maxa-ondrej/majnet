@@ -31,6 +31,17 @@ use crate::AppState;
 
 type ApiError = (StatusCode, String);
 
+/// Auto-close a session after this much inactivity (no I/O either way)…
+const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+/// …and after this long total, regardless of activity — so a forgotten
+/// (privileged, host-namespace) shell can never linger indefinitely.
+const MAX_SESSION: std::time::Duration = std::time::Duration::from_secs(4 * 60 * 60);
+
+/// The notice written into the terminal just before an auto-close.
+fn timeout_msg(reason: &str) -> String {
+    format!("\r\n\x1b[33mSession closed — {reason} timeout.\x1b[0m\r\n")
+}
+
 #[derive(Debug, Deserialize)]
 pub struct TermQuery {
     /// `host` | `container`.
@@ -403,10 +414,16 @@ async fn bridge_inner(
 
     let (mut ws_tx, mut ws_rx) = socket.split();
     let mut bytes: u64 = 0;
+    // Auto-close guards so a forgotten root shell can't linger: reset on any I/O
+    // (idle), plus a hard ceiling regardless of activity.
+    let idle = tokio::time::sleep(IDLE_TIMEOUT);
+    let hard = tokio::time::sleep(MAX_SESSION);
+    tokio::pin!(idle, hard);
     let err: Result<()> = loop {
         tokio::select! {
             out = output.next() => match out {
                 Some(Ok(log)) => {
+                    idle.as_mut().reset(tokio::time::Instant::now() + IDLE_TIMEOUT);
                     let b = log.into_bytes();
                     bytes += b.len() as u64;
                     if let Some(f) = file.as_mut() { let _ = f.write_all(&b).await; }
@@ -417,6 +434,7 @@ async fn bridge_inner(
             },
             msg = ws_rx.next() => match msg {
                 Some(Ok(Message::Binary(b))) => {
+                    idle.as_mut().reset(tokio::time::Instant::now() + IDLE_TIMEOUT);
                     if input.write_all(&b).await.is_err() { break Ok(()); }
                     let _ = input.flush().await;
                 }
@@ -432,6 +450,14 @@ async fn bridge_inner(
                 Some(Ok(_)) => {} // ping/pong handled by axum
                 Some(Err(_)) => break Ok(()),
             },
+            _ = &mut idle => {
+                let _ = ws_tx.send(Message::Binary(timeout_msg("idle").into_bytes().into())).await;
+                break Ok(());
+            }
+            _ = &mut hard => {
+                let _ = ws_tx.send(Message::Binary(timeout_msg("max duration").into_bytes().into())).await;
+                break Ok(());
+            }
         }
     };
     if let Some(f) = file.as_mut() {

@@ -123,8 +123,8 @@ platform-admin-only and fully audited, with two modes.**
 
 ## Open items for implementation
 - Transcript storage shape + retention policy (DB table vs file; how long).
-- Helper image: pulled on demand (done); still pin a digest for production.
-- Idle/absolute session timeouts (deferred; not gating v1).
+- Helper image: pulled on demand + **digest-pinned** (done — `debian:bookworm-slim@sha256:…`, the image invariant; override via `MAJNET_TERM_HELPER_IMAGE`).
+- Idle/absolute session timeouts: **done** — the WS bridge auto-closes after 15 min idle (reset on any I/O) or 4 h total, writing a notice into the terminal first, so a forgotten privileged host shell can't linger.
 
 ## Notes
 - The shell runs **interactive** (`bash -i`, host `bash -il`, else `sh -i`) with a
