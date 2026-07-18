@@ -20,3 +20,26 @@ web-app/        package.json · server.js (node:http) · Dockerfile · workflows
 ```
 
 These are *developed* here and *deployed* to `majksa-platform/platform/repo-templates/`, which is what the bot actually reads (design doc §10).
+
+## Monorepo apps (ADR 0018)
+
+A monorepo — one GitHub repo hosting several apps — is **bring-your-own CI**: the platform doesn't scaffold or archive it, so it ships no `build.yaml`. Instead the repo owner wires the reusable build-tier workflow [`app-build.yaml`](../../.github/workflows/app-build.yaml), which builds + pushes each app's **nested** image `ghcr.io/<org>/<repo>/<app>` with the same build-tier tags a solo `build.yaml` produces (`pr-<N>` → preview, `sha-…`/`latest` → testing). The `registry_package` webhook maps the package's last segment to the app, so no wiring beyond publishing the image is needed. The `vX.Y.Z` release tier is the same reusable [`app-release.yaml`](../../.github/workflows/app-release.yaml) solo apps use.
+
+```yaml
+# .github/workflows/build.yaml in the monorepo — one app per matrix entry:
+on: { push: { branches: [main] }, pull_request: }
+jobs:
+  build:
+    strategy:
+      matrix:
+        app:
+          - { name: api, context: apps/api }
+          - { name: web, context: apps/web }
+    permissions: { contents: read, packages: write }
+    uses: majnet/majnet/.github/workflows/app-build.yaml@main
+    with:
+      app: ${{ matrix.app.name }}
+      context: ${{ matrix.app.context }}
+```
+
+Gate each app on its own `paths:` (or a paths-filter step) so a PR touching one app doesn't rebuild the whole repo; run tests in the caller — `app-build.yaml` only builds + publishes.

@@ -69,6 +69,14 @@ longer assume `app == repo`):
   rename its shared repo (that repo hosts siblings), so `rename` returns a clear
   error pointing the user at `project.yaml`. Full monorepo rename (repo
   untouched, nested GHCR package `<repo>/<old>`→`<repo>/<new>` copied, nested pin
-  rewritten) is **phase 3**, alongside a scaffolded matrix CI for BYO monorepos.
+  rewritten) is **phase 3**.
+- **Reusable build CI for BYO monorepos.** The build tier is a reusable
+  workflow, `.github/workflows/app-build.yaml`: a monorepo owner calls it once
+  per app (matrix), and it builds + pushes that app's nested image with the same
+  build-tier tags a solo `build.yaml` produces (`pr-<N>` → preview,
+  `sha-…`/`latest` → testing). No bot change is needed — the existing
+  `registry_package` → leaf-app mapping handles nested packages. The `vX.Y.Z`
+  release tier reuses `app-release.yaml`. Remaining phase-3 nicety: scaffolding
+  this caller automatically (today the owner adds it — it's bring-your-own CI).
 - App names remain unique within a project (already true) — required for the
   package-leaf → app mapping.

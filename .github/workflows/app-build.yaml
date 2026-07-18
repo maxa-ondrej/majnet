@@ -1,0 +1,116 @@
+name: app-build
+
+# Reusable BUILD-tier pipeline for MajNet apps (ADR 0009, §13) — the monorepo
+# counterpart to the per-repo `build.yaml` in repo-templates. A monorepo owner
+# (ADR 0018: one GitHub repo hosting several apps, bring-your-own CI) calls this
+# once per app to build + push that app's NESTED image
+# `ghcr.io/<org>/<repo>/<app>` with build-tier tags:
+#
+#   - on a PR:            `pr-<N>`  → the bot deploys an ephemeral preview
+#   - on the default branch: `sha-<sha>` + `latest` → the bot bumps `testing`
+#
+# No explicit notification is needed: the GHCR publish fires a
+# `registry_package` webhook whose package name is `<repo>/<app>`; the bot maps
+# the LAST segment to the app (`digest.rs::on_package_published`) and drives the
+# preview / testing bump. The `vX.Y.Z` release tier is `app-release.yaml`.
+#
+#   # .github/workflows/build.yaml in the monorepo — one app per matrix entry:
+#   on: { push: { branches: [main] }, pull_request: }
+#   jobs:
+#     build:
+#       strategy:
+#         matrix:
+#           app:
+#             - { name: api, context: apps/api }
+#             - { name: web, context: apps/web }
+#       permissions: { contents: read, packages: write }
+#       uses: majnet/majnet/.github/workflows/app-build.yaml@main
+#       with:
+#         app: ${{ matrix.app.name }}
+#         context: ${{ matrix.app.context }}
+#
+# Tip: gate each matrix entry on its own `paths:` (or a paths-filter step) so a
+# PR touching one app doesn't rebuild the whole repo. Run your tests in the
+# caller (or a preceding job) — this workflow only builds + publishes.
+
+on:
+  workflow_call:
+    inputs:
+      app:
+        description: >-
+          The MajNet app (the leaf name). The image defaults to
+          ghcr.io/<owner>/<repo>/<app>, so the webhook resolves this app.
+        type: string
+        required: true
+      context:
+        description: Build context — the app's subdirectory in the monorepo.
+        type: string
+        default: .
+      dockerfile:
+        description: Dockerfile path; defaults to <context>/Dockerfile.
+        type: string
+        default: ''
+      image:
+        description: >-
+          Override the image name. Defaults to ghcr.io/<owner>/<repo>/<app>;
+          set this only if the app publishes under a different nested path.
+        type: string
+        default: ''
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: resolve image name (lowercase, nested per app)
+        id: img
+        run: |
+          IMG="${{ inputs.image }}"
+          [ -n "$IMG" ] || IMG="ghcr.io/${{ github.repository }}/${{ inputs.app }}"
+          echo "image=${IMG,,}" >> "$GITHUB_OUTPUT"
+
+      - name: resolve dockerfile
+        id: df
+        run: |
+          DF="${{ inputs.dockerfile }}"
+          [ -n "$DF" ] || DF="${{ inputs.context }}/Dockerfile"
+          echo "file=$DF" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ steps.img.outputs.image }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,enable={{is_default_branch}}
+            type=ref,event=pr,prefix=pr-
+
+      - name: build metadata
+        id: bm
+        run: echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ steps.df.outputs.file }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Baked into the image so the app can report them at /info (design §16).
+          # Build tier (main/PR) → version "dev"; the release tier stamps vX.Y.Z.
+          build-args: |
+            VERSION=dev
+            GIT_COMMIT=${{ github.sha }}
+            BUILD_TIME=${{ steps.bm.outputs.built_at }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
