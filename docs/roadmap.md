@@ -108,6 +108,8 @@ Code ✅ / live verification ⏳ (architecture: **ADR 0004** — the `majnet-set
 
 > Origin: requirement added 2026-07-03 — the whole setup must be auto-provisioned like Coolify: one command on the master, continue in the web UI, add nodes by handing the brain SSH access.
 
+- [x] Monorepo apps (**ADR 0018**, phase 1): `repo` on `AppDecl` lets one GitHub repository host several apps (shared `repo` = monorepo); nested images `ghcr.io/<org>/<repo>/<app>`, the package-webhook maps the leaf segment → app, and org-sync leaves the shared repo alone (bring-your-own CI). Ops layout unchanged. Phase 2: cut-release/rename/PR-preview repo-awareness + scaffolded matrix CI
+
 ## Open questions (design doc §20)
 
 1. Backup target: Backblaze B2 vs Hetzner Storage Box

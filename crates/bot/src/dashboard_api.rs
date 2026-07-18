@@ -525,6 +525,11 @@ pub struct NewApp {
     /// from this template.
     #[serde(default)]
     pub template: String,
+    /// Host this app in a shared GitHub repo (a monorepo) instead of its own.
+    /// Apps sharing a `repo` are one monorepo: the platform doesn't scaffold or
+    /// archive it (bring your own CI), and its image is `ghcr.io/<org>/<repo>/<name>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
     /// Create a MajNet source repo (from `template`, with CI) and declare the
     /// app in `project.yaml`. When false, the app is manifests-only — it runs a
     /// prebuilt/external image, so `image` is required and no repo/CI is made.
@@ -615,7 +620,12 @@ pub async fn apps_post(
     // manifests-only app (no repo) must bring a prebuilt image.
     if req.image.trim().is_empty() {
         if wants_repo {
-            req.image = format!("ghcr.io/{org}/{}@sha256:{}", req.name, "0".repeat(64));
+            let decl = AppDecl {
+                name: req.name.clone(),
+                template: req.template.clone(),
+                repo: req.repo.clone(),
+            };
+            req.image = format!("{}@sha256:{}", decl.image_base(&org), "0".repeat(64));
         } else {
             return Err(bad_request(
                 "an image is required when not creating a source repo",
@@ -704,6 +714,7 @@ pub(crate) async fn scaffold_and_declare(
             project.apps.push(AppDecl {
                 name: req.name.clone(),
                 template: req.template.clone(),
+                repo: req.repo.clone(),
             });
             let yaml = serde_yaml::to_string(&project)?;
             commit_file(
@@ -2157,6 +2168,7 @@ mod tests {
             database: Some("postgres".into()),
             template: "web-app".into(),
             create_repo: true,
+            repo: None,
             import: None,
         }
     }

@@ -127,9 +127,14 @@ pub async fn sync_org(
     let project: ProjectConfig =
         serde_yaml::from_slice(project_yaml).context("parsing project.yaml")?;
 
-    // App repos: create from template, archive removed.
+    // App repos: create from template, archive removed. Monorepo apps
+    // (`repo` set, shared) are bring-your-own — the platform neither scaffolds
+    // nor archives their repo; it only consumes the images they publish.
     let existing = list_org_repos(&client, org).await?;
     for app in &project.apps {
+        if app.is_monorepo() {
+            continue;
+        }
         if !existing.contains_key(&app.name) {
             create_repo_from_template(&client, org, &app.name, &app.template, platform).await?;
             state.store.log_event(
@@ -140,11 +145,25 @@ pub async fn sync_org(
         }
         protect_app_main(&client, org, &app.name).await?;
     }
+    // Repos the platform manages (solo app == repo) vs repos merely referenced by
+    // a monorepo app. Only managed repos are archive/unarchive-reconciled.
+    let managed: std::collections::HashSet<&str> = project
+        .apps
+        .iter()
+        .filter(|a| !a.is_monorepo())
+        .map(|a| a.name.as_str())
+        .collect();
+    let referenced: std::collections::HashSet<&str> =
+        project.apps.iter().map(|a| a.repo()).collect();
     for (repo, archived) in &existing {
         if is_reserved_repo(repo, org) {
             continue;
         }
-        let declared = project.apps.iter().any(|a| &a.name == repo);
+        // A repo referenced only by monorepo apps is user-owned — leave it alone.
+        if referenced.contains(repo.as_str()) && !managed.contains(repo.as_str()) {
+            continue;
+        }
+        let declared = managed.contains(repo.as_str());
         match (declared, *archived) {
             // Reconcile archived state to the declaration (project.yaml is the
             // source of truth): a declared app's repo must be active. This also

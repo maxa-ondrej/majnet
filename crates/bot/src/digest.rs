@@ -41,9 +41,15 @@ pub async fn on_package_published(
     {
         return Ok(());
     }
-    let app = pkg["name"]
+    // The GHCR package name is `<app>` for a solo repo, or `<repo>/<app>` for a
+    // monorepo app (nested package). The MajNet app — the ops dir `apps/<app>/`,
+    // the manifest name, the runtime name — is always the LAST segment; the full
+    // package path is preserved in the pinned image. App names are unique within
+    // a project, so the leaf resolves unambiguously.
+    let pkg_name = pkg["name"]
         .as_str()
         .context("package payload has no name")?;
+    let app = pkg_name.rsplit('/').next().unwrap_or(pkg_name);
     let version = &pkg["package_version"];
     let tag = version["container_metadata"]["tag"]["name"]
         .as_str()
@@ -58,7 +64,7 @@ pub async fn on_package_published(
         })
         .context("package payload carries no sha256 digest")?;
 
-    let image = format!("ghcr.io/{org}/{app}@{digest}");
+    let image = format!("ghcr.io/{org}/{pkg_name}@{digest}");
 
     // The image tag selects the tier (ADR 0009): `pr-<N>` → ephemeral preview;
     // `vX.Y.Z` → a release (record it + auto-track stable); anything else
