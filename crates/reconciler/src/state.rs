@@ -511,6 +511,89 @@ pub struct MetricPoint {
     pub containers_running: i64,
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct ContainerPoint {
+    pub ts: i64,
+    pub container: String,
+    pub cpu_pct: f64,
+    pub mem_used: i64,
+    pub mem_limit: i64,
+}
+
+impl Store {
+    /// Write one raw per-container sample (ADR 0017 follow-up).
+    pub fn insert_container_sample(
+        &self,
+        ts: i64,
+        node: &str,
+        container: &str,
+        cpu_pct: f64,
+        mem_used: i64,
+        mem_limit: i64,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO container_samples
+               (ts, node, container, cpu_pct, mem_used, mem_limit)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![ts, node, container, cpu_pct, mem_used, mem_limit],
+        )?;
+        Ok(())
+    }
+
+    /// Age per-container samples into the same RRD tiers as `compact_metrics`,
+    /// grouped by (node, container). Idempotent (aligned bucket timestamps).
+    pub fn compact_container_metrics(&self, now: i64) -> Result<()> {
+        const DAY: i64 = 86_400;
+        let conn = self.conn.lock().unwrap();
+        let bands = [
+            (i64::MIN, now - 30 * DAY, DAY),
+            (now - 30 * DAY, now - 7 * DAY, 3_600),
+            (now - 7 * DAY, now - DAY, 1_800),
+        ];
+        for (lo, hi, bucket) in bands {
+            if hi <= lo {
+                continue;
+            }
+            conn.execute_batch(&format!(
+                "CREATE TEMP TABLE _cc AS
+                   SELECT node, container, (ts/{bucket})*{bucket} AS ts, avg(cpu_pct) AS cpu_pct,
+                          CAST(avg(mem_used) AS INTEGER) AS mem_used,
+                          CAST(avg(mem_limit) AS INTEGER) AS mem_limit
+                   FROM container_samples WHERE ts >= {lo} AND ts < {hi}
+                   GROUP BY node, container, (ts/{bucket})*{bucket};
+                 DELETE FROM container_samples WHERE ts >= {lo} AND ts < {hi};
+                 INSERT OR REPLACE INTO container_samples
+                   (node, container, ts, cpu_pct, mem_used, mem_limit)
+                   SELECT node, container, ts, cpu_pct, mem_used, mem_limit FROM _cc;
+                 DROP TABLE _cc;"
+            ))?;
+        }
+        Ok(())
+    }
+
+    /// Samples for one container (matched by name across nodes) at/after `since`.
+    pub fn container_history(&self, container: &str, since: i64) -> Result<Vec<ContainerPoint>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT ts, container, cpu_pct, mem_used, mem_limit FROM container_samples
+             WHERE container = ?1 AND ts >= ?2 ORDER BY ts",
+        )?;
+        let rows = stmt
+            .query_map(rusqlite::params![container, since], |row| {
+                Ok(ContainerPoint {
+                    ts: row.get(0)?,
+                    container: row.get(1)?,
+                    cpu_pct: row.get(2)?,
+                    mem_used: row.get(3)?,
+                    mem_limit: row.get(4)?,
+                })
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
