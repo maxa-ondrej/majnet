@@ -5,10 +5,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Terminal as Xterm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { Cpu, History, Info, Loader2, ServerCog, TerminalSquare, TriangleAlert } from 'lucide-react'
+import { History, Info, Loader2, ServerCog, TerminalSquare, TriangleAlert } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetBody, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
-import { useNodes, useTerminalSessions, getText, terminalWsUrl, urls, type TerminalSession } from './api'
+import { useApps, useNodeMetrics, useNodes, useProjects, useTerminalSessions, getText, terminalWsUrl, urls, type TerminalSession } from './api'
 import { PageHead } from './views'
 import { StatusBadge } from './ui'
 
@@ -131,6 +131,71 @@ function ProdConfirm({ target, onConfirm, onCancel }: { target: Target; onConfir
   )
 }
 
+// Cascading picker for container exec: project → app → env class. Classes are
+// derived from *running* containers (`<project>-<app>-<class>-<hash>`), so you
+// can only pick a target that actually has something to exec into.
+const SEL = 'h-9 min-w-52 rounded-md border border-input bg-card px-3 text-[13px] outline-none focus:ring-2 focus:ring-ring disabled:opacity-50'
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</label>
+      {children}
+    </div>
+  )
+}
+function ContainerPicker({ onConnect }: { onConnect: (t: Target) => void }) {
+  const projects = useProjects()
+  const onboarded = useMemo(() => (projects.data ?? []).filter((p) => p.onboarded), [projects.data])
+  const metrics = useNodeMetrics()
+  const [org, setOrg] = useState('')
+  const [app, setApp] = useState('')
+  const [cls, setCls] = useState('')
+  useEffect(() => { if (!org && onboarded[0]) setOrg(onboarded[0].org) }, [onboarded, org])
+  useEffect(() => { setApp(''); setCls('') }, [org])
+
+  const apps = useApps(org)
+  const appList = apps.data ?? []
+  const projName = onboarded.find((p) => p.org === org)?.name ?? org
+  // Classes with a running container for the chosen app.
+  const classes = useMemo(() => {
+    if (!app) return [] as string[]
+    const prefix = `${projName}-${app}-`
+    const set = new Set<string>()
+    for (const n of metrics.data ?? []) for (const c of n.apps) {
+      if (c.name.startsWith(prefix)) set.add(c.name.slice(prefix.length).split('-')[0] ?? '')
+    }
+    return [...set].filter(Boolean).sort()
+  }, [app, projName, metrics.data])
+  useEffect(() => { setCls((c) => (classes.includes(c) ? c : classes[0] ?? '')) }, [classes])
+
+  const connect = () => {
+    if (!org || !app || !cls) return
+    onConnect({ mode: 'container', project: org, app, class: cls, label: `${app} · ${cls}`, prod: cls === 'production', confirmWord: app })
+  }
+  return (
+    <>
+      <Field label="Project">
+        <select value={org} onChange={(e) => setOrg(e.target.value)} className={SEL}>
+          {onboarded.map((p) => <option key={p.org} value={p.org}>{p.name}</option>)}
+        </select>
+      </Field>
+      <Field label="App">
+        <select value={app} onChange={(e) => setApp(e.target.value)} disabled={!appList.length} className={SEL}>
+          <option value="">{appList.length ? 'Select an app…' : 'No apps'}</option>
+          {appList.map((a) => <option key={a.name} value={a.name}>{a.name}</option>)}
+        </select>
+      </Field>
+      <Field label="Environment">
+        <select value={cls} onChange={(e) => setCls(e.target.value)} disabled={!classes.length} className={SEL}>
+          {classes.length ? classes.map((c) => <option key={c} value={c}>{c}</option>) : <option value="">{app ? 'No running container' : '—'}</option>}
+        </select>
+      </Field>
+      <div className="flex-1" />
+      <Button onClick={connect} disabled={!org || !app || !cls}><TerminalSquare className="size-4" /> Connect</Button>
+    </>
+  )
+}
+
 // ── page ──────────────────────────────────────────────────────────────────────
 export function Terminal() {
   const nodes = useNodes()
@@ -205,9 +270,7 @@ export function Terminal() {
                   </Button>
                 </>
               ) : (
-                <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
-                  <Cpu className="size-4" /> Open a container shell from an app’s page — its <b className="text-foreground">Exec</b> button targets that app + environment.
-                </div>
+                <ContainerPicker onConnect={open} />
               )}
             </div>
           </div>
