@@ -136,6 +136,17 @@ inside the app image**: `promote vX.Y.Z` pins that image, and the reconciler's
 
 ## Open items
 
+- ✅ **Draft releases (review-gated cuts)** — rather than cut on every push, the
+  bot prepares a **draft**: the proposed next version (semver from the last
+  release) + a generated changelog (conventional commits grouped into
+  Breaking/Features/Fixes/Other), refreshed on each push to the app repo's
+  `main` and stored per repo (repo-wide for a monorepo). The dashboard Releases
+  panel shows it with editable notes; **submitting** (`POST …/draft/submit`,
+  admin) tags the repo at `main` HEAD and runs the same cut→CI→record flow, and
+  the changelog is persisted per release (`release_notes`, shown under each
+  release). Nothing auto-releases — a draft waits for an operator. Endpoints:
+  `GET`/`DELETE …/draft`, `POST …/draft/refresh`, `PUT …/draft/notes`,
+  `POST …/draft/submit`. Operator-edited notes survive a push refresh.
 - ✅ **Release backfill** — a missed `registry_package` for a `vX.Y.Z` tag left
   the store (and stable) unaware of that release with no self-heal. Recovered
   on demand: `releases::backfill` enumerates **GHCR package versions**

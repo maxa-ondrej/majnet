@@ -147,6 +147,10 @@ async fn on_push(state: &AppState, org: &str, payload: &serde_json::Value) -> an
             crate::proxy::fetch_snapshot(state, &state.config.root_org, "platform", "main").await?;
         let platform = majnet_common::tarball::untar(&platform_tar)?;
         crate::org_sync::sync_org(state, org, &platform).await?;
+    } else if branch == "main" && repo != "ops" && repo != "platform" {
+        // A push to an app source repo's main: refresh its draft release from the
+        // new commits (best-effort — a no-op unless it's a declared app repo).
+        crate::releases::on_app_main_push(state, org, repo).await;
     } else {
         tracing::debug!(
             org,

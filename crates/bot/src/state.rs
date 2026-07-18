@@ -50,6 +50,27 @@ pub struct StoredRelease {
     pub commit: String,
     pub app_image: String,
     pub published_at: String,
+    /// The changelog this release was submitted with, if it came through the
+    /// draft flow (`None` for releases recorded straight off a hand-cut tag).
+    pub notes: Option<String>,
+}
+
+/// A pending draft release (ADR 0009 follow-up): the proposed next version and
+/// its generated changelog, awaiting an operator's submit. Keyed per repo, so a
+/// monorepo's single repo-wide draft covers every app that shares it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ReleaseDraft {
+    pub repo: String,
+    /// Proposed `vX.Y.Z` (with the leading `v`).
+    pub version: String,
+    pub bump: String,
+    /// The tag the commit range was computed from (`""` = first release).
+    pub base: String,
+    pub commit_count: u32,
+    pub notes: String,
+    /// True once an operator edited the notes — a push refresh then keeps them.
+    pub notes_edited: bool,
+    pub updated_at: String,
 }
 
 /// Live status of an in-progress (or failed) app import (ADR 0010) — the
@@ -267,8 +288,12 @@ impl Store {
     pub fn releases(&self, org: &str, app: &str) -> Result<Vec<StoredRelease>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT app, version, commit_sha, app_image, published_at
-             FROM releases WHERE org = ?1 AND app = ?2 ORDER BY published_at DESC, version DESC",
+            "SELECT r.app, r.version, r.commit_sha, r.app_image, r.published_at, n.notes
+             FROM releases r
+             LEFT JOIN release_notes n
+               ON n.org = r.org AND n.app = r.app AND n.version = r.version
+             WHERE r.org = ?1 AND r.app = ?2
+             ORDER BY r.published_at DESC, r.version DESC",
         )?;
         let rows = stmt
             .query_map(rusqlite::params![org, app], |row| {
@@ -278,10 +303,107 @@ impl Store {
                     commit: row.get(2)?,
                     app_image: row.get(3)?,
                     published_at: row.get(4)?,
+                    notes: row.get(5)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// The pending draft release for a repo, if any.
+    pub fn release_draft(&self, org: &str, repo: &str) -> Result<Option<ReleaseDraft>> {
+        use rusqlite::OptionalExtension;
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT repo, version, bump, base, commit_count, notes, notes_edited, updated_at
+             FROM release_drafts WHERE org = ?1 AND repo = ?2",
+            rusqlite::params![org, repo],
+            |row| {
+                Ok(ReleaseDraft {
+                    repo: row.get(0)?,
+                    version: row.get(1)?,
+                    bump: row.get(2)?,
+                    base: row.get(3)?,
+                    commit_count: row.get(4)?,
+                    notes: row.get(5)?,
+                    notes_edited: row.get::<_, i64>(6)? != 0,
+                    updated_at: row.get(7)?,
+                })
+            },
+        )
+        .optional()
+        .context("loading release draft")
+    }
+
+    /// Prepare (or refresh) a repo's draft with freshly computed fields. The
+    /// generated `notes` replace the stored ones only while the operator hasn't
+    /// edited them — an edited draft keeps its notes but still tracks the latest
+    /// version/count.
+    pub fn upsert_release_draft(&self, org: &str, d: &ReleaseDraft) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO release_drafts (org, repo, version, bump, base, commit_count, notes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(org, repo) DO UPDATE SET
+                 version = excluded.version,
+                 bump = excluded.bump,
+                 base = excluded.base,
+                 commit_count = excluded.commit_count,
+                 notes = CASE WHEN release_drafts.notes_edited = 1
+                              THEN release_drafts.notes ELSE excluded.notes END,
+                 updated_at = datetime('now')",
+            rusqlite::params![
+                org,
+                d.repo,
+                d.version,
+                d.bump,
+                d.base,
+                d.commit_count,
+                d.notes
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Replace a draft's notes with an operator's edit (marks it edited, so a
+    /// later push refresh won't clobber them).
+    pub fn set_release_draft_notes(&self, org: &str, repo: &str, notes: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn.execute(
+            "UPDATE release_drafts SET notes = ?3, notes_edited = 1, updated_at = datetime('now')
+             WHERE org = ?1 AND repo = ?2",
+            rusqlite::params![org, repo, notes],
+        )?;
+        Ok(n == 1)
+    }
+
+    pub fn delete_release_draft(&self, org: &str, repo: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM release_drafts WHERE org = ?1 AND repo = ?2",
+            rusqlite::params![org, repo],
+        )?;
+        Ok(())
+    }
+
+    /// Persist the changelog a submitted release carried, for one app.
+    pub fn record_release_notes(
+        &self,
+        org: &str,
+        app: &str,
+        version: &str,
+        notes: &str,
+        submitted_by: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO release_notes (org, app, version, notes, submitted_by)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(org, app, version) DO UPDATE SET
+                 notes = excluded.notes, submitted_by = excluded.submitted_by",
+            rusqlite::params![org, app, version, notes, submitted_by],
+        )?;
+        Ok(())
     }
 
     /// The release version whose image is exactly `app_image` (digest-pinned),
@@ -303,5 +425,81 @@ impl Store {
         )
         .optional()
         .context("version_for_image")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn store() -> Store {
+        let dir = std::env::temp_dir().join(format!(
+            "majnet-bot-state-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        Store::open(&dir).unwrap()
+    }
+
+    fn draft(repo: &str, version: &str, notes: &str) -> ReleaseDraft {
+        ReleaseDraft {
+            repo: repo.into(),
+            version: version.into(),
+            bump: "minor".into(),
+            base: "v1.0.0".into(),
+            commit_count: 3,
+            notes: notes.into(),
+            notes_edited: false,
+            updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn draft_upsert_edit_and_delete() {
+        let s = store();
+        assert!(s.release_draft("o", "api").unwrap().is_none());
+
+        s.upsert_release_draft("o", &draft("api", "v1.1.0", "generated"))
+            .unwrap();
+        let d = s.release_draft("o", "api").unwrap().unwrap();
+        assert_eq!(d.version, "v1.1.0");
+        assert_eq!(d.notes, "generated");
+        assert!(!d.notes_edited);
+
+        // An operator edit sticks and marks the draft edited.
+        assert!(s
+            .set_release_draft_notes("o", "api", "hand-written")
+            .unwrap());
+        let d = s.release_draft("o", "api").unwrap().unwrap();
+        assert_eq!(d.notes, "hand-written");
+        assert!(d.notes_edited);
+
+        // A push refresh updates version/count but must NOT clobber edited notes.
+        let mut refreshed = draft("api", "v1.2.0", "regenerated");
+        refreshed.commit_count = 7;
+        s.upsert_release_draft("o", &refreshed).unwrap();
+        let d = s.release_draft("o", "api").unwrap().unwrap();
+        assert_eq!(d.version, "v1.2.0");
+        assert_eq!(d.commit_count, 7);
+        assert_eq!(d.notes, "hand-written", "operator notes survive a refresh");
+
+        s.delete_release_draft("o", "api").unwrap();
+        assert!(s.release_draft("o", "api").unwrap().is_none());
+    }
+
+    #[test]
+    fn release_notes_attach_to_the_listed_release() {
+        let s = store();
+        s.upsert_release("o", "api", "v1.1.0", "abc123", "ghcr.io/o/api@sha256:d")
+            .unwrap();
+        // No notes yet.
+        assert!(s.releases("o", "api").unwrap()[0].notes.is_none());
+        // Submitting a draft persists notes for the version; the list picks them up.
+        s.record_release_notes("o", "api", "v1.1.0", "## Features\n- x", "alice")
+            .unwrap();
+        let r = &s.releases("o", "api").unwrap()[0];
+        assert_eq!(r.version, "v1.1.0");
+        assert_eq!(r.notes.as_deref(), Some("## Features\n- x"));
     }
 }

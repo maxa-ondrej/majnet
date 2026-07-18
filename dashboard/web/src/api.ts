@@ -75,7 +75,13 @@ export const IMPORT_STEPS: { key: string; label: string }[] = [
   { key: 'secrets', label: 'Importing secrets' },
 ]
 export interface StoredRelease {
-  app: string; version: string; commit: string; app_image: string; published_at: string
+  app: string; version: string; commit: string; app_image: string; published_at: string; notes: string | null
+}
+/** A pending draft release (bot-prepared, awaiting submit). Repo-wide for a
+ *  monorepo. `notes` is the generated changelog (operator-editable). */
+export interface ReleaseDraft {
+  repo: string; version: string; bump: string; base: string
+  commit_count: number; notes: string; notes_edited: boolean; updated_at: string
 }
 /** Build metadata an app reported at its `/info` endpoint, recorded per env at
  *  deploy time. `info` is whatever JSON the app returned (or null). */
@@ -170,6 +176,14 @@ export const urls = {
     `${BOT}/releases/${encodeURIComponent(org)}/${encodeURIComponent(app)}/promote/${encodeURIComponent(version)}`,
   releaseBackfill: (org: string, app: string) =>
     `${BOT}/releases/${encodeURIComponent(org)}/${encodeURIComponent(app)}/backfill`,
+  releaseDraft: (org: string, app: string) =>
+    `${BOT}/releases/${encodeURIComponent(org)}/${encodeURIComponent(app)}/draft`,
+  releaseDraftRefresh: (org: string, app: string) =>
+    `${BOT}/releases/${encodeURIComponent(org)}/${encodeURIComponent(app)}/draft/refresh`,
+  releaseDraftNotes: (org: string, app: string) =>
+    `${BOT}/releases/${encodeURIComponent(org)}/${encodeURIComponent(app)}/draft/notes`,
+  releaseDraftSubmit: (org: string, app: string) =>
+    `${BOT}/releases/${encodeURIComponent(org)}/${encodeURIComponent(app)}/draft/submit`,
   version: `${BOT}/platform/version`,
   registry: `${BOT}/platform/registry`,
   dashboardLayout: `${BOT}/platform/dashboard-layout`,
@@ -298,5 +312,7 @@ export const saveDashboardLayout = (layout: DashboardLayout) =>
   send(urls.dashboardLayout, { method: 'PUT', json: { layout } })
 export const useReleases = (org: string, app: string) =>
   useQuery({ queryKey: ['releases', org, app], queryFn: () => getJSON<StoredRelease[]>(urls.releases(org, app)) })
+export const useReleaseDraft = (org: string, app: string) =>
+  useQuery({ queryKey: ['releaseDraft', org, app], queryFn: () => getJSON<ReleaseDraft | null>(urls.releaseDraft(org, app)) })
 export const useArchivedApps = (org: string) =>
   useQuery({ queryKey: ['archived', org], queryFn: () => getJSON<string[]>(urls.archivedApps(org)) })

@@ -5,7 +5,8 @@ import {
 } from 'lucide-react'
 import {
   send, urls, useApps, useAppInfo, useAppLogs, useAppSecrets, useEvents, useImports,
-  useManifest, useNodeMetrics, useProjects, useReleases, useWhoami, type AppInfo, type ManifestFile,
+  useManifest, useNodeMetrics, useProjects, useReleases, useReleaseDraft, useWhoami,
+  type AppInfo, type ManifestFile,
 } from './api'
 import { useApiMutation } from './mutations'
 import { ConfirmButton, ExtLink, QueryState, short, StatusBadge } from './ui'
@@ -379,6 +380,67 @@ function Metric({ n, l }: { n: string; l: string }) {
   return <div className="flex flex-col gap-0.5"><span className="text-xl font-semibold tracking-tight tabular-nums">{n}</span><span className="text-[11px] uppercase tracking-wide text-muted-foreground">{l}</span></div>
 }
 
+// A bot-prepared draft release: the proposed next version + a generated
+// changelog, refreshed on each push to the app repo's main, waiting for an
+// operator to submit it. Submitting tags the repo (the cut→CI→record flow).
+function DraftCard({ org, app }: { org: string; app: string }) {
+  const q = useReleaseDraft(org, app)
+  const m = useApiMutation({ invalidate: [['releaseDraft', org, app], ['releases', org, app], ['deploys', org], ['events']] })
+  const draft = q.data
+  const [notes, setNotes] = useState('')
+  const [dirty, setDirty] = useState(false)
+  // Resync the editor when the server draft changes, unless there are local edits.
+  useEffect(() => {
+    if (draft && !dirty) setNotes(draft.notes)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft?.updated_at, draft?.notes])
+  if (q.isLoading || q.error) return null
+  if (!draft) {
+    return (
+      <div className="mb-3">
+        <Button variant="outline" size="sm" disabled={m.isPending}
+          title="Compute a draft release from the commits since the last release"
+          onClick={() => m.mutate(() => send(urls.releaseDraftRefresh(org, app)))}>Prepare release draft</Button>
+      </div>
+    )
+  }
+  const saveNotes = () => send(urls.releaseDraftNotes(org, app), { method: 'PUT', json: { notes } })
+  return (
+    <div className="mb-3 rounded-lg border border-primary/40 bg-accent/30 p-4">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <span className="font-medium">Draft release {draft.version}</span>
+        <StatusBadge tone="accent">{draft.bump}</StatusBadge>
+        <span className="text-xs text-muted-foreground">
+          {draft.commit_count > 0
+            ? `${draft.commit_count} commit${draft.commit_count === 1 ? '' : 's'}${draft.base ? ` since ${draft.base}` : ''}`
+            : 'first release'}
+        </span>
+        <span className="ml-auto text-xs text-muted-foreground">refreshes on push · waits for you to release</span>
+      </div>
+      <Textarea value={notes} onChange={(e) => { setNotes(e.target.value); setDirty(true) }}
+        className="min-h-40 font-mono text-xs" aria-label="Release notes" />
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <ConfirmButton size="sm" title={`Release ${draft.version}?`}
+          description="Tags the repo at main HEAD; CI builds it and it appears in Releases. Promote to production separately."
+          confirmText={`Release ${draft.version}`}
+          onConfirm={() => m.mutate(async () => {
+            if (dirty) await saveNotes()
+            setDirty(false)
+            return send(urls.releaseDraftSubmit(org, app))
+          })}>Release {draft.version} ▶</ConfirmButton>
+        <Button variant="outline" size="sm" disabled={m.isPending || !dirty}
+          onClick={() => m.mutate(async () => { const r = await saveNotes(); setDirty(false); return r })}>Save notes</Button>
+        <Button variant="outline" size="sm" disabled={m.isPending}
+          title="Recompute the version + changelog from the latest commits (keeps your edited notes)"
+          onClick={() => m.mutate(async () => { const r = await send(urls.releaseDraftRefresh(org, app)); setDirty(false); return r })}>Refresh</Button>
+        <Button variant="ghost" size="sm" disabled={m.isPending} className="ml-auto text-muted-foreground"
+          title="Discard this draft (it re-prepares on the next push)"
+          onClick={() => m.mutate(async () => { const r = await send(urls.releaseDraft(org, app), { method: 'DELETE' }); setDirty(false); return r })}>Discard</Button>
+      </div>
+    </div>
+  )
+}
+
 function Releases({ org, app, prodImage }: { org: string; app: string; prodImage?: string }) {
   const q = useReleases(org, app)
   const m = useApiMutation({ invalidate: [['deploys', org], ['releases', org, app], ['events']] })
@@ -405,6 +467,7 @@ function Releases({ org, app, prodImage }: { org: string; app: string; prodImage
           title="Recover any vX.Y.Z publishes the registry_package webhook missed"
           onClick={() => m.mutate(() => send(urls.releaseBackfill(org, app)))}>Backfill from registry</Button>
       </div>
+      <DraftCard org={org} app={app} />
       {releases.length === 0 && (
         <p className="text-sm text-muted-foreground">No releases yet. Tag <code className="font-mono">vX.Y.Z</code> in the app repo, or Backfill from the registry.</p>
       )}
@@ -416,6 +479,12 @@ function Releases({ org, app, prodImage }: { org: string; app: string; prodImage
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2 font-medium">{r.version}{onProd && <StatusBadge tone="success" dot>on production</StatusBadge>}</div>
                 <div className="truncate font-mono text-xs text-muted-foreground">{short(r.app_image)} · {r.commit.slice(0, 7)} · {r.published_at}</div>
+                {r.notes && (
+                  <details className="mt-1 text-xs">
+                    <summary className="cursor-pointer text-muted-foreground">changelog</summary>
+                    <pre className="mt-1 whitespace-pre-wrap font-mono text-muted-foreground">{r.notes}</pre>
+                  </details>
+                )}
               </div>
               {!onProd && (
                 <ConfirmButton size="sm" title={`Promote ${app} ${r.version} to production?`}

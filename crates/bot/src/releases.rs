@@ -6,6 +6,11 @@
 //! migration lives in the ops overlay (`base.yaml`), next to the DB/secret
 //! config it depends on. `stable` auto-tracks the latest tag; `promote` pins a
 //! chosen version into `production.yaml`.
+//!
+//! Cuts are review-gated: rather than tag on every push, the bot prepares a
+//! **draft release** (proposed version + generated changelog) that refreshes on
+//! each push to the app repo's `main` and waits for an operator to submit it —
+//! submitting runs the same tag→CI→record flow. See the draft section below.
 
 use anyhow::{Context, Result};
 use axum::extract::{Path, Query, State};
@@ -145,25 +150,24 @@ pub async fn cut(
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e:#}")))
 }
 
-async fn do_cut(state: &AppState, org: &str, app: &str, bump: &str, actor: &str) -> Result<String> {
-    // The tag lives on the app's repo. For a monorepo the tag is repo-wide (one
-    // version line shared by every app in it), so both the "last version" and
-    // the commit range are computed over the repo, not the single app.
-    let repo = app_repo(state, org, app).await;
-    let monorepo = repo != app;
-    let repo_apps: Vec<String> = if monorepo {
-        crate::dashboard_api::read_project(state, org)
-            .await
-            .map(|p| {
-                p.apps
-                    .iter()
-                    .filter(|a| a.repo() == repo)
-                    .map(|a| a.name.clone())
-                    .collect()
-            })
-            .unwrap_or_else(|_| vec![app.to_string()])
+/// The apps sharing `repo` and the highest release recorded across them (the
+/// repo-wide "last version"). For a solo app this is just that app; for a
+/// monorepo it spans every app in the repo, since the release is repo-wide.
+async fn repo_apps_and_last(state: &AppState, org: &str, repo: &str) -> (Vec<String>, Option<Ver>) {
+    let repo_apps: Vec<String> = crate::dashboard_api::read_project(state, org)
+        .await
+        .map(|p| {
+            p.apps
+                .iter()
+                .filter(|a| a.repo() == repo)
+                .map(|a| a.name.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    let repo_apps = if repo_apps.is_empty() {
+        vec![repo.to_string()]
     } else {
-        vec![app.to_string()]
+        repo_apps
     };
     let last = repo_apps
         .iter()
@@ -171,6 +175,33 @@ async fn do_cut(state: &AppState, org: &str, app: &str, bump: &str, actor: &str)
         .flatten()
         .filter_map(|r| parse_semver(&r.version))
         .max();
+    (repo_apps, last)
+}
+
+/// Create a lightweight `tag` at the repo's `main` HEAD (the release trigger).
+async fn create_release_tag(state: &AppState, org: &str, repo: &str, tag: &str) -> Result<()> {
+    let client = state.github.org_client(org).await?;
+    let repo_path = format!("/repos/{org}/{repo}");
+    let head = crate::git::get_branch_head(&client, &repo_path, "main")
+        .await?
+        .with_context(|| format!("repo {org}/{repo} has no main branch"))?;
+    let _: serde_json::Value = client
+        .post(
+            format!("{repo_path}/git/refs"),
+            Some(&serde_json::json!({ "ref": format!("refs/tags/{tag}"), "sha": head })),
+        )
+        .await
+        .with_context(|| format!("creating tag {tag} (does it already exist?)"))?;
+    Ok(())
+}
+
+async fn do_cut(state: &AppState, org: &str, app: &str, bump: &str, actor: &str) -> Result<String> {
+    // The tag lives on the app's repo. For a monorepo the tag is repo-wide (one
+    // version line shared by every app in it), so both the "last version" and
+    // the commit range are computed over the repo, not the single app.
+    let repo = app_repo(state, org, app).await;
+    let monorepo = repo != app;
+    let (_repo_apps, last) = repo_apps_and_last(state, org, &repo).await;
 
     // Resolve `auto` to a concrete bump from conventional commits since the last
     // release; explicit bumps pass through unchanged.
@@ -196,18 +227,7 @@ async fn do_cut(state: &AppState, org: &str, app: &str, bump: &str, actor: &str)
     };
 
     let next = format!("v{}", next_version(last, &effective)?);
-    let client = state.github.org_client(org).await?;
-    let repo_path = format!("/repos/{org}/{repo}");
-    let head = crate::git::get_branch_head(&client, &repo_path, "main")
-        .await?
-        .with_context(|| format!("repo {org}/{repo} has no main branch"))?;
-    let _: serde_json::Value = client
-        .post(
-            format!("{repo_path}/git/refs"),
-            Some(&serde_json::json!({ "ref": format!("refs/tags/{next}"), "sha": head })),
-        )
-        .await
-        .with_context(|| format!("creating tag {next} (does it already exist?)"))?;
+    create_release_tag(state, org, &repo, &next).await?;
     state.store.log_event(
         "release-cut",
         Some(org),
@@ -221,6 +241,277 @@ async fn do_cut(state: &AppState, org: &str, app: &str, bump: &str, actor: &str)
     };
     Ok(format!(
         "Cut {next}{note}{scope} — CI is building it; it'll appear in Releases, then Promote to production."
+    ))
+}
+
+// ── draft releases: review-gated cuts ─────────────────────────────────────────
+// Rather than cut on every push, the bot prepares a *draft* — the proposed next
+// version and a generated changelog — and waits for an operator to submit it.
+// The draft refreshes on each push to the app repo's `main`; submitting runs the
+// same cut→CI→record flow. Keyed per repo (a monorepo's release is repo-wide).
+
+use crate::state::ReleaseDraft;
+
+/// A markdown changelog from conventional-commit subjects, grouped by type.
+/// Unrecognized messages land under "Other changes"; merge commits are skipped.
+fn generate_changelog(messages: &[String]) -> String {
+    let (mut breaking, mut feats, mut fixes, mut other) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for m in messages {
+        let subject = m.lines().next().unwrap_or("").trim();
+        if subject.is_empty() || subject.starts_with("Merge ") {
+            continue;
+        }
+        // `type(scope)!: description` → (type_scope, description).
+        let (typ_scope, desc) = match subject.split_once(':') {
+            Some((ts, d)) => (ts.trim(), d.trim().to_string()),
+            None => ("", subject.to_string()),
+        };
+        let is_breaking = m.contains("BREAKING CHANGE") || typ_scope.ends_with('!');
+        let typ = typ_scope
+            .split('(')
+            .next()
+            .unwrap_or("")
+            .trim_end_matches('!')
+            .trim();
+        let line = format!("- {desc}");
+        if is_breaking {
+            breaking.push(line);
+        } else if typ == "feat" {
+            feats.push(line);
+        } else if typ == "fix" {
+            fixes.push(line);
+        } else {
+            other.push(line);
+        }
+    }
+    let mut out = String::new();
+    changelog_section("⚠️ Breaking changes", &breaking, &mut out);
+    changelog_section("🚀 Features", &feats, &mut out);
+    changelog_section("🐛 Fixes", &fixes, &mut out);
+    changelog_section("Other changes", &other, &mut out);
+    if out.is_empty() {
+        out.push_str("_No notable changes._\n");
+    }
+    out
+}
+
+fn changelog_section(title: &str, items: &[String], out: &mut String) {
+    if items.is_empty() {
+        return;
+    }
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out.push_str("## ");
+    out.push_str(title);
+    out.push('\n');
+    out.push_str(&items.join("\n"));
+    out.push('\n');
+}
+
+/// Prepare (or refresh) a repo's draft from conventional commits since its last
+/// release. No unreleased commits → the draft is cleared. The store keeps
+/// operator-edited notes across a refresh.
+pub(crate) async fn prepare_draft(state: &AppState, org: &str, repo: &str) -> Result<()> {
+    let (_apps, last) = repo_apps_and_last(state, org, repo).await;
+    let (version, bump, base, count, notes) = match last {
+        Some((x, y, z)) => {
+            let base = format!("v{x}.{y}.{z}");
+            let msgs = commits_since(state, org, repo, &base).await?;
+            if msgs.is_empty() {
+                state.store.delete_release_draft(org, repo)?;
+                return Ok(());
+            }
+            let bump = classify_bump(&msgs);
+            let version = format!("v{}", next_version(Some((x, y, z)), bump)?);
+            let notes = generate_changelog(&msgs);
+            (version, bump.to_string(), base, msgs.len() as u32, notes)
+        }
+        // No release yet: a first-release draft (no base to diff a changelog from).
+        None => (
+            "v0.0.1".to_string(),
+            "patch".to_string(),
+            String::new(),
+            0,
+            "_Initial release._\n".to_string(),
+        ),
+    };
+    let draft = ReleaseDraft {
+        repo: repo.to_string(),
+        version,
+        bump,
+        base,
+        commit_count: count,
+        notes,
+        notes_edited: false,
+        updated_at: String::new(),
+    };
+    state.store.upsert_release_draft(org, &draft)?;
+    tracing::info!(org, repo, version = %draft.version, count, "release draft prepared");
+    Ok(())
+}
+
+/// Best-effort draft refresh on a push to an app repo's `main` (webhook entry).
+/// Only declared app repos get a draft; anything else is a no-op. Errors are
+/// swallowed — a draft is advisory and must never break the push flow.
+pub(crate) async fn on_app_main_push(state: &AppState, org: &str, repo: &str) {
+    let is_app_repo = crate::dashboard_api::read_project(state, org)
+        .await
+        .map(|p| p.apps.iter().any(|a| a.repo() == repo))
+        .unwrap_or(false);
+    if !is_app_repo {
+        return;
+    }
+    if let Err(e) = prepare_draft(state, org, repo).await {
+        tracing::warn!(
+            org,
+            repo,
+            error = format!("{e:#}"),
+            "release draft refresh failed"
+        );
+    }
+}
+
+/// `GET /api/releases/{org}/{app}/draft` — the pending draft for the app's repo
+/// (`null` when none). Read-only, like `list`.
+pub async fn draft_get(
+    State(state): State<Arc<AppState>>,
+    Path((org, app)): Path<(String, String)>,
+) -> Result<Json<Option<ReleaseDraft>>, ApiError> {
+    let repo = app_repo(&state, &org, &app).await;
+    state
+        .store
+        .release_draft(&org, &repo)
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+/// `POST /api/releases/{org}/{app}/draft/refresh` — recompute the draft now
+/// (the push webhook does this automatically). Developer-gated.
+pub async fn draft_refresh(
+    State(state): State<Arc<AppState>>,
+    Path((org, app)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<String, ApiError> {
+    crate::authz::require(&state, &headers, &org, Role::Developer)
+        .await
+        .map_err(|e| (StatusCode::FORBIDDEN, format!("{e:#}")))?;
+    let repo = app_repo(&state, &org, &app).await;
+    prepare_draft(&state, &org, &repo)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
+    let draft = state
+        .store
+        .release_draft(&org, &repo)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(match draft {
+        Some(d) => format!(
+            "draft refreshed: {} ({}, {} commit(s))",
+            d.version, d.bump, d.commit_count
+        ),
+        None => "no unreleased commits — nothing to draft".to_string(),
+    })
+}
+
+#[derive(serde::Deserialize)]
+pub struct NotesReq {
+    pub notes: String,
+}
+
+/// `PUT /api/releases/{org}/{app}/draft/notes` — save operator-edited changelog
+/// notes (kept across push refreshes). Developer-gated.
+pub async fn draft_notes_put(
+    State(state): State<Arc<AppState>>,
+    Path((org, app)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(req): Json<NotesReq>,
+) -> Result<String, ApiError> {
+    crate::authz::require(&state, &headers, &org, Role::Developer)
+        .await
+        .map_err(|e| (StatusCode::FORBIDDEN, format!("{e:#}")))?;
+    let repo = app_repo(&state, &org, &app).await;
+    let saved = state
+        .store
+        .set_release_draft_notes(&org, &repo, &req.notes)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if saved {
+        Ok("notes saved".into())
+    } else {
+        Err((StatusCode::NOT_FOUND, "no draft to edit".into()))
+    }
+}
+
+/// `DELETE /api/releases/{org}/{app}/draft` — discard the pending draft (it
+/// re-prepares on the next push). Developer-gated.
+pub async fn draft_discard(
+    State(state): State<Arc<AppState>>,
+    Path((org, app)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<String, ApiError> {
+    crate::authz::require(&state, &headers, &org, Role::Developer)
+        .await
+        .map_err(|e| (StatusCode::FORBIDDEN, format!("{e:#}")))?;
+    let repo = app_repo(&state, &org, &app).await;
+    state
+        .store
+        .delete_release_draft(&org, &repo)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok("draft discarded".into())
+}
+
+/// `POST /api/releases/{org}/{app}/draft/submit` — cut the pending draft: tag
+/// the repo at `main` HEAD with the draft's version, persist its changelog for
+/// every app in the repo, and clear the draft. CI builds the tag and the release
+/// is recorded off the package webhook (same as a manual cut). Admin-gated.
+pub async fn draft_submit(
+    State(state): State<Arc<AppState>>,
+    Path((org, app)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<String, ApiError> {
+    let actor = crate::authz::require(&state, &headers, &org, Role::Admin)
+        .await
+        .map_err(|e| (StatusCode::FORBIDDEN, format!("{e:#}")))?;
+    let repo = app_repo(&state, &org, &app).await;
+    let draft = state
+        .store
+        .release_draft(&org, &repo)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "no draft to submit".to_string()))?;
+    submit_draft(&state, &org, &repo, &draft, &actor)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e:#}")))
+}
+
+async fn submit_draft(
+    state: &AppState,
+    org: &str,
+    repo: &str,
+    draft: &ReleaseDraft,
+    actor: &str,
+) -> Result<String> {
+    create_release_tag(state, org, repo, &draft.version).await?;
+    let (apps, _last) = repo_apps_and_last(state, org, repo).await;
+    for a in &apps {
+        state
+            .store
+            .record_release_notes(org, a, &draft.version, &draft.notes, actor)?;
+    }
+    state.store.delete_release_draft(org, repo)?;
+    state.store.log_event(
+        "release-cut",
+        Some(org),
+        &format!("{repo} {} by {actor} (draft)", draft.version),
+    )?;
+    tracing::info!(org, %repo, version = %draft.version, actor, "submitted draft release");
+    let scope = if apps.len() > 1 {
+        format!(" (releases {} apps in {repo})", apps.len())
+    } else {
+        String::new()
+    };
+    Ok(format!(
+        "Released {}{scope} — CI is building it; it'll appear in Releases, then Promote to production.",
+        draft.version
     ))
 }
 
@@ -473,10 +764,45 @@ pub async fn promote(
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_bump, next_version, parse_semver, production_overlay};
+    use super::{
+        classify_bump, generate_changelog, next_version, parse_semver, production_overlay,
+    };
 
     fn msgs(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn changelog_groups_by_conventional_type() {
+        let cl = generate_changelog(&msgs(&[
+            "feat(api): add CSV export (#41)",
+            "fix: null deref on empty query (#43)",
+            "chore: bump deps",
+            "refactor!: drop the v1 endpoint",
+            "docs: tidy readme",
+            "Merge branch 'main' into feature",
+        ]));
+        // Sections present in priority order; merge commit dropped.
+        let breaking = cl.find("Breaking changes").unwrap();
+        let feats = cl.find("Features").unwrap();
+        let fixes = cl.find("Fixes").unwrap();
+        let other = cl.find("Other changes").unwrap();
+        assert!(breaking < feats && feats < fixes && fixes < other);
+        // The `type(scope):` prefix is stripped from the displayed line.
+        assert!(cl.contains("- add CSV export (#41)"));
+        assert!(cl.contains("- drop the v1 endpoint"));
+        assert!(cl.contains("- bump deps"));
+        assert!(!cl.contains("Merge branch"));
+    }
+
+    #[test]
+    fn changelog_empty_is_placeholder() {
+        assert_eq!(generate_changelog(&[]), "_No notable changes._\n");
+        // A lone merge commit produces no entries either.
+        assert_eq!(
+            generate_changelog(&msgs(&["Merge pull request #9"])),
+            "_No notable changes._\n"
+        );
     }
 
     #[test]

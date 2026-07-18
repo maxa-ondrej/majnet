@@ -37,7 +37,7 @@ mod template_sync;
 mod webhooks;
 
 use anyhow::{Context, Result};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::Router;
 use std::sync::Arc;
 
@@ -168,6 +168,22 @@ async fn main() -> Result<()> {
         )
         .route("/api/releases/{org}/{app}", get(releases::list))
         .route("/api/releases/{org}/{app}/cut", post(releases::cut))
+        .route(
+            "/api/releases/{org}/{app}/draft",
+            get(releases::draft_get).delete(releases::draft_discard),
+        )
+        .route(
+            "/api/releases/{org}/{app}/draft/refresh",
+            post(releases::draft_refresh),
+        )
+        .route(
+            "/api/releases/{org}/{app}/draft/notes",
+            put(releases::draft_notes_put),
+        )
+        .route(
+            "/api/releases/{org}/{app}/draft/submit",
+            post(releases::draft_submit),
+        )
         .route(
             "/api/releases/{org}/{app}/backfill",
             post(releases::backfill_post),
