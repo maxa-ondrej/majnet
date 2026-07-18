@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { ChevronRight, Plus, Loader2, CheckCircle2, Circle, AlertCircle, MoreVertical, Boxes, Rocket, Trash2, Archive, GitPullRequest, RefreshCw, PenLine, TerminalSquare } from 'lucide-react'
-import { send, urls, useApps, useAppInfo, useArchivedApps, useBotEvents, useDeploys, useEvents, useImports, useMetricsHistory, useNodeMetrics, useNodes, useProjects, useWhoami, parseAt, IMPORT_STEPS, type ImportStatus, type Event } from './api'
+import { send, urls, useApps, useAppInfo, useArchivedApps, useBotEvents, useContainerHistory, useDeploys, useEvents, useImports, useMetricsHistory, useNodeMetrics, useNodes, useProjects, useWhoami, parseAt, IMPORT_STEPS, type ImportStatus, type Event } from './api'
 import { useApiMutation } from './mutations'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -374,6 +374,28 @@ const RANGES: { label: string; secs: number | 'live' }[] = [
   { label: '30d', secs: 2592000 },
 ]
 
+// Compact per-container CPU sparkline from persisted history (ADR 0017).
+function ContainerSpark({ container, range }: { container: string; range: number }) {
+  const q = useContainerHistory(range, container)
+  const v = (q.data ?? []).map((p) => p.cpu_pct)
+  if (v.length < 2) return <span className="text-muted-foreground">—</span>
+  const W = 90, H = 18, pad = 2
+  const max = Math.max(10, ...v) // scale to the data (CPU% can be small), floor at 10%
+  const x = (i: number) => (i / (v.length - 1)) * W
+  const y = (val: number) => pad + (1 - Math.min(val, max) / max) * (H - pad * 2)
+  const line = v.map((val, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)} ${y(val).toFixed(1)}`).join(' ')
+  const last = v[v.length - 1] ?? 0
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="h-4 w-[90px]">
+        <path d={`${line} L${W} ${H} L0 ${H} Z`} className="fill-primary/15" />
+        <path d={line} className="fill-none stroke-primary" strokeWidth={1.5} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+      </svg>
+      <span className="text-muted-foreground">{last.toFixed(0)}%</span>
+    </span>
+  )
+}
+
 export function Nodes() {
   const q = useNodes()
   const m = useNodeMetrics()
@@ -469,14 +491,14 @@ export function Nodes() {
                     {mm.apps.length > 0 && (
                       <div className="mt-3 overflow-x-auto">
                         <table className="w-full text-xs">
-                          <thead><tr className="text-left text-muted-foreground"><th className="py-1 pr-3 font-medium">container</th><th className="py-1 pr-3 font-medium">state</th><th className="py-1 pr-3 font-medium">cpu</th><th className="py-1 font-medium">mem</th></tr></thead>
+                          <thead><tr className="text-left text-muted-foreground"><th className="py-1 pr-3 font-medium">container</th><th className="py-1 pr-3 font-medium">state</th><th className="py-1 pr-3 font-medium">cpu</th><th className="py-1 pr-3 font-medium">mem</th><th className="py-1 font-medium">{isLive ? '' : 'cpu trend'}</th></tr></thead>
                           <tbody className="font-mono">
                             {mm.apps.map((a) => (
                               <tr key={a.name} className="border-t">
                                 <td className="py-1 pr-3">{a.name}</td>
                                 <td className="py-1 pr-3">{a.state}</td>
                                 <td className="py-1 pr-3">{a.cpu_pct.toFixed(1)}%</td>
-                                <td className="py-1">
+                                <td className="py-1 pr-3">
                                   {mb(a.mem_used)}{a.mem_limit ? ` / ${gb(a.mem_limit)}` : ''}
                                   {a.mem_limit > 0 && (
                                     <div className="mt-0.5 h-1 w-24 overflow-hidden rounded-full bg-muted">
@@ -484,6 +506,7 @@ export function Nodes() {
                                     </div>
                                   )}
                                 </td>
+                                <td className="py-1">{!isLive && <ContainerSpark container={a.name} range={range as number} />}</td>
                               </tr>
                             ))}
                           </tbody>

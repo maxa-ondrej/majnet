@@ -36,8 +36,12 @@ pub async fn sample_loop(state: Arc<AppState>) {
         }
         ticks += 1;
         if ticks.is_multiple_of(COMPACT_EVERY) {
-            if let Err(e) = state.store.compact_metrics(unix_now()) {
+            let now = unix_now();
+            if let Err(e) = state.store.compact_metrics(now) {
                 tracing::warn!(error = %format!("{e:#}"), "metrics compaction failed");
+            }
+            if let Err(e) = state.store.compact_container_metrics(now) {
+                tracing::warn!(error = %format!("{e:#}"), "container metrics compaction failed");
             }
         }
     }
@@ -57,6 +61,16 @@ async fn sample_once(state: &AppState) -> Result<()> {
             n.mem_total,
             n.containers_running,
         )?;
+        for c in &n.apps {
+            state.store.insert_container_sample(
+                ts,
+                &n.name,
+                &c.name,
+                c.cpu_pct,
+                c.mem_used as i64,
+                c.mem_limit as i64,
+            )?;
+        }
     }
     Ok(())
 }

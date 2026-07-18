@@ -26,6 +26,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/secrets/{project}/{class}/{app}", get(secrets_get))
         .route("/api/metrics", get(metrics_get))
         .route("/api/metrics/history", get(metrics_history_get))
+        .route("/api/metrics/container-history", get(container_history_get))
         .route("/api/logs/{project}/{class}/{app}", get(logs_get))
         .route("/api/terminal", get(crate::terminal::terminal_ws))
         .route("/api/terminal/sessions", get(crate::terminal::sessions_get))
@@ -373,6 +374,32 @@ async fn metrics_history_get(
     state
         .store
         .metric_history(q.node.as_deref(), since)
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))
+}
+
+#[derive(serde::Deserialize)]
+struct ContainerHistoryQuery {
+    range: Option<i64>,
+    /// The container name to chart (as it appears in `/api/metrics` `apps[].name`).
+    container: String,
+}
+
+/// `GET /api/metrics/container-history?range=<sec>&container=<name>` — persisted
+/// per-container samples (ADR 0017 follow-up), oldest first.
+async fn container_history_get(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<ContainerHistoryQuery>,
+) -> Result<Json<Vec<crate::state::ContainerPoint>>, (StatusCode, String)> {
+    let range = q.range.unwrap_or(86_400).clamp(300, 60 * 86_400);
+    let since = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+        - range;
+    state
+        .store
+        .container_history(&q.container, since)
         .map(Json)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))
 }

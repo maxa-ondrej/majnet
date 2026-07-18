@@ -50,8 +50,10 @@ as `app_info`), with **RRD-style tiered rollups** so the table stays small.
 ## Consequences
 
 - Real historical charts with no new services and a bounded, self-pruning table.
-- **v1 is node/host-level only.** Per-container history (higher cardinality) is a
-  fast-follow — the same table shape with a `container` column.
+- ~~**v1 is node/host-level only.**~~ **Per-container history shipped** —
+  `container_samples` (keyed by node+container), same sampler + tiered
+  compaction; `GET /api/metrics/container-history?container=`; per-container CPU
+  sparklines on `/nodes` under the same time-range selector.
 - No pre-aggregated rollup tables: query-time reads are cheap because compaction
   already bounds row count. At much larger fleets/longer ranges, add explicit
   rollup tables or display-time bucketing.
