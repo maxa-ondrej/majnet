@@ -1294,6 +1294,11 @@ pub async fn app_rename_post(
     //    renamed at all, so without this the rewritten pin `<new_base>@<digest>`
     //    would 404. Done first so a missing `write:packages` token aborts the
     //    rename cleanly (nothing changed yet) rather than mid-flight.
+    //
+    //    Skipped entirely when the package is unchanged (`from_pkg == to_pkg`):
+    //    a monorepo image nests at the repo-stripped leaf, so adopting the
+    //    `<repo>-<leaf>` name prefix (`api` → `<repo>-api`) leaves the image at
+    //    `<repo>/api` — nothing to copy, and no `write:packages` token needed.
     let mut image_digests: std::collections::BTreeSet<String> = Default::default();
     for content in manifests.values() {
         if let (_, Some(digest)) =
@@ -1302,7 +1307,7 @@ pub async fn app_rename_post(
             image_digests.insert(digest);
         }
     }
-    if !image_digests.is_empty() {
+    if from_pkg != to_pkg && !image_digests.is_empty() {
         let (user, pass) = crate::proxy::ghcr_credential(&state, &org)
             .await
             .map_err(bad_gateway)?;
