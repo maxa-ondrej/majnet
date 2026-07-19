@@ -57,14 +57,27 @@ impl AppDecl {
         self.repo.as_deref().is_some_and(|r| r != self.name)
     }
 
-    /// The app's GHCR image base (no tag/digest). Monorepo apps nest under the
-    /// repo (`ghcr.io/<org>/<repo>/<name>`); a solo app keeps `ghcr.io/<org>/<name>`.
+    /// The app's GHCR image base (no tag/digest). A solo app keeps
+    /// `ghcr.io/<org>/<name>`. A monorepo member's name carries the repo as a
+    /// prefix (`<repo>-<leaf>`) so it stays unique across the project; the GHCR
+    /// path already nests under the repo, so the image LEAF is the name with that
+    /// prefix stripped — the image stays `ghcr.io/<org>/<repo>/<leaf>` (matching
+    /// the repo's build CI) rather than doubling into `.../<repo>/<repo>-<leaf>`.
     pub fn image_base(&self, org: &str) -> String {
         if self.is_monorepo() {
-            format!("ghcr.io/{org}/{}/{}", self.repo(), self.name)
+            format!("ghcr.io/{org}/{}/{}", self.repo(), self.image_leaf())
         } else {
             format!("ghcr.io/{org}/{}", self.name)
         }
+    }
+
+    /// The image/package leaf for a monorepo member — the app name minus its
+    /// `<repo>-` prefix (the CI matrix + GHCR package use this bare leaf). Falls
+    /// back to the full name when it isn't prefixed. Meaningless for a solo app.
+    pub fn image_leaf(&self) -> &str {
+        self.name
+            .strip_prefix(&format!("{}-", self.repo()))
+            .unwrap_or(&self.name)
     }
 }
 
@@ -98,10 +111,29 @@ mod tests {
 
     #[test]
     fn monorepo_app_nests_under_repo() {
-        let a = decl("api", Some("platform"));
+        // A prefixed name (`<repo>-<leaf>`) nests at the bare leaf — the repo
+        // isn't doubled into the path, so the image + CI stay `.../platform/api`.
+        let a = decl("platform-api", Some("platform"));
         assert!(a.is_monorepo());
         assert_eq!(a.repo(), "platform");
+        assert_eq!(a.image_leaf(), "api");
         assert_eq!(a.image_base("acme"), "ghcr.io/acme/platform/api");
+    }
+
+    #[test]
+    fn monorepo_leaf_falls_back_when_name_is_unprefixed() {
+        // A legacy/bare name (no `<repo>-` prefix) still nests at the full name.
+        let a = decl("api", Some("platform"));
+        assert_eq!(a.image_leaf(), "api");
+        assert_eq!(a.image_base("acme"), "ghcr.io/acme/platform/api");
+    }
+
+    #[test]
+    fn image_leaf_strips_only_the_repo_prefix() {
+        // Repo names with hyphens: only the leading `<repo>-` is stripped.
+        let a = decl("my-mono-web", Some("my-mono"));
+        assert_eq!(a.image_leaf(), "web");
+        assert_eq!(a.image_base("acme"), "ghcr.io/acme/my-mono/web");
     }
 
     #[test]

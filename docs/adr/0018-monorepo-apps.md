@@ -1,6 +1,6 @@
 # 0018 — Monorepo apps (one repo, many apps)
 
-**Status:** accepted (phase 2) · **Date:** 2026-07-19 · relates to [0009](0009-releases-are-tagged-image-publishes.md), [0012](0012-private-image-pull-auth.md)
+**Status:** accepted (phase 4) · **Date:** 2026-07-19 · relates to [0009](0009-releases-are-tagged-image-publishes.md), [0012](0012-private-image-pull-auth.md)
 
 ## Context
 
@@ -21,14 +21,26 @@ Add an optional `repo` to `AppDecl` in `project.yaml`. Apps that share a `repo`
 value are one monorepo; an app with no `repo` keeps its own repo named after it
 (fully backward compatible).
 
-- **Image naming.** A monorepo app's image nests: `ghcr.io/<org>/<repo>/<app>`
-  (matching the control-plane multi-segment convention). A solo app is unchanged
-  at `ghcr.io/<org>/<app>`. (`AppDecl::image_base`.)
-- **Webhook → app.** A GHCR package name is `<app>` (solo) or `<repo>/<app>`
-  (nested). The MajNet app is always the **last segment** — it keys `apps/<app>/`,
-  the manifest name, and the runtime name; the full nested path is preserved in
-  the pinned image. App names are unique within a project, so the leaf is
-  unambiguous. (`digest.rs::on_package_published`.)
+- **App naming (`<repo>-<leaf>`).** A monorepo member is named with its repo as
+  a prefix — `zpevnik-api`, not bare `api`. App names must be unique within a
+  project (two monorepos each with an `api` would otherwise collide), and the
+  runtime name (`<project>-<app>-<class>`) carries **no** repo segment, so a bare
+  leaf is ambiguous in the fleet / metrics / deploy views; the prefix makes the
+  name self-describing everywhere flat. `apps_post` applies the prefix
+  idempotently when a shared `repo` is declared. (phase 4)
+- **Image naming.** A monorepo app's image nests: `ghcr.io/<org>/<repo>/<leaf>`,
+  where the **leaf is the name with its `<repo>-` prefix stripped**
+  (`AppDecl::image_leaf`) — so `zpevnik-api` publishes at `.../zpevnik/api`, not
+  the doubled `.../zpevnik/zpevnik-api`, and the repo's build CI (matrix leaf
+  `api`) needs no change. A solo app is unchanged at `ghcr.io/<org>/<app>`.
+  (`AppDecl::image_base`.)
+- **Webhook → app.** A GHCR package name is `<app>` (solo) or `<repo>/<leaf>`
+  (nested). The MajNet app mirrors the package path: a solo package is the bare
+  `<app>`; a nested `<repo>/<leaf>` maps to the app `<repo>-<leaf>` — the exact
+  inverse of `image_leaf`, so it keys `apps/<app>/`, the manifest name, and the
+  runtime name. The full nested path is preserved in the pinned image. App names
+  are unique within a project, so this resolves unambiguously.
+  (`digest.rs::on_package_published`.)
 - **Ops layout unchanged.** Config still lives at `apps/<app>/` (flat, per
   project). Render/promote/track-stable/`record` need no change.
 - **Repo lifecycle is per-repo, bring-your-own.** A monorepo repo is **not**
@@ -89,3 +101,17 @@ longer assume `app == repo`):
   monorepo's build is the owner's. The owner adjusts each app's `context`.
 - App names remain unique within a project (already true) — required for the
   package-leaf → app mapping.
+- **Dashboard groups a monorepo's apps (phase 4).** The `GET /api/apps/{org}`
+  summary carries a `repo` field (set only for members); the project page folds
+  members sharing a repo into one labeled group (placed at the repo's first
+  appearance in the name-sorted list), showing a `monorepo · N apps` badge and a
+  link to the shared repo. The group row label drops the redundant `<repo>-`
+  prefix (`zpevnik › api`), while routing and the flat views keep the full name.
+  Solo apps render as before. The New-app form previews the effective
+  `<repo>-<leaf>` name when a repo is set.
+- **Adopting the prefix is a zero-image rename.** Because `image_leaf` strips the
+  prefix, renaming a legacy bare member to its prefixed form (`api` → `zpevnik-api`
+  in repo `zpevnik`) leaves the image base unchanged (`.../zpevnik/api`) — the
+  rename copies no package, rewrites no pin, and needs no CI edit; it only moves
+  the ops dir + `project.yaml` name (+ migrates data for a stateful app). The
+  BYO-CI caveat above still applies only when a rename actually changes the leaf.

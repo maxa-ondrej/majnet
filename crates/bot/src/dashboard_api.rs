@@ -461,6 +461,10 @@ pub struct AppSummary {
     pub domains: Vec<String>,
     /// Managed database engine, if any.
     pub database: Option<String>,
+    /// The GitHub repo this app shares with others — set only for monorepo
+    /// members (apps whose `repo` differs from their name). The dashboard groups
+    /// apps by this value; `None` means the app owns its repo (solo).
+    pub repo: Option<String>,
 }
 
 /// `GET /api/apps/{org}` — one summary per app declared on the project's ops
@@ -485,9 +489,22 @@ pub async fn apps_get(
         .into_iter()
         .filter_map(|(p, b)| String::from_utf8(b).ok().map(|s| (p, s)))
         .collect();
+    // Monorepo grouping: an app whose `project.yaml` decl shares its repo with
+    // other apps is a member; map name → repo so the summary can carry it.
+    let monorepo: BTreeMap<String, String> = text
+        .get("project.yaml")
+        .and_then(|s| serde_yaml::from_str::<ProjectConfig>(s).ok())
+        .map(|cfg| {
+            cfg.apps
+                .into_iter()
+                .filter(|a| a.is_monorepo())
+                .map(|a| (a.name.clone(), a.repo().to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
     let mut out = Vec::with_capacity(names.len());
     for name in names {
-        match summarize_app(&name, &text) {
+        match summarize_app(&name, &text, monorepo.get(&name).cloned()) {
             Ok(summary) => out.push(summary),
             Err(e) => tracing::warn!(
                 org,
@@ -555,6 +572,16 @@ pub async fn apps_post(
     headers: HeaderMap,
     Json(mut req): Json<NewApp>,
 ) -> Result<String, ApiError> {
+    // Monorepo members carry their repo as a name prefix (`<repo>-<app>`), so app
+    // names stay unique across the project and self-describe in the fleet /
+    // metrics / deploy views (container names are `<project>-<app>-<class>`, with
+    // no repo segment). Applied idempotently — a name already prefixed is left
+    // as-is; a solo app (`repo` unset or equal to the name) is untouched.
+    if let Some(repo) = req.repo.as_deref().map(str::trim) {
+        if !repo.is_empty() && repo != req.name && !req.name.starts_with(&format!("{repo}-")) {
+            req.name = format!("{repo}-{}", req.name);
+        }
+    }
     check_name(&req.name)?;
     let valid_classes = ["testing", "stable", "production", "ephemeral"];
     if req.classes.is_empty()
@@ -1027,7 +1054,11 @@ async fn commit_platform_file(
 /// Merge base ⊕ (representative overlay) into a manifest summary. Picks the
 /// first present overlay just to render valid YAML; the fields we surface
 /// (image/ingress/database) live in base, so the choice doesn't matter.
-fn summarize_app(name: &str, text: &BTreeMap<String, String>) -> Result<AppSummary> {
+fn summarize_app(
+    name: &str,
+    text: &BTreeMap<String, String>,
+    repo: Option<String>,
+) -> Result<AppSummary> {
     let prefix = format!("apps/{name}/");
     let base_str = text
         .get(&format!("{prefix}base.yaml"))
@@ -1070,6 +1101,7 @@ fn summarize_app(name: &str, text: &BTreeMap<String, String>) -> Result<AppSumma
                 .trim()
                 .to_string()
         }),
+        repo,
     })
 }
 
@@ -2336,11 +2368,12 @@ mod tests {
             ("apps/blog/production.yaml".to_string(), "{}\n".to_string()),
             ("apps/blog/stable.yaml".to_string(), "{}\n".to_string()),
         ]);
-        let s = summarize_app("blog", &text).unwrap();
+        let s = summarize_app("blog", &text, None).unwrap();
         assert_eq!(s.name, "blog");
         assert_eq!(s.classes, vec!["production", "stable"]);
         assert_eq!(s.host.as_deref(), Some("blog.example.com"));
         assert_eq!(s.domains, vec!["blog.example.com", "www.example.com"]);
         assert_eq!(s.database.as_deref(), Some("postgres"));
+        assert_eq!(s.repo, None);
     }
 }

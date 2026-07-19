@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
-import { ChevronRight, Plus, Loader2, CheckCircle2, Circle, AlertCircle, MoreVertical, Boxes, Rocket, Trash2, Archive, GitPullRequest, RefreshCw, PenLine, TerminalSquare } from 'lucide-react'
-import { send, urls, useApps, useAppInfo, useArchivedApps, useBotEvents, useContainerHistory, useDeploys, useEvents, useImports, useMetricsHistory, useNodeMetrics, useNodes, useProjects, useWhoami, parseAt, IMPORT_STEPS, type ImportStatus, type Event } from './api'
+import { ChevronRight, Plus, Loader2, CheckCircle2, Circle, AlertCircle, MoreVertical, Boxes, Rocket, Trash2, Archive, GitPullRequest, RefreshCw, PenLine, TerminalSquare, FolderGit2 } from 'lucide-react'
+import { send, urls, useApps, useAppInfo, useArchivedApps, useBotEvents, useContainerHistory, useDeploys, useEvents, useImports, useMetricsHistory, useNodeMetrics, useNodes, useProjects, useWhoami, parseAt, IMPORT_STEPS, type ImportStatus, type Event, type AppSummary } from './api'
 import { useApiMutation } from './mutations'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -269,6 +269,48 @@ export function ProjectDetail() {
   const anyFailed = (apps.data ?? []).some((a) => latestEventFor(events.data, name, a.name)?.result.startsWith('FAILED'))
   const hasApps = (apps.data?.length ?? 0) > 0
 
+  // A single app row — reused for solo apps and for monorepo group members. In
+  // a group `label` is the repo-stripped name (`zpevnik-api` → `api`), since the
+  // group header already names the repo; routing/aria still use the full name.
+  const appRow = (a: AppSummary, label?: string) => {
+    const meta = [short(a.image), a.database].filter(Boolean).join('  ·  ')
+    return (
+      <div key={a.name}
+        className="relative flex items-center gap-3.5 rounded-xl border bg-card px-4 py-4 transition-colors hover:border-primary/50">
+        {/* stretched link makes the whole row clickable; inner links opt back in */}
+        <Link to="/projects/$org/apps/$app" params={{ org, app: a.name }} aria-label={`Open ${a.name}`} className="absolute inset-0 rounded-xl" />
+        <div className="grid size-9 shrink-0 place-items-center rounded-[10px] bg-muted text-muted-foreground"><Boxes className="size-4" /></div>
+        <div className="pointer-events-none relative flex min-w-0 flex-1 flex-col gap-1">
+          <div className="flex flex-wrap items-center gap-2 font-semibold">
+            {label ?? a.name}
+            <AppEnvBadges org={org} app={a.name} classes={a.classes} digestFor={(c) => runningDigest(a.name, c)} />
+          </div>
+          <div className="truncate font-mono text-xs text-muted-foreground">
+            {meta || '—'}
+            {a.host && <> · <ExtLink to={a.host} className="pointer-events-auto relative">{a.host}</ExtLink></>}
+          </div>
+        </div>
+        <DeployStatus ev={latestEventFor(events.data, name, a.name)} />
+        <ChevronRight className="relative size-4 text-muted-foreground/50" />
+      </div>
+    )
+  }
+
+  // Group monorepo members under their shared repo; solo apps stay loose. Order
+  // follows the (name-sorted) apps list by each repo's first appearance.
+  type Row = { kind: 'app'; app: AppSummary } | { kind: 'repo'; repo: string; apps: AppSummary[] }
+  const rows: Row[] = []
+  const repoAt = new Map<string, number>()
+  for (const a of apps.data ?? []) {
+    if (a.repo) {
+      const at = repoAt.get(a.repo)
+      if (at === undefined) { repoAt.set(a.repo, rows.length); rows.push({ kind: 'repo', repo: a.repo, apps: [a] }) }
+      else (rows[at] as Extract<Row, { kind: 'repo' }>).apps.push(a)
+    } else {
+      rows.push({ kind: 'app', app: a })
+    }
+  }
+
   return (
     <>
       <Crumbs><Link to="/projects">Projects</Link> / {name}</Crumbs>
@@ -317,29 +359,20 @@ export function ProjectDetail() {
               <ChevronRight className="size-4 text-muted-foreground/50" />
             </Link>
           ))}
-          {apps.data?.map((a) => {
-            const meta = [short(a.image), a.database].filter(Boolean).join('  ·  ')
-            return (
-              <div key={a.name}
-                className="relative flex items-center gap-3.5 rounded-xl border bg-card px-4 py-4 transition-colors hover:border-primary/50">
-                {/* stretched link makes the whole row clickable; inner links opt back in */}
-                <Link to="/projects/$org/apps/$app" params={{ org, app: a.name }} aria-label={`Open ${a.name}`} className="absolute inset-0 rounded-xl" />
-                <div className="grid size-9 shrink-0 place-items-center rounded-[10px] bg-muted text-muted-foreground"><Boxes className="size-4" /></div>
-                <div className="pointer-events-none relative flex min-w-0 flex-1 flex-col gap-1">
-                  <div className="flex flex-wrap items-center gap-2 font-semibold">
-                    {a.name}
-                    <AppEnvBadges org={org} app={a.name} classes={a.classes} digestFor={(c) => runningDigest(a.name, c)} />
-                  </div>
-                  <div className="truncate font-mono text-xs text-muted-foreground">
-                    {meta || '—'}
-                    {a.host && <> · <ExtLink to={a.host} className="pointer-events-auto relative">{a.host}</ExtLink></>}
-                  </div>
-                </div>
-                <DeployStatus ev={latestEventFor(events.data, name, a.name)} />
-                <ChevronRight className="relative size-4 text-muted-foreground/50" />
+          {rows.map((r) => r.kind === 'app' ? appRow(r.app) : (
+            <div key={`repo:${r.repo}`} className="rounded-2xl border border-dashed bg-muted/30 p-2">
+              <div className="flex items-center gap-2 px-2 py-1.5 text-sm">
+                <FolderGit2 className="size-4 text-muted-foreground" />
+                <span className="font-semibold">{r.repo}</span>
+                <Badge variant="outline" className="text-muted-foreground">monorepo · {r.apps.length} app{r.apps.length === 1 ? '' : 's'}</Badge>
+                <a href={`https://github.com/${org}/${r.repo}`} target="_blank" rel="noreferrer"
+                  className="ml-auto text-xs text-primary hover:underline">GitHub ↗</a>
               </div>
-            )
-          })}
+              <div className="flex flex-col gap-2.5">
+                {r.apps.map((a) => appRow(a, a.name.startsWith(`${r.repo}-`) ? a.name.slice(r.repo.length + 1) : a.name))}
+              </div>
+            </div>
+          ))}
         </div>
       </QueryState>
 
