@@ -1410,8 +1410,14 @@ pub async fn app_rename_post(
         .map_err(bad_gateway)?;
     Ok(format!(
         "renamed {app} → {new}{}; render propagated{}{}",
-        if is_monorepo {
+        if is_monorepo && from_pkg != to_pkg {
+            // The image leaf moved, so the copied package won't be repushed by
+            // CI until the owner updates their build matrix to the new leaf.
             " (monorepo repo kept; nested image copied — update the app name in the repo's build CI)"
+        } else if is_monorepo {
+            // Prefix-adoption rename: the leaf is unchanged, so the image and the
+            // repo's build CI stay as-is (the webhook remaps the leaf → new name).
+            " (monorepo repo kept; image unchanged — no CI change needed)"
         } else if declared {
             " (source repo renamed)"
         } else {
