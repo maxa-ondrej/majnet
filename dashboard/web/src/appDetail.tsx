@@ -124,7 +124,7 @@ export function AppDetail() {
         </div>
         <div className="ml-auto flex items-center gap-2">
           <Button asChild variant="outline" size="sm">
-            <a href={`https://github.com/${org}/${app}`} target="_blank" rel="noreferrer">GitHub ↗</a>
+            <a href={`https://github.com/${org}/${a?.repo ?? app}`} target="_blank" rel="noreferrer">GitHub ↗</a>
           </Button>
           <Button variant="outline" size="sm" onClick={() => setSheet('config')}>
             <SlidersHorizontal className="size-4" /> Configuration
