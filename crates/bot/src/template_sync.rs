@@ -11,6 +11,12 @@
 //! `template-sync` PR on that repo — reviewable, never a force-push to `main`.
 //! Idempotent: no drift → no PR. Extend `MANAGED_FILES` as more files become
 //! genuinely platform-owned (stack-agnostic).
+//!
+//! Monorepos (ADR 0018) are bring-your-own CI, so they get no scaffolded
+//! `build.yaml`. As a convenience, this also **seeds** a matrix build-tier caller
+//! (`.github/workflows/build.yaml` → the reusable `app-build.yaml`, one matrix
+//! entry per app) into a monorepo repo that lacks one — a one-time `monorepo-ci`
+//! PR, never overwriting an existing file.
 
 use anyhow::{Context, Result};
 use axum::extract::{Path, State};
@@ -28,6 +34,12 @@ use majnet_common::project::Role;
 /// the release contract for now — `build.yaml` and scaffolds are app-owned.
 const MANAGED_FILES: &[&str] = &[".github/workflows/release.yaml"];
 const SYNC_BRANCH: &str = "template-sync";
+
+/// A monorepo (ADR 0018) is bring-your-own CI, so it ships no scaffolded
+/// `build.yaml`. We seed a matrix caller for the reusable build-tier workflow
+/// once (a convenience, never overwritten), on its own branch/PR.
+const MONOREPO_CI_BRANCH: &str = "monorepo-ci";
+const BUILD_CALLER_PATH: &str = ".github/workflows/build.yaml";
 
 /// `POST /api/template-sync/{org}` — sync platform-managed template files into
 /// the org's app repos, opening a `template-sync` PR per repo that has drifted.
@@ -80,6 +92,11 @@ pub async fn sync_org(state: &AppState, org: &str) -> Result<Vec<String>> {
 
     let mut synced = Vec::new();
     for app in &project.apps {
+        // A monorepo member has no repo of its own named `<app>`; its CI is the
+        // repo owner's (handled by the build-caller seeding below).
+        if app.is_monorepo() {
+            continue;
+        }
         let managed = managed_files(&platform, &app.template, org, &app.name);
         if managed.is_empty() {
             continue; // template has no managed files (or is missing)
@@ -95,7 +112,143 @@ pub async fn sync_org(state: &AppState, org: &str) -> Result<Vec<String>> {
             ),
         }
     }
+
+    // Seed a build-tier matrix caller into each BYO-CI monorepo that lacks one
+    // (ADR 0018). One caller per shared repo, listing every app in it.
+    let mut monorepo_repos: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for app in &project.apps {
+        if app.is_monorepo() {
+            monorepo_repos
+                .entry(app.repo().to_string())
+                .or_default()
+                .push(app.name.clone());
+        }
+    }
+    for (repo, mut apps) in monorepo_repos {
+        apps.sort();
+        match seed_monorepo_ci(&client, org, &repo, &apps).await {
+            Ok(true) => synced.push(format!("{repo} (build CI)")),
+            Ok(false) => {}
+            Err(e) => tracing::error!(
+                org,
+                repo,
+                error = format!("{e:#}"),
+                "monorepo build-CI scaffold failed"
+            ),
+        }
+    }
     Ok(synced)
+}
+
+/// A `build.yaml` matrix caller for a BYO-CI monorepo: one matrix entry per app
+/// sharing the repo, each invoking the reusable `app-build.yaml`. `context`
+/// defaults to the app name — the owner adjusts it to each app's build dir. A
+/// one-time seed (never overwritten), so it's theirs to customize.
+fn monorepo_build_caller(apps: &[String]) -> String {
+    let matrix = apps
+        .iter()
+        .map(|a| format!("          - {{ name: {a}, context: {a} }}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        r#"name: build
+
+# Auto-scaffolded by MajNet for this monorepo (ADR 0018). Each app builds its
+# own nested image ghcr.io/<org>/<repo>/<app> via the reusable build-tier
+# workflow: pr-<N> -> preview, sha-/latest -> testing. Adjust each app's
+# `context` to its build directory and add test steps as you like — MajNet
+# seeds this file once and never overwrites it.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        app:
+{matrix}
+    permissions: {{ contents: read, packages: write }}
+    uses: majnet/majnet/.github/workflows/app-build.yaml@main
+    with:
+      app: ${{{{ matrix.app.name }}}}
+      context: ${{{{ matrix.app.context }}}}
+"#
+    )
+}
+
+/// Seed the monorepo's build caller if it has none. Never overwrites an existing
+/// `build.yaml` (the owner's). Opens (or fast-forwards) a `monorepo-ci` PR.
+/// Returns whether a PR was opened/updated.
+async fn seed_monorepo_ci(
+    client: &octocrab::Octocrab,
+    org: &str,
+    repo: &str,
+    apps: &[String],
+) -> Result<bool> {
+    let repo_path = format!("/repos/{org}/{repo}");
+    let Some(main_head) = crate::git::get_branch_head(client, &repo_path, "main").await? else {
+        return Ok(false); // repo absent / not initialized
+    };
+    // Seed only when absent — an existing build.yaml is the owner's to keep.
+    let repos = client.repos(org, repo);
+    if read_file(&repos, BUILD_CALLER_PATH).await.is_some() {
+        return Ok(false);
+    }
+
+    let changes: BTreeMap<String, Option<String>> = BTreeMap::from([(
+        BUILD_CALLER_PATH.to_string(),
+        Some(monorepo_build_caller(apps)),
+    )]);
+    let base_tree = crate::git::commit_tree(client, &repo_path, &main_head).await?;
+    let tree =
+        crate::git::create_tree_incremental(client, &repo_path, &base_tree, &changes).await?;
+    let commit = crate::git::create_commit(
+        client,
+        &repo_path,
+        &tree,
+        &[&main_head],
+        "chore: scaffold MajNet build CI",
+    )
+    .await?;
+    if crate::git::get_branch_head(client, &repo_path, MONOREPO_CI_BRANCH)
+        .await?
+        .is_some()
+    {
+        crate::git::force_update_ref(client, &repo_path, MONOREPO_CI_BRANCH, &commit).await?;
+    } else {
+        crate::git::create_ref(client, &repo_path, MONOREPO_CI_BRANCH, &commit).await?;
+    }
+
+    let open: serde_json::Value = client
+        .get(
+            format!("{repo_path}/pulls?state=open&base=main&head={org}:{MONOREPO_CI_BRANCH}"),
+            None::<&()>,
+        )
+        .await?;
+    if open.as_array().and_then(|prs| prs.first()).is_none() {
+        let list = apps.join(", ");
+        let _: serde_json::Value = client
+            .post(
+                format!("{repo_path}/pulls"),
+                Some(&json!({
+                    "title": "chore: scaffold MajNet build CI",
+                    "head": MONOREPO_CI_BRANCH,
+                    "base": "main",
+                    "body": format!(
+                        "MajNet scaffolds a build-tier workflow for this monorepo (ADR 0018): \
+                         each app ({list}) builds its own nested image via the reusable \
+                         `app-build.yaml` (pr-<N> → preview, sha-/latest → testing).\n\n\
+                         **Adjust each app's `context`** to its build directory before merging. \
+                         This file is yours after seeding — MajNet won't overwrite it."
+                    ),
+                })),
+            )
+            .await
+            .context("opening monorepo-ci PR")?;
+    }
+    Ok(true)
 }
 
 /// The managed template files for an app (those in `MANAGED_FILES` present in the
@@ -245,5 +398,29 @@ mod tests {
     fn missing_template_yields_nothing() {
         let platform = BTreeMap::new();
         assert!(managed_files(&platform, "web-app", "o", "a").is_empty());
+    }
+
+    #[test]
+    fn monorepo_build_caller_is_valid_yaml_with_an_entry_per_app() {
+        let out = monorepo_build_caller(&["api".to_string(), "web".to_string()]);
+        // Parses as a single YAML document.
+        let v: serde_yaml::Value = serde_yaml::from_str(&out).expect("valid workflow YAML");
+        // One matrix entry per app, each with a name + context.
+        let apps = v["jobs"]["build"]["strategy"]["matrix"]["app"]
+            .as_sequence()
+            .expect("matrix.app is a sequence");
+        assert_eq!(apps.len(), 2);
+        assert_eq!(apps[0]["name"], serde_yaml::Value::from("api"));
+        assert_eq!(apps[0]["context"], serde_yaml::Value::from("api"));
+        assert_eq!(apps[1]["name"], serde_yaml::Value::from("web"));
+        // Calls the reusable build-tier workflow, forwarding the matrix entry.
+        assert_eq!(
+            v["jobs"]["build"]["uses"],
+            serde_yaml::Value::from("majnet/majnet/.github/workflows/app-build.yaml@main")
+        );
+        assert_eq!(
+            v["jobs"]["build"]["with"]["app"],
+            serde_yaml::Value::from("${{ matrix.app.name }}")
+        );
     }
 }

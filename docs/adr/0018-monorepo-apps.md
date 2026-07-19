@@ -82,7 +82,10 @@ longer assume `app == repo`):
   build-tier tags a solo `build.yaml` produces (`pr-<N>` → preview,
   `sha-…`/`latest` → testing). No bot change is needed — the existing
   `registry_package` → leaf-app mapping handles nested packages. The `vX.Y.Z`
-  release tier reuses `app-release.yaml`. Remaining phase-3 nicety: scaffolding
-  this caller automatically (today the owner adds it — it's bring-your-own CI).
+  release tier reuses `app-release.yaml`. **Template-sync seeds the caller**: the
+  "Sync templates" action (`template_sync`) opens a one-time `monorepo-ci` PR
+  adding a `build.yaml` matrix caller (one entry per app in the repo) to any
+  monorepo that lacks one — never overwriting an existing `build.yaml`, since a
+  monorepo's build is the owner's. The owner adjusts each app's `context`.
 - App names remain unique within a project (already true) — required for the
   package-leaf → app mapping.
