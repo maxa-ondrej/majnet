@@ -203,7 +203,7 @@ function ProjectAdminMenu({ org, name, activeApps }: { org: string; name: string
 
       <ConfirmDialog open={dialog === 'sync'} onOpenChange={(o) => !o && close()}
         title="Sync repo templates?" confirmText="Sync templates" disabled={sync.isPending}
-        description="Opens a template-sync PR on each app repo whose platform-managed CI files (.github/) have drifted from the current template. Your source, Dockerfile and other files are never touched."
+        description="Opens a template-sync PR on each app repo whose platform-managed CI files (.github/) have drifted from the current template, and seeds a build-CI matrix caller into any monorepo repo that lacks one. Your source, Dockerfile and existing build files are never touched."
         onConfirm={() => sync.mutate(() => send(urls.templateSync(org)))} />
       <ConfirmDialog open={dialog === 'archive'} onOpenChange={(o) => !o && close()} destructive
         title="Archive this project?" confirmText="Archive project" disabled={archive.isPending}
