@@ -102,6 +102,25 @@ pub(crate) async fn app_repo(state: &AppState, org: &str, app: &str) -> String {
     }
 }
 
+/// The app's GHCR package path (as the packages REST API names it) and its image
+/// base. A solo app is `<app>` / `ghcr.io/<org>/<app>`; a monorepo member (ADR
+/// 0018) nests as `<repo>/<leaf>` / `ghcr.io/<org>/<repo>/<leaf>` — the app name
+/// carries a `<repo>-` prefix but the package/image drop it. Best-effort via
+/// `project.yaml`; falls back to the flat form.
+pub(crate) async fn app_package(state: &AppState, org: &str, app: &str) -> (String, String) {
+    match crate::dashboard_api::read_project(state, org).await {
+        Ok(p) => match p.apps.iter().find(|a| a.name == app) {
+            Some(decl) if decl.is_monorepo() => (
+                format!("{}/{}", decl.repo(), decl.image_leaf()),
+                decl.image_base(org),
+            ),
+            Some(decl) => (app.to_string(), decl.image_base(org)),
+            None => (app.to_string(), format!("ghcr.io/{org}/{app}")),
+        },
+        Err(_) => (app.to_string(), format!("ghcr.io/{org}/{app}")),
+    }
+}
+
 /// Commit messages on `main` that aren't reachable from `base_tag`, via the
 /// GitHub compare API — the input to `classify_bump`.
 async fn commits_since(
@@ -592,6 +611,12 @@ pub async fn backfill(state: &AppState, org: &str, app: &str) -> Result<usize> {
     // installation token lacks — use the configured GHCR PAT (the same one that
     // authenticates image pulls), via the plain REST endpoint.
     let (_, pat) = crate::proxy::ghcr_credential(state, org).await?;
+    // The GHCR package name is the image path minus the org, nested for a
+    // monorepo member (`<repo>/<leaf>`). In the REST path a nested name's slash
+    // must be percent-encoded. The image we record must use the same nested base
+    // (not the flat `<org>/<app>`), or the pin points at a package that 404s.
+    let (package, image_base) = app_package(state, org, app).await;
+    let package_enc = package.replace('/', "%2F");
     let mut recorded = 0;
     // Paginate defensively (cap at 10×100 versions) so a huge package can't spin
     // forever; a break on a short page ends it early.
@@ -599,7 +624,7 @@ pub async fn backfill(state: &AppState, org: &str, app: &str) -> Result<usize> {
         let resp = state
             .http
             .get(format!(
-                "https://api.github.com/orgs/{org}/packages/container/{app}/versions?per_page=100&page={page}"
+                "https://api.github.com/orgs/{org}/packages/container/{package_enc}/versions?per_page=100&page={page}"
             ))
             .header("Authorization", format!("Bearer {pat}"))
             .header("Accept", "application/vnd.github+json")
@@ -612,7 +637,7 @@ pub async fn backfill(state: &AppState, org: &str, app: &str) -> Result<usize> {
         let body = resp.text().await.unwrap_or_default();
         anyhow::ensure!(
             status.is_success(),
-            "listing GHCR package versions for {app} ({status}): {body}"
+            "listing GHCR package versions for {app} (package {package}) ({status}): {body}"
         );
         let versions: Vec<serde_json::Value> =
             serde_json::from_str(&body).context("parsing GHCR package versions")?;
@@ -626,7 +651,7 @@ pub async fn backfill(state: &AppState, org: &str, app: &str) -> Result<usize> {
             };
             for tag in tags.iter().filter_map(|t| t.as_str()) {
                 if crate::digest::is_version_tag(tag) && known.insert(tag.to_string()) {
-                    let image = format!("ghcr.io/{org}/{app}@{digest}");
+                    let image = format!("{image_base}@{digest}");
                     record(state, org, app, tag, &image).await?;
                     recorded += 1;
                 }
