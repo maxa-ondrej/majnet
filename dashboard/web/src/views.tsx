@@ -375,7 +375,7 @@ const RANGES: { label: string; secs: number | 'live' }[] = [
 ]
 
 // Compact per-container CPU sparkline from persisted history (ADR 0017).
-function ContainerSpark({ container, range }: { container: string; range: number }) {
+export function ContainerSpark({ container, range }: { container: string; range: number }) {
   const q = useContainerHistory(range, container)
   const v = (q.data ?? []).map((p) => p.cpu_pct)
   if (v.length < 2) return <span className="text-muted-foreground">—</span>
