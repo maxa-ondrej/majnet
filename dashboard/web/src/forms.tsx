@@ -133,6 +133,11 @@ export function NewApp() {
         {createRepo && !importing && (
           <Field label="Monorepo repo — optional" hint="Host this app in a shared GitHub repo (a monorepo) instead of its own. The platform won't scaffold or archive it — bring your own CI — and its image is ghcr.io/<org>/<repo>/<app>.">
             <Input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="platform" />
+            {(() => {
+              const r = repo.trim(), n = name.trim()
+              if (!r || !n || r === n || n.startsWith(`${r}-`)) return null
+              return <p className="mt-1 text-xs text-muted-foreground">Deploys as <span className="font-mono text-foreground">{r}-{n}</span> — monorepo apps are prefixed with their repo to stay unique across the project.</p>
+            })()}
           </Field>
         )}
         {createRepo && (

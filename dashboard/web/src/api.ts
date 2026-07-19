@@ -11,6 +11,8 @@ export interface ProjectSummary { name: string; org: string; onboarded: boolean;
 export interface AppSummary {
   name: string; image: string; classes: string[]
   host: string | null; domains: string[]; database: string | null
+  /** The shared GitHub repo for a monorepo member; null when the app is solo. */
+  repo: string | null
 }
 export interface PlatformNode {
   name: string; role: string; wireguard_ip: string
