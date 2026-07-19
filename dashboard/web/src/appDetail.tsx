@@ -10,7 +10,7 @@ import {
 } from './api'
 import { useApiMutation } from './mutations'
 import { ConfirmButton, ExtLink, QueryState, short, StatusBadge } from './ui'
-import { Crumbs, ImportSteps } from './views'
+import { Crumbs, ContainerSpark, ImportSteps } from './views'
 import { fromData, ManifestForm, toManifest, type ManifestDraft } from './manifestForm'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -358,13 +358,14 @@ function EnvironmentZone({
           </div>
           <div className="mt-3 overflow-x-auto">
             <table className="w-full text-xs">
-              <thead><tr className="text-left text-muted-foreground"><th className="py-1 pr-3 font-medium">container</th><th className="py-1 pr-3 font-medium">state</th><th className="py-1 pr-3 font-medium">cpu</th><th className="py-1 font-medium">mem</th></tr></thead>
+              <thead><tr className="text-left text-muted-foreground"><th className="py-1 pr-3 font-medium">container</th><th className="py-1 pr-3 font-medium">state</th><th className="py-1 pr-3 font-medium">cpu</th><th className="py-1 pr-3 font-medium">mem</th><th className="py-1 font-medium">cpu · 1h</th></tr></thead>
               <tbody className="font-mono">
                 {containers.map((c) => (
                   <tr key={c.name} className="border-t">
                     <td className="py-1 pr-3">{c.name}</td><td className="py-1 pr-3">{c.state}</td>
                     <td className="py-1 pr-3 tabular-nums">{c.cpu_pct.toFixed(1)}%</td>
-                    <td className="py-1 tabular-nums">{(c.mem_used / 1e6).toFixed(0)} MB{c.mem_limit ? ` / ${(c.mem_limit / 1e9).toFixed(1)} GB` : ''}</td>
+                    <td className="py-1 pr-3 tabular-nums">{(c.mem_used / 1e6).toFixed(0)} MB{c.mem_limit ? ` / ${(c.mem_limit / 1e9).toFixed(1)} GB` : ''}</td>
+                    <td className="py-1"><ContainerSpark container={c.name} range={3600} /></td>
                   </tr>
                 ))}
               </tbody>
@@ -621,7 +622,9 @@ function ManifestEditor({ org, app, files }: { org: string; app: string; files: 
   return (
     <div className="flex flex-col gap-3.5">
       <div className="flex flex-wrap items-center gap-1 border-b pb-2">
-        {FILES.map((f) => (
+        {/* Existing overlays first (keeping the base→prod gradient), the
+            addable "(new)" ones after — so the app's real config isn't buried. */}
+        {[...FILES].sort((x, y) => Number(!files[x]) - Number(!files[y])).map((f) => (
           <button key={f} onClick={() => setFile(f)}
             className={`rounded-md px-2.5 py-1.5 text-xs font-medium ${f === file ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground'}`}>
             {f}{!files[f] && <span className="text-muted-foreground/60"> (new)</span>}
