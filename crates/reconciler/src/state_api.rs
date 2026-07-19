@@ -28,6 +28,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/metrics/history", get(metrics_history_get))
         .route("/api/metrics/container-history", get(container_history_get))
         .route("/api/logs/{project}/{class}/{app}", get(logs_get))
+        .route(
+            "/api/containers/{project}/{class}/{app}",
+            get(containers_get),
+        )
         .route("/api/terminal", get(crate::terminal::terminal_ws))
         .route("/api/terminal/sessions", get(crate::terminal::sessions_get))
         .route(
@@ -518,6 +522,121 @@ async fn logs_inner(
         }
     }
     Ok(buf)
+}
+
+/// One container of an app in a class — running or a previous blue-green
+/// generation (a stopped/old container the reconciler hasn't reaped yet).
+#[derive(serde::Serialize)]
+struct AppContainer {
+    name: String,
+    /// The digest-pinned image the container was created from.
+    image: String,
+    /// `running` | `exited` | `created` | `dead` | …
+    state: String,
+    /// Docker's human status line, e.g. `Up 2 hours` / `Exited (0) 5 minutes ago`.
+    status: String,
+    /// Creation unix timestamp — the list is returned newest-first.
+    created: i64,
+}
+
+/// `GET /api/containers/{project}/{class}/{app}` — every container for an app in
+/// a class (running + previous generations, i.e. `all: true`), over the class's
+/// node Docker API. Newest first. Same gating as logs (production admin, else
+/// developer) — a container list reveals image digests + timing.
+async fn containers_get(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path((project, class, app)): axum::extract::Path<(String, String, String)>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Vec<AppContainer>>, (StatusCode, String)> {
+    let class_e: majnet_common::EnvClass = serde_yaml::from_str(&class).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            "class must be production|stable|testing|ephemeral".into(),
+        )
+    })?;
+    let min_role = if class_e == majnet_common::EnvClass::Production {
+        majnet_common::project::Role::Admin
+    } else {
+        majnet_common::project::Role::Developer
+    };
+    crate::authz::require(&state, &headers, &project, min_role)
+        .await
+        .map_err(|e| (StatusCode::FORBIDDEN, format!("{e:#}")))?;
+
+    containers_inner(&state, &project, class_e, &app)
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e:#}")))
+}
+
+async fn containers_inner(
+    state: &AppState,
+    project: &str,
+    class: majnet_common::EnvClass,
+    app: &str,
+) -> anyhow::Result<Vec<AppContainer>> {
+    use anyhow::Context;
+    let platform = crate::snapshot::fetch(
+        &state.http,
+        &state.config,
+        &state.config.root_org,
+        "platform",
+        "main",
+    )
+    .await?
+    .context("platform snapshot unavailable")?;
+    let nodes = majnet_common::platform::NodesFile::parse(
+        platform.files.get("nodes.yaml").context("no nodes.yaml")?,
+    )?;
+    let node = nodes
+        .by_role(class.node_role())
+        .context("no node for class")?;
+    let docker = state.nodes(&nodes).client_for(node).await?;
+
+    // Container labels use the project NAME; the dashboard passes the org.
+    let proj_name = platform
+        .files
+        .get("projects.yaml")
+        .and_then(|b| serde_yaml::from_slice::<majnet_common::platform::ProjectsFile>(b).ok())
+        .and_then(|pf| pf.projects.into_iter().find(|p| p.org == project))
+        .map(|p| p.name)
+        .unwrap_or_else(|| project.to_string());
+
+    let filters = std::collections::HashMap::from([(
+        "label".to_string(),
+        vec![
+            format!("{}={}", crate::deploy::LABEL_PROJECT, proj_name),
+            format!("{}={}", crate::deploy::LABEL_APP, app),
+            format!("{}={}", crate::deploy::LABEL_CLASS, class.as_str()),
+        ],
+    )]);
+    let list = docker
+        .list_containers(Some(bollard::query_parameters::ListContainersOptions {
+            all: true,
+            filters: Some(filters),
+            ..Default::default()
+        }))
+        .await?;
+    let mut out: Vec<AppContainer> = list
+        .into_iter()
+        .map(|c| AppContainer {
+            name: c
+                .names
+                .as_ref()
+                .and_then(|n| n.first())
+                .map(|s| s.trim_start_matches('/').to_string())
+                .unwrap_or_default(),
+            image: c.image.clone().unwrap_or_default(),
+            state: c
+                .state
+                .map(|s| format!("{s:?}").to_lowercase())
+                .unwrap_or_default(),
+            status: c.status.clone().unwrap_or_default(),
+            created: c.created.unwrap_or(0),
+        })
+        .collect();
+    out.sort_by_key(|c| std::cmp::Reverse(c.created));
+    Ok(out)
 }
 
 /// `GET /api/info/{org}/{app}` — build metadata (version/commit/etc.) each env

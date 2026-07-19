@@ -155,6 +155,8 @@ export const urls = {
   alertTest: `${RECON}/settings/alerts/test`,
   appLogs: (org: string, cls: string, app: string, tail = 300) =>
     `${RECON}/logs/${encodeURIComponent(org)}/${encodeURIComponent(cls)}/${encodeURIComponent(app)}?tail=${tail}`,
+  appContainers: (org: string, cls: string, app: string) =>
+    `${RECON}/containers/${encodeURIComponent(org)}/${encodeURIComponent(cls)}/${encodeURIComponent(app)}`,
   appInfo: (org: string, app: string) =>
     `${RECON}/info/${encodeURIComponent(org)}/${encodeURIComponent(app)}`,
   events: (limit = 300) => `${RECON}/events?limit=${limit}`,
@@ -246,6 +248,10 @@ export const useNodeMetrics = () =>
   useQuery({ queryKey: ['metrics'], queryFn: () => getJSON<NodeMetrics[]>(urls.metrics), refetchInterval: 10000 })
 export const useAppLogs = (org: string, cls: string, app: string, enabled: boolean) =>
   useQuery({ queryKey: ['logs', org, cls, app], queryFn: () => getText(urls.appLogs(org, cls, app)), enabled, refetchInterval: 5000 })
+/** All containers for an app in a class — running + previous generations. */
+export interface AppContainer { name: string; image: string; state: string; status: string; created: number }
+export const useAppContainers = (org: string, cls: string, app: string, enabled = true) =>
+  useQuery({ queryKey: ['containers', org, cls, app], queryFn: () => getJSON<AppContainer[]>(urls.appContainers(org, cls, app)), enabled, refetchInterval: 30000 })
 export const useNodes = () =>
   useQuery({ queryKey: ['nodes'], queryFn: () => getJSON<PlatformNode[]>(urls.nodes) })
 // WebSocket URL for the reconciler terminal (ADR 0016), same origin as the

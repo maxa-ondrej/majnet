@@ -4,7 +4,7 @@ import {
   RotateCw, ScrollText, KeyRound, SlidersHorizontal, ArrowUpFromLine, MoreVertical, TerminalSquare,
 } from 'lucide-react'
 import {
-  send, urls, useApps, useAppInfo, useAppLogs, useAppSecrets, useEvents, useImports,
+  send, urls, useApps, useAppContainers, useAppInfo, useAppLogs, useAppSecrets, useEvents, useImports,
   useManifest, useNodeMetrics, useProjects, useReleases, useReleaseDraft, useWhoami,
   type AppInfo, type ManifestFile,
 } from './api'
@@ -316,6 +316,7 @@ function EnvironmentZone({
               : `Add a ${env}.yaml overlay in Configuration to deploy it here.`}
           </div>
         </CardContent></Card>
+        <PreviousGenerations org={org} env={env} app={app} isAdmin={isAdmin} />
       </>
     )
   }
@@ -373,10 +374,40 @@ function EnvironmentZone({
           </div>
         </CardContent></Card>
       </div>
+      <PreviousGenerations org={org} env={env} app={app} isAdmin={isAdmin} />
     </>
   )
 }
 const digest = (img?: string) => img?.split('@sha256:')[1]?.slice(0, 7) ?? '—'
+
+// Stopped/old containers from earlier deploys (blue-green leaves the previous
+// generation behind until the next converge GCs it). Production is admin-gated.
+function PreviousGenerations({ org, env, app, isAdmin }: { org: string; env: string; app: string; isAdmin: boolean }) {
+  const q = useAppContainers(org, env, app, env !== 'production' || isAdmin)
+  const prev = (q.data ?? []).filter((c) => c.state !== 'running')
+  if (prev.length === 0) return null
+  return (
+    <div className="mt-3.5">
+      <SectionHead title="Previous generations" hint="stopped containers from earlier deploys" />
+      <Card><CardContent className="overflow-x-auto pt-6">
+        <table className="w-full text-xs">
+          <thead><tr className="text-left text-muted-foreground"><th className="py-1 pr-3 font-medium">container</th><th className="py-1 pr-3 font-medium">state</th><th className="py-1 pr-3 font-medium">image</th><th className="py-1 font-medium">status</th></tr></thead>
+          <tbody className="font-mono">
+            {prev.map((c) => (
+              <tr key={c.name} className="border-t">
+                <td className="py-1 pr-3">{c.name}</td>
+                <td className="py-1 pr-3"><StatusBadge tone="muted">{c.state}</StatusBadge></td>
+                <td className="py-1 pr-3">{digest(c.image)}</td>
+                <td className="py-1 text-muted-foreground">{c.status}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </CardContent></Card>
+    </div>
+  )
+}
+
 function Metric({ n, l }: { n: string; l: string }) {
   return <div className="flex flex-col gap-0.5"><span className="text-xl font-semibold tracking-tight tabular-nums">{n}</span><span className="text-[11px] uppercase tracking-wide text-muted-foreground">{l}</span></div>
 }
