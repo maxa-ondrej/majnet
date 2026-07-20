@@ -63,6 +63,11 @@ apps:
 - **Cut / draft are per-unit.** Per-app: last-version + commit range are this
   app's only, and the tag is the scoped tag. A bulk `POST …/{repo}/cut-repo`
   cuts every app in a monorepo in one action (each at its own next version).
+- **Per-app changelog is path-scoped.** For a per-app unit with `paths`, the
+  changelog + `auto`-bump diff lists only commits that touched those paths (the
+  commits API filtered by `path`, bounded by the base commit's date) — so a busy
+  monorepo doesn't inflate one app's changelog with sibling changes. No `paths`
+  (or a leading-glob pattern) falls back to the whole-repo `base...main` diff.
 - **Provenance** resolves the app's *configured* scoped git tag first
   (`resolve_commit` → `AppDecl::release_tag`), covering a scope that differs from
   the repo name; the legacy `@<repo>/<leaf>@<ver>` and plain `vX.Y.Z` remain

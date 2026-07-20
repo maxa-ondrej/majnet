@@ -141,19 +141,78 @@ pub(crate) async fn app_package(state: &AppState, org: &str, app: &str) -> (Stri
     }
 }
 
-/// Commit messages on `main` that aren't reachable from `base_tag`, via the
-/// GitHub compare API — the input to `classify_bump`.
-/// Commit messages on `main` not reachable from the last release — trying each
-/// candidate base ref (the repo's release-tag scheme varies: `vX.Y.Z`, bare, or
-/// changesets `@<repo>/<leaf>@<ver>`) until a compare resolves. The scoped ref
-/// needs URL-encoding.
+/// Commit messages on `main` since the last release — the input to
+/// `classify_bump` + the changelog. With no `paths`, the whole-repo diff
+/// (`base...main` via the compare API). With `paths` (per-app, ADR 0020), only
+/// commits that touched those paths — listed via the commits API filtered by
+/// `path` and bounded by the base commit's date — so a monorepo app's changelog
+/// and `auto`-bump reflect only its own changes, not the whole repo. Tries each
+/// base-ref candidate (the repo's tag scheme varies) until one resolves.
 async fn commits_since(
     state: &AppState,
     org: &str,
     repo: &str,
     base_tags: &[String],
+    paths: &[String],
 ) -> Result<Vec<String>> {
     let client = state.github.org_client(org).await?;
+    // Directory prefixes the commits API can filter on (empty = not filterable,
+    // e.g. a leading-glob pattern — those fall through to the whole-repo diff).
+    let prefixes: Vec<String> = paths
+        .iter()
+        .map(|p| glob_to_prefix(p))
+        .filter(|p| !p.is_empty())
+        .collect();
+    if prefixes.is_empty() {
+        return commits_since_whole_repo(&client, org, repo, base_tags).await;
+    }
+
+    let (base_sha, since) = resolve_base_commit(&client, org, repo, base_tags).await?;
+    let mut msgs = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for prefix in &prefixes {
+        // Paginate the path-filtered commit list, newest first, since the base
+        // commit's date; the base commit itself is excluded by SHA.
+        for page in 1..=20u32 {
+            let params: Vec<(&str, String)> = vec![
+                ("sha", "main".to_string()),
+                ("path", prefix.clone()),
+                ("since", since.clone()),
+                ("per_page", "100".to_string()),
+                ("page", page.to_string()),
+            ];
+            let items: Vec<serde_json::Value> = client
+                .get(format!("/repos/{org}/{repo}/commits"), Some(&params))
+                .await
+                .with_context(|| format!("listing commits under {prefix}"))?;
+            let n = items.len();
+            for c in &items {
+                let sha = c["sha"].as_str().unwrap_or_default();
+                if sha.is_empty() || sha == base_sha {
+                    continue;
+                }
+                if seen.insert(sha.to_string()) {
+                    if let Some(m) = c["commit"]["message"].as_str() {
+                        msgs.push(m.to_string());
+                    }
+                }
+            }
+            if n < 100 {
+                break;
+            }
+        }
+    }
+    Ok(msgs)
+}
+
+/// The whole-repo commit diff `base...main` via the compare API (the pre-ADR-0020
+/// behavior), trying each candidate base ref until one resolves.
+async fn commits_since_whole_repo(
+    client: &octocrab::Octocrab,
+    org: &str,
+    repo: &str,
+    base_tags: &[String],
+) -> Result<Vec<String>> {
     let mut last_err = None;
     for base in base_tags {
         let enc = base.replace('@', "%40").replace('/', "%2F");
@@ -171,6 +230,58 @@ async fn commits_since(
     Err(last_err
         .unwrap_or_else(|| anyhow::anyhow!("no base ref resolved"))
         .context(format!("comparing {:?}...main", base_tags)))
+}
+
+/// Resolve the first working base ref to its (commit SHA, committer date ISO) —
+/// the boundary for a path-scoped diff. The path-filtered commit list can't be
+/// bounded by SHA (the base commit may not touch the path), so we bound by date.
+async fn resolve_base_commit(
+    client: &octocrab::Octocrab,
+    org: &str,
+    repo: &str,
+    base_tags: &[String],
+) -> Result<(String, String)> {
+    let mut last_err = None;
+    for base in base_tags {
+        let enc = base.replace('@', "%40").replace('/', "%2F");
+        let res: Result<serde_json::Value, _> = client
+            .get(format!("/repos/{org}/{repo}/commits/{enc}"), None::<&()>)
+            .await;
+        match res {
+            Ok(c) => {
+                let sha = c["sha"].as_str().unwrap_or_default().to_string();
+                let date = c["commit"]["committer"]["date"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                if !sha.is_empty() && !date.is_empty() {
+                    return Ok((sha, date));
+                }
+            }
+            Err(e) => last_err = Some(anyhow::Error::from(e)),
+        }
+    }
+    Err(last_err
+        .unwrap_or_else(|| anyhow::anyhow!("no base ref resolved"))
+        .context("resolving base commit for path-scoped diff"))
+}
+
+/// The literal directory prefix of a path glob — everything before the first glob
+/// metacharacter — for the commits API `path` filter. `applications/server/**` →
+/// `applications/server`; `packages/shared/**` → `packages/shared`; a pattern
+/// that starts with a glob → empty (not path-filterable).
+fn glob_to_prefix(glob: &str) -> String {
+    let cut = glob.find(['*', '?', '[']).unwrap_or(glob.len());
+    glob[..cut].trim_end_matches('/').to_string()
+}
+
+/// The paths to scope a changelog/bump diff by: an app's `release.paths`, but
+/// only in per-app mode (a repo-wide unit's changelog spans the whole repo).
+fn scoped_diff_paths(decl: Option<&AppDecl>) -> &[String] {
+    match decl {
+        Some(d) if d.is_per_app_release() => d.release_paths(),
+        _ => &[],
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -449,7 +560,9 @@ async fn do_cut(state: &AppState, org: &str, app: &str, bump: &str, actor: &str)
         match &last {
             Some(l) => {
                 let cands = base_tag_candidates(decl.as_ref(), &repo, l);
-                let msgs = commits_since(state, org, &repo, &cands).await?;
+                let msgs =
+                    commits_since(state, org, &repo, &cands, scoped_diff_paths(decl.as_ref()))
+                        .await?;
                 anyhow::ensure!(
                     !msgs.is_empty(),
                     "no new commits since {} — nothing to release",
@@ -578,7 +691,8 @@ pub(crate) async fn prepare_draft(state: &AppState, org: &str, app: &str) -> Res
     let (version, bump, base, count, notes) = match &last {
         Some(l) => {
             let cands = base_tag_candidates(decl.as_ref(), &repo, l);
-            let msgs = commits_since(state, org, &repo, &cands).await?;
+            let msgs =
+                commits_since(state, org, &repo, &cands, scoped_diff_paths(decl.as_ref())).await?;
             if msgs.is_empty() {
                 state.store.delete_release_draft(org, &key)?;
                 return Ok(());
@@ -1486,6 +1600,21 @@ mod tests {
         );
         // Nothing stale when every stored version is still present.
         assert!(stale_versions(&have[1..], &registry).is_empty());
+    }
+
+    #[test]
+    fn glob_to_prefix_takes_the_literal_directory() {
+        use super::glob_to_prefix;
+        assert_eq!(
+            glob_to_prefix("applications/server/**"),
+            "applications/server"
+        );
+        assert_eq!(glob_to_prefix("packages/shared/**"), "packages/shared");
+        assert_eq!(glob_to_prefix("applications/web/*.ts"), "applications/web");
+        // No glob → the path itself (trailing slash trimmed).
+        assert_eq!(glob_to_prefix("apps/api/"), "apps/api");
+        // Leading glob → empty (not path-filterable → whole-repo fallback).
+        assert_eq!(glob_to_prefix("**/Dockerfile"), "");
     }
 
     #[test]
