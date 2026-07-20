@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+<style>
+  .ink { stroke: #111A22; }
+  @media (prefers-color-scheme: dark) { .ink { stroke: #E5E7EB; } }
+</style>
+<defs><mask id="fusion-v1L"><rect x="-4" y="-4" width="72" height="72" fill="white"/>
+  <circle cx="11" cy="17" r="8.5" fill="black"/><circle cx="53" cy="17" r="8.5" fill="black"/><circle cx="32" cy="41" r="7.9" fill="black"/></mask></defs>
+<g class="ink" mask="url(#fusion-v1L)" fill="none" stroke-width="4.0" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M 11 49 L 11 17 L 32 41 L 53 17 L 53 49"/><path d="M 11 17 A 29 29 0 0 1 53 17"/></g>
+<circle cx="32" cy="41" r="5.7" fill="#0FBFB2"/>
+<circle class="ink" cx="11" cy="17" r="4.3" fill="none" stroke-width="4.0"/>
+<circle class="ink" cx="53" cy="17" r="4.3" fill="none" stroke-width="4.0"/>
+</svg>
