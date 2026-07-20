@@ -63,6 +63,10 @@ apps:
 - **Cut / draft are per-unit.** Per-app: last-version + commit range are this
   app's only, and the tag is the scoped tag. A bulk `POST …/{repo}/cut-repo`
   cuts every app in a monorepo in one action (each at its own next version).
+- **Bulk release is one commit per repo.** `POST /api/releases/bulk` releases a
+  set of candidates; apps sharing a repo are committed **together** — one merged
+  version-bump + changelog commit, then one tag per app on it — so sibling
+  submits can't race the `main` fast-forward (`submit_repo_group`).
 - **Per-app changelog is path-scoped.** For a per-app unit with `paths`, the
   changelog + `auto`-bump diff lists only commits that touched those paths (the
   commits API filtered by `path`, bounded by the base commit's date) — so a busy

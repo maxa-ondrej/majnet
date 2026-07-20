@@ -838,29 +838,25 @@ async fn read_repo_file(
     String::from_utf8(bytes).ok()
 }
 
-/// Commit a per-app release's version bump + changelog to the repo's `main` in
-/// one commit (ADR 0020); the caller then tags it. `version` is the bare semver
-/// for package.json. Best-effort per file: a missing package.json is skipped (the
-/// changelog is still written). Fast-forward only — a concurrent push makes it
-/// error rather than clobber. The message carries `RELEASE_COMMIT_PREFIX`.
-async fn push_release_commit(
-    state: &AppState,
+type Changes = std::collections::BTreeMap<String, Option<String>>;
+
+/// The file changes for one app's release (bumped `<dir>/package.json` +
+/// prepended `<dir>/CHANGELOG.md`), read from `main`. `version` is the bare
+/// semver. Best-effort: a missing package.json is skipped (changelog still
+/// written). Returned as a map so several apps' changes can be merged into one
+/// commit (batch release).
+async fn release_file_changes(
+    client: &octocrab::Octocrab,
     org: &str,
     repo: &str,
     app: &str,
     dir: &str,
     version: &str,
     notes: &str,
-) -> Result<()> {
-    let client = state.github.org_client(org).await?;
-    let repo_path = format!("/repos/{org}/{repo}");
-    let head = crate::git::get_branch_head(&client, &repo_path, "main")
-        .await?
-        .with_context(|| format!("repo {org}/{repo} has no main branch"))?;
-
-    let mut changes: std::collections::BTreeMap<String, Option<String>> = Default::default();
+) -> Changes {
+    let mut changes: Changes = Default::default();
     let pkg_path = format!("{dir}/package.json");
-    if let Some(pkg) = read_repo_file(&client, org, repo, &pkg_path).await {
+    if let Some(pkg) = read_repo_file(client, org, repo, &pkg_path).await {
         match set_json_version(&pkg, version) {
             Ok(updated) if updated != pkg => {
                 changes.insert(pkg_path, Some(updated));
@@ -879,19 +875,56 @@ async fn push_release_commit(
         tracing::info!(org, app, %pkg_path, "no package.json — skipping version bump");
     }
     let cl_path = format!("{dir}/CHANGELOG.md");
-    let existing = read_repo_file(&client, org, repo, &cl_path).await;
+    let existing = read_repo_file(client, org, repo, &cl_path).await;
     let entry = changelog_entry(version, notes);
     changes.insert(
         cl_path,
         Some(prepend_changelog(existing.as_deref(), &entry)),
     );
+    changes
+}
 
-    let base_tree = crate::git::commit_tree(&client, &repo_path, &head).await?;
-    let tree =
-        crate::git::create_tree_incremental(&client, &repo_path, &base_tree, &changes).await?;
+/// Commit `changes` to the repo's `main` in one commit (ADR 0020); the caller
+/// then tags it. Fast-forward only — a concurrent push errors rather than
+/// clobbers. No-op when `changes` is empty. The message carries
+/// `RELEASE_COMMIT_PREFIX` so the push doesn't re-trigger autorelease.
+async fn commit_changes_to_main(
+    client: &octocrab::Octocrab,
+    org: &str,
+    repo: &str,
+    changes: &Changes,
+    message: &str,
+) -> Result<()> {
+    if changes.is_empty() {
+        return Ok(());
+    }
+    let repo_path = format!("/repos/{org}/{repo}");
+    let head = crate::git::get_branch_head(client, &repo_path, "main")
+        .await?
+        .with_context(|| format!("repo {org}/{repo} has no main branch"))?;
+    let base_tree = crate::git::commit_tree(client, &repo_path, &head).await?;
+    let tree = crate::git::create_tree_incremental(client, &repo_path, &base_tree, changes).await?;
+    let commit = crate::git::create_commit(client, &repo_path, &tree, &[&head], message).await?;
+    crate::git::update_ref(client, &repo_path, "main", &commit).await?;
+    Ok(())
+}
+
+/// Push one app's version bump + changelog to `main` in a single commit, then
+/// the caller tags it (the single-app path; batch releases merge many apps into
+/// one commit instead — see `bulk_submit`).
+async fn push_release_commit(
+    state: &AppState,
+    org: &str,
+    repo: &str,
+    app: &str,
+    dir: &str,
+    version: &str,
+    notes: &str,
+) -> Result<()> {
+    let client = state.github.org_client(org).await?;
+    let changes = release_file_changes(&client, org, repo, app, dir, version, notes).await;
     let msg = format!("{RELEASE_COMMIT_PREFIX}{app} {version}");
-    let commit = crate::git::create_commit(&client, &repo_path, &tree, &[&head], &msg).await?;
-    crate::git::update_ref(&client, &repo_path, "main", &commit).await?;
+    commit_changes_to_main(&client, org, repo, &changes, &msg).await?;
     tracing::info!(org, app, version, "pushed release version bump + changelog");
     Ok(())
 }
@@ -1293,6 +1326,158 @@ async fn submit_draft(
         "Released {}{scope} — CI is building it; it'll appear in Releases, then Promote to production.",
         draft.version
     ))
+}
+
+#[derive(serde::Deserialize)]
+pub struct BulkItem {
+    pub org: String,
+    pub app: String,
+}
+#[derive(serde::Deserialize)]
+pub struct BulkReq {
+    pub items: Vec<BulkItem>,
+}
+
+/// `POST /api/releases/bulk` — release several candidates at once. Candidates in
+/// the **same monorepo** are committed together — one version-bump + changelog
+/// commit, then one tag per app on it — so sibling releases can't race the `main`
+/// fast-forward (the bug when each was submitted independently). Distinct repos
+/// are independent. Admin-gated per org; a per-item failure is reported, not
+/// fatal.
+pub async fn bulk_submit(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<BulkReq>,
+) -> Result<String, ApiError> {
+    let mut by_org: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for it in req.items {
+        by_org.entry(it.org).or_default().push(it.app);
+    }
+    let mut lines = Vec::new();
+    for (org, apps) in by_org {
+        let actor = match crate::authz::require(&state, &headers, &org, Role::Admin).await {
+            Ok(a) => a,
+            Err(e) => {
+                lines.push(format!("{org}: FORBIDDEN — {e:#}"));
+                continue;
+            }
+        };
+        // Group the org's apps by their git repo, so a monorepo's apps release in
+        // one commit.
+        let mut by_repo: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for app in apps {
+            let repo = app_repo(&state, &org, &app).await;
+            by_repo.entry(repo).or_default().push(app);
+        }
+        for (repo, group) in by_repo {
+            match submit_repo_group(&state, &org, &repo, &group, &actor).await {
+                Ok(mut ls) => lines.append(&mut ls),
+                Err(e) => lines.push(format!("{repo}: FAILED — {e:#}")),
+            }
+        }
+    }
+    Ok(lines.join("\n"))
+}
+
+struct BulkTarget {
+    app: String,
+    decl: Option<AppDecl>,
+    draft: ReleaseDraft,
+}
+
+/// Release every requested app in one repo as a single commit (merged version
+/// bumps + changelogs) plus one tag per app — the `main` push happens once, so
+/// siblings never race the fast-forward.
+async fn submit_repo_group(
+    state: &AppState,
+    org: &str,
+    repo: &str,
+    apps: &[String],
+    actor: &str,
+) -> Result<Vec<String>> {
+    let client = state.github.org_client(org).await?;
+    let mut lines = Vec::new();
+    let mut targets: Vec<BulkTarget> = Vec::new();
+    for app in apps {
+        let decl = app_decl(state, org, app).await;
+        let key = decl
+            .as_ref()
+            .map(|d| d.release_unit().to_string())
+            .unwrap_or_else(|| app.clone());
+        match state.store.release_draft(org, &key)? {
+            Some(draft) => targets.push(BulkTarget {
+                app: app.clone(),
+                decl,
+                draft,
+            }),
+            None => lines.push(format!("{app}: skipped — no draft")),
+        }
+    }
+    if targets.is_empty() {
+        return Ok(lines);
+    }
+
+    // 1. Merge every app's version bump + changelog into one commit on `main`.
+    let mut changes: Changes = Default::default();
+    let mut labels = Vec::new();
+    for t in &targets {
+        if let Some(dir) = app_dir(t.decl.as_ref()) {
+            let core = t.draft.version.trim_start_matches('v');
+            let ch =
+                release_file_changes(&client, org, repo, &t.app, &dir, core, &t.draft.notes).await;
+            changes.extend(ch);
+        }
+        let leaf = t
+            .decl
+            .as_ref()
+            .map(|d| d.image_leaf().to_string())
+            .unwrap_or_else(|| t.app.clone());
+        labels.push(format!("{leaf} {}", t.draft.version));
+    }
+    let msg = format!("{RELEASE_COMMIT_PREFIX}{}", labels.join(", "));
+    if let Err(e) = commit_changes_to_main(&client, org, repo, &changes, &msg).await {
+        tracing::warn!(
+            org,
+            %repo,
+            error = format!("{e:#}"),
+            "bulk release file push failed — tagging without the in-repo bump"
+        );
+    }
+
+    // 2. Tag each app (all pointing at the one commit), record notes, clear drafts.
+    for t in &targets {
+        let tag = release_tag_to_create(t.decl.as_ref(), &t.draft.version);
+        match create_release_tag(state, org, repo, &tag).await {
+            Ok(()) => {
+                let key = t
+                    .decl
+                    .as_ref()
+                    .map(|d| d.release_unit().to_string())
+                    .unwrap_or_else(|| t.app.clone());
+                let (unit_apps, _last) = unit_apps_and_last(state, org, &t.app).await;
+                for a in &unit_apps {
+                    state.store.record_release_notes(
+                        org,
+                        a,
+                        &t.draft.version,
+                        &t.draft.notes,
+                        actor,
+                    )?;
+                }
+                state.store.delete_release_draft(org, &key)?;
+                state.store.log_event(
+                    "release-cut",
+                    Some(org),
+                    &format!("{key} {} by {actor} (bulk)", t.draft.version),
+                )?;
+                lines.push(format!("{}: released {}", t.app, t.draft.version));
+            }
+            Err(e) => lines.push(format!("{}: FAILED tag — {e:#}", t.app)),
+        }
+    }
+    Ok(lines)
 }
 
 /// Record a `vX.Y.Z` release seen on a `registry_package` publish: resolve the
