@@ -416,9 +416,9 @@ function Metric({ n, l }: { n: string; l: string }) {
 // A bot-prepared draft release: the proposed next version + a generated
 // changelog, refreshed on each push to the app repo's main, waiting for an
 // operator to submit it. Submitting tags the repo (the cut→CI→record flow).
-function DraftCard({ org, app }: { org: string; app: string }) {
+export function DraftCard({ org, app }: { org: string; app: string }) {
   const q = useReleaseDraft(org, app)
-  const m = useApiMutation({ invalidate: [['releaseDraft', org, app], ['releases', org, app], ['deploys', org], ['events']] })
+  const m = useApiMutation({ invalidate: [['releaseDraft', org, app], ['releases', org, app], ['releaseDrafts'], ['deploys', org], ['events']] })
   const draft = q.data
   const [notes, setNotes] = useState('')
   const [dirty, setDirty] = useState(false)

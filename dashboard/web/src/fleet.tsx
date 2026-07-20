@@ -8,9 +8,9 @@ import { useApiMutation } from './mutations'
 import { ConfirmButton, Empty, QueryState } from './ui'
 import { PageHead } from './views'
 import { FileDiff } from './deploys'
+import { DraftCard } from './appDetail'
 import { Badge } from '@/components/ui/badge'
 import { Card } from '@/components/ui/card'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 
 const relAge = (at: string): string => {
   if (!at) return ''
@@ -38,48 +38,36 @@ export function AllReleases() {
 
   return (
     <>
-      <PageHead title="Release candidates" sub="apps with unreleased changes across all projects" />
+      <PageHead title="Release candidates" sub="apps with unreleased changes — expand to review + release inline" />
       <QueryState isLoading={drafts.isLoading} error={drafts.error}>
         {rows.length === 0 && (
           <Empty>Nothing to release — every app is up to date. Candidates appear here when an app has commits since its last release.</Empty>
         )}
-        {rows.length > 0 && (
-          <Card className="py-0">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Project</TableHead>
-                  <TableHead>App</TableHead>
-                  <TableHead>Next</TableHead>
-                  <TableHead>Bump</TableHead>
-                  <TableHead className="text-right">Commits</TableHead>
-                  <TableHead className="text-right">Updated</TableHead>
-                  <TableHead></TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {rows.map((c) => {
-                  const leaf = c.app.startsWith(`${c.repo}-`) ? c.app.slice(c.repo.length + 1) : c.app
-                  return (
-                    <TableRow key={`${c.org}-${c.app}`}>
-                      <TableCell className="font-medium">{nameOf(c.org)}</TableCell>
-                      <TableCell className="font-mono text-xs">{leaf}</TableCell>
-                      <TableCell className="font-mono">{c.version}</TableCell>
-                      <TableCell>
-                        <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${bumpChip(c.bump)}`}>{c.bump}</span>
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">{c.commit_count}</TableCell>
-                      <TableCell className="text-right font-mono text-[11px] text-muted-foreground">{relAge(c.updated_at)}</TableCell>
-                      <TableCell className="text-right">
-                        <Link to="/projects/$org/apps/$app" params={{ org: c.org, app: c.app }} className="text-xs text-primary hover:underline">Review →</Link>
-                      </TableCell>
-                    </TableRow>
-                  )
-                })}
-              </TableBody>
-            </Table>
-          </Card>
-        )}
+        <div className="flex flex-col gap-2">
+          {rows.map((c) => {
+            const leaf = c.app.startsWith(`${c.repo}-`) ? c.app.slice(c.repo.length + 1) : c.app
+            return (
+              <details key={`${c.org}-${c.app}`} className="rounded-lg border">
+                <summary className="flex cursor-pointer flex-wrap items-center gap-2 px-4 py-3 text-sm">
+                  <span className="font-medium">{nameOf(c.org)}</span>
+                  <span className="text-muted-foreground">›</span>
+                  <span className="font-mono">{leaf}</span>
+                  <span className="text-muted-foreground">→ <span className="font-mono text-foreground">{c.version}</span></span>
+                  <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${bumpChip(c.bump)}`}>{c.bump}</span>
+                  <span className="text-xs text-muted-foreground">{c.commit_count} commit{c.commit_count === 1 ? '' : 's'}</span>
+                  <span className="ml-auto flex items-center gap-3">
+                    <span className="font-mono text-[11px] text-muted-foreground">{relAge(c.updated_at)}</span>
+                    <Link to="/projects/$org/apps/$app" params={{ org: c.org, app: c.app }}
+                      onClick={(e) => e.stopPropagation()} className="text-xs text-primary hover:underline">Open app →</Link>
+                  </span>
+                </summary>
+                <div className="border-t px-4 py-3">
+                  <DraftCard org={c.org} app={c.app} />
+                </div>
+              </details>
+            )
+          })}
+        </div>
       </QueryState>
     </>
   )
