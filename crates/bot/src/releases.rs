@@ -371,7 +371,16 @@ pub async fn cut_repo(
     for app in &targets {
         match do_cut(&state, &org, app, &q.bump, &actor).await {
             Ok(msg) => lines.push(format!("{app}: {msg}")),
-            Err(e) => lines.push(format!("{app}: FAILED — {e:#}")),
+            // "nothing to release" isn't a failure of the bulk action — an app
+            // with no releasable commits is simply skipped.
+            Err(e) => {
+                let msg = format!("{e:#}");
+                if msg.contains("nothing to release") {
+                    lines.push(format!("{app}: skipped — nothing to release"));
+                } else {
+                    lines.push(format!("{app}: FAILED — {msg}"));
+                }
+            }
         }
     }
     Ok(lines.join("\n"))
@@ -636,7 +645,18 @@ async fn do_cut(state: &AppState, org: &str, app: &str, bump: &str, actor: &str)
             generate_changelog(&msgs, &rules)
         };
         let core = next.trim_start_matches('v');
-        push_release_commit(state, org, &repo, app, &dir, core, &notes).await?;
+        // Best-effort: a protected `main` with no App bypass rejects the direct
+        // push. Don't abort the release for that — fall back to tagging `main`
+        // HEAD without the in-repo bump (grant the App a ruleset bypass to enable
+        // the version/changelog push there).
+        if let Err(e) = push_release_commit(state, org, &repo, app, &dir, core, &notes).await {
+            tracing::warn!(
+                org,
+                app,
+                error = format!("{e:#}"),
+                "release version/changelog push failed — tagging without the in-repo bump"
+            );
+        }
     }
 
     // The git tag: per-app → `@<scope>/<leaf>@vX.Y.Z`, else the plain version.
