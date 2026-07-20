@@ -371,6 +371,21 @@ fn scoped_tag_variants(decl: &AppDecl, core: &str) -> Vec<String> {
     ]
 }
 
+/// The git tag to **create** when releasing `app` at `version` (ADR 0020). A
+/// per-app release always uses the `v`-prefixed scoped form
+/// `@<scope>/<leaf>@vX.Y.Z` — Changesets prefixes the scoped git tag with `v`
+/// even though the image/recorded version is bare, so we match that convention
+/// regardless of the stored version's prefix. Repo-wide releases use the version
+/// verbatim (its own preserved `v`/bare prefix).
+fn release_tag_to_create(decl: Option<&AppDecl>, version: &str) -> String {
+    match decl {
+        Some(d) if d.is_per_app_release() => {
+            d.release_tag(&format!("v{}", version.trim_start_matches('v')))
+        }
+        _ => version.to_string(),
+    }
+}
+
 /// Candidate base refs for the commit diff since `last`, most-specific first.
 /// Prepends the app's *configured* per-app scoped tag (ADR 0020) in both `v` and
 /// bare spellings — which `LastRelease::tag_candidates` can't know when the scope
@@ -456,11 +471,8 @@ async fn do_cut(state: &AppState, org: &str, app: &str, bump: &str, actor: &str)
         "{prefix}{}",
         next_version(last.as_ref().map(|l| l.ver), &effective)?
     );
-    // The git tag: per-app scoped, or the plain repo-wide version.
-    let tag = decl
-        .as_ref()
-        .map(|d| d.release_tag(&next))
-        .unwrap_or_else(|| next.clone());
+    // The git tag: per-app → `@<scope>/<leaf>@vX.Y.Z`, else the plain version.
+    let tag = release_tag_to_create(decl.as_ref(), &next);
     create_release_tag(state, org, &repo, &tag).await?;
     state.store.log_event(
         "release-cut",
@@ -895,10 +907,7 @@ async fn submit_draft(
         .as_ref()
         .map(|d| d.release_unit().to_string())
         .unwrap_or_else(|| app.to_string());
-    let tag = decl
-        .as_ref()
-        .map(|d| d.release_tag(&draft.version))
-        .unwrap_or_else(|| draft.version.clone());
+    let tag = release_tag_to_create(decl.as_ref(), &draft.version);
     create_release_tag(state, org, &repo, &tag).await?;
     let (apps, _last) = unit_apps_and_last(state, org, app).await;
     for a in &apps {
@@ -1419,6 +1428,31 @@ mod tests {
         );
         // Generic fallbacks remain.
         assert!(cands.iter().any(|c| c == "v0.39.0"));
+    }
+
+    #[test]
+    fn cut_creates_v_prefixed_scoped_tag() {
+        use super::release_tag_to_create;
+        let per_app = per_app_decl("sideline-server", "sideline", "sideline");
+        // A bare recorded version still cuts the `v`-prefixed scoped git tag
+        // (Changesets convention), and a `v` input doesn't double up.
+        assert_eq!(
+            release_tag_to_create(Some(&per_app), "0.39.0"),
+            "@sideline/server@v0.39.0"
+        );
+        assert_eq!(
+            release_tag_to_create(Some(&per_app), "v0.39.0"),
+            "@sideline/server@v0.39.0"
+        );
+        // Repo-wide / solo → the version verbatim (its own preserved prefix).
+        let repo_wide = AppDecl {
+            name: "blog".into(),
+            template: "web-app".into(),
+            repo: None,
+            release: None,
+        };
+        assert_eq!(release_tag_to_create(Some(&repo_wide), "v1.2.3"), "v1.2.3");
+        assert_eq!(release_tag_to_create(None, "0.5.0"), "0.5.0");
     }
 
     #[test]
