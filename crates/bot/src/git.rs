@@ -186,3 +186,22 @@ pub async fn force_update_ref(
         .with_context(|| format!("updating ref {branch}"))?;
     Ok(())
 }
+
+/// Fast-forward a branch to `sha` (non-force): fails if the branch isn't an
+/// ancestor of `sha` (i.e. a concurrent push moved it), so a release commit can
+/// never clobber someone else's work — it errors and the caller can retry.
+pub async fn update_ref(
+    client: &octocrab::Octocrab,
+    repo: &str,
+    branch: &str,
+    sha: &str,
+) -> Result<()> {
+    let _: serde_json::Value = client
+        .patch(
+            format!("{repo}/git/refs/heads/{branch}"),
+            Some(&json!({ "sha": sha, "force": false })),
+        )
+        .await
+        .with_context(|| format!("fast-forwarding ref {branch}"))?;
+    Ok(())
+}

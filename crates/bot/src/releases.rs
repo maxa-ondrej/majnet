@@ -16,6 +16,7 @@ use anyhow::{Context, Result};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
+use base64::Engine;
 use majnet_common::project::{AppDecl, Autorelease, Role};
 use std::sync::Arc;
 
@@ -555,8 +556,10 @@ async fn do_cut(state: &AppState, org: &str, app: &str, bump: &str, actor: &str)
     let prefix = last.as_ref().map(|l| l.prefix).unwrap_or("v");
 
     // Resolve `auto` to a concrete bump from conventional commits since the last
-    // release; explicit bumps pass through unchanged.
-    let (effective, note) = if bump == "auto" {
+    // release; explicit bumps pass through unchanged. `msgs` (path-scoped
+    // per-app) also feeds the pushed changelog. For `auto` the diff is required
+    // (propagate errors); for an explicit bump it's best-effort (changelog only).
+    let (effective, note, msgs) = if bump == "auto" {
         match &last {
             Some(l) => {
                 let cands = base_tag_candidates(decl.as_ref(), &repo, l);
@@ -572,18 +575,45 @@ async fn do_cut(state: &AppState, org: &str, app: &str, bump: &str, actor: &str)
                 (
                     b.to_string(),
                     format!(" (auto → {b} from {} commits)", msgs.len()),
+                    msgs,
                 )
             }
-            None => ("patch".to_string(), " (auto → first release)".to_string()),
+            None => (
+                "patch".to_string(),
+                " (auto → first release)".to_string(),
+                Vec::new(),
+            ),
         }
     } else {
-        (bump.to_string(), String::new())
+        let msgs = match &last {
+            Some(l) => {
+                let cands = base_tag_candidates(decl.as_ref(), &repo, l);
+                commits_since(state, org, &repo, &cands, scoped_diff_paths(decl.as_ref()))
+                    .await
+                    .unwrap_or_default()
+            }
+            None => Vec::new(),
+        };
+        (bump.to_string(), String::new(), msgs)
     };
 
     let next = format!(
         "{prefix}{}",
         next_version(last.as_ref().map(|l| l.ver), &effective)?
     );
+
+    // Per-app: push the version bump + changelog to the repo, then tag that
+    // commit; otherwise just tag `main` HEAD. package.json takes the bare semver.
+    if let Some(dir) = app_dir(decl.as_ref()) {
+        let notes = if last.is_none() {
+            "_Initial release._\n".to_string()
+        } else {
+            generate_changelog(&msgs)
+        };
+        let core = next.trim_start_matches('v');
+        push_release_commit(state, org, &repo, app, &dir, core, &notes).await?;
+    }
+
     // The git tag: per-app → `@<scope>/<leaf>@vX.Y.Z`, else the plain version.
     let tag = release_tag_to_create(decl.as_ref(), &next);
     create_release_tag(state, org, &repo, &tag).await?;
@@ -671,6 +701,162 @@ fn changelog_section(title: &str, items: &[String], out: &mut String) {
     out.push('\n');
 }
 
+// ── release file push: version bump + changelog into the repo (ADR 0020) ──────
+// A per-app release commits `<app-dir>/package.json` (version bumped) + prepends
+// `<app-dir>/CHANGELOG.md`, then tags that commit. The app dir is the literal
+// prefix of the first `release.paths` glob. Direct push to `main` (no PR), with a
+// commit-message marker so the push doesn't re-trigger autorelease.
+
+/// Marker prefix on a MajNet release commit — `on_app_main_push` skips autorelease
+/// for a push whose head commit is one, breaking the release→push→release loop.
+const RELEASE_COMMIT_PREFIX: &str = "chore(release): ";
+
+/// The app's directory in the repo — the literal prefix of its first
+/// `release.paths` glob (`applications/server/**` → `applications/server`).
+/// `None` unless it's a per-app release with a usable path; then the cut just
+/// tags, without a version/changelog push.
+fn app_dir(decl: Option<&AppDecl>) -> Option<String> {
+    let d = decl?;
+    if !d.is_per_app_release() {
+        return None;
+    }
+    d.release_paths()
+        .iter()
+        .map(|p| glob_to_prefix(p))
+        .find(|p| !p.is_empty())
+}
+
+/// Set the first `"version"` string value in package.json text, preserving
+/// formatting + key order (a serde round-trip would reorder keys). Errors if the
+/// key is absent/malformed.
+fn set_json_version(content: &str, version: &str) -> Result<String> {
+    let key = content
+        .find("\"version\"")
+        .context("package.json has no \"version\" key")?;
+    let after = &content[key..];
+    let colon = after.find(':').context("malformed \"version\" entry")?;
+    let rest = &after[colon + 1..];
+    let q1 = rest
+        .find('"')
+        .context("\"version\" value is not a string")?;
+    let q2 = rest[q1 + 1..]
+        .find('"')
+        .context("unterminated \"version\" value")?;
+    let start = key + colon + 1 + q1 + 1;
+    let end = start + q2;
+    Ok(format!("{}{version}{}", &content[..start], &content[end..]))
+}
+
+/// A CHANGELOG.md entry: the version as an H2, with the generated notes' H2
+/// section headers demoted to H3 so they nest beneath it.
+fn changelog_entry(version: &str, notes: &str) -> String {
+    let body = notes
+        .lines()
+        .map(|l| {
+            l.strip_prefix("## ")
+                .map(|r| format!("### {r}"))
+                .unwrap_or_else(|| l.to_string())
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("## {version}\n\n{}\n", body.trim())
+}
+
+/// Prepend a changelog entry, keeping a leading `# ` title at the top.
+fn prepend_changelog(existing: Option<&str>, entry: &str) -> String {
+    match existing {
+        Some(c) if !c.trim().is_empty() => {
+            let c = c.trim_start_matches('\u{feff}');
+            if let Some(rest) = c.strip_prefix("# ") {
+                let (title, body) = rest.split_once('\n').unwrap_or((rest, ""));
+                format!("# {}\n\n{entry}\n{}", title.trim_end(), body.trim_start())
+            } else {
+                format!("{entry}\n{c}")
+            }
+        }
+        _ => format!("# Changelog\n\n{entry}"),
+    }
+}
+
+/// A repo file's text on `main`, or `None` if absent/unreadable.
+async fn read_repo_file(
+    client: &octocrab::Octocrab,
+    org: &str,
+    repo: &str,
+    path: &str,
+) -> Option<String> {
+    let content = client
+        .repos(org, repo)
+        .get_content()
+        .path(path)
+        .r#ref("main")
+        .send()
+        .await
+        .ok()?;
+    let item = content.items.into_iter().next()?;
+    let b64 = item.content?.replace(['\n', ' '], "");
+    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+    String::from_utf8(bytes).ok()
+}
+
+/// Commit a per-app release's version bump + changelog to the repo's `main` in
+/// one commit (ADR 0020); the caller then tags it. `version` is the bare semver
+/// for package.json. Best-effort per file: a missing package.json is skipped (the
+/// changelog is still written). Fast-forward only — a concurrent push makes it
+/// error rather than clobber. The message carries `RELEASE_COMMIT_PREFIX`.
+async fn push_release_commit(
+    state: &AppState,
+    org: &str,
+    repo: &str,
+    app: &str,
+    dir: &str,
+    version: &str,
+    notes: &str,
+) -> Result<()> {
+    let client = state.github.org_client(org).await?;
+    let repo_path = format!("/repos/{org}/{repo}");
+    let head = crate::git::get_branch_head(&client, &repo_path, "main")
+        .await?
+        .with_context(|| format!("repo {org}/{repo} has no main branch"))?;
+
+    let mut changes: std::collections::BTreeMap<String, Option<String>> = Default::default();
+    let pkg_path = format!("{dir}/package.json");
+    if let Some(pkg) = read_repo_file(&client, org, repo, &pkg_path).await {
+        match set_json_version(&pkg, version) {
+            Ok(updated) if updated != pkg => {
+                changes.insert(pkg_path, Some(updated));
+            }
+            Ok(_) => {} // already at this version
+            Err(e) => {
+                tracing::warn!(
+                    org,
+                    app,
+                    error = format!("{e:#}"),
+                    "skipping package.json bump"
+                )
+            }
+        }
+    } else {
+        tracing::info!(org, app, %pkg_path, "no package.json — skipping version bump");
+    }
+    let cl_path = format!("{dir}/CHANGELOG.md");
+    let existing = read_repo_file(&client, org, repo, &cl_path).await;
+    let entry = changelog_entry(version, notes);
+    changes.insert(
+        cl_path,
+        Some(prepend_changelog(existing.as_deref(), &entry)),
+    );
+
+    let base_tree = crate::git::commit_tree(&client, &repo_path, &head).await?;
+    let tree =
+        crate::git::create_tree_incremental(&client, &repo_path, &base_tree, &changes).await?;
+    let msg = format!("{RELEASE_COMMIT_PREFIX}{app} {version}");
+    let commit = crate::git::create_commit(&client, &repo_path, &tree, &[&head], &msg).await?;
+    crate::git::update_ref(&client, &repo_path, "main", &commit).await?;
+    tracing::info!(org, app, version, "pushed release version bump + changelog");
+    Ok(())
+}
+
 /// Prepare (or refresh) the draft for `app`'s release unit (ADR 0020) from
 /// conventional commits since its last release. The unit is the app itself
 /// (per-app mode) or the shared repo (repo-wide); the draft is keyed by that
@@ -738,10 +924,21 @@ pub(crate) async fn prepare_draft(state: &AppState, org: &str, app: &str) -> Res
 /// `changed` file matches its `paths`) or refresh its advisory **draft**. Only
 /// declared app repos do anything. Errors are swallowed — a push must never
 /// break, and releasing is best-effort.
-pub(crate) async fn on_app_main_push(state: &AppState, org: &str, repo: &str, changed: &[String]) {
+///
+/// `head_msg` is the push's head-commit message: a MajNet release commit (which
+/// pushes the version bump + changelog) carries `RELEASE_COMMIT_PREFIX`, and we
+/// **skip autorelease** for it so a release can't re-trigger another release.
+pub(crate) async fn on_app_main_push(
+    state: &AppState,
+    org: &str,
+    repo: &str,
+    changed: &[String],
+    head_msg: &str,
+) {
     let Ok(project) = crate::dashboard_api::read_project(state, org).await else {
         return;
     };
+    let is_release_commit = head_msg.starts_with(RELEASE_COMMIT_PREFIX);
     // One representative app per release unit: each per-app app, plus one for the
     // repo-wide unit (they share a single draft/line).
     let mut reps: Vec<AppDecl> = Vec::new();
@@ -756,8 +953,9 @@ pub(crate) async fn on_app_main_push(state: &AppState, org: &str, repo: &str, ch
     reps.extend(repo_wide_rep);
     for rep in reps {
         // Autorelease-enabled units auto-cut on a matching change; the rest just
-        // refresh their draft (the two are mutually exclusive per unit).
-        let result = if rep.autorelease_mode() != Autorelease::Off {
+        // refresh their draft (mutually exclusive per unit). A release commit's
+        // own push never autoreleases (loop guard).
+        let result = if rep.autorelease_mode() != Autorelease::Off && !is_release_commit {
             try_autorelease(state, org, &rep, changed).await
         } else {
             prepare_draft(state, org, &rep.name).await
@@ -1021,6 +1219,12 @@ async fn submit_draft(
         .as_ref()
         .map(|d| d.release_unit().to_string())
         .unwrap_or_else(|| app.to_string());
+    // Per-app: push the version bump + changelog (the draft's notes), then tag
+    // that commit; otherwise just tag `main` HEAD.
+    if let Some(dir) = app_dir(decl.as_ref()) {
+        let core = draft.version.trim_start_matches('v');
+        push_release_commit(state, org, &repo, app, &dir, core, &draft.notes).await?;
+    }
     let tag = release_tag_to_create(decl.as_ref(), &draft.version);
     create_release_tag(state, org, &repo, &tag).await?;
     let (apps, _last) = unit_apps_and_last(state, org, app).await;
@@ -1600,6 +1804,64 @@ mod tests {
         );
         // Nothing stale when every stored version is still present.
         assert!(stale_versions(&have[1..], &registry).is_empty());
+    }
+
+    #[test]
+    fn set_json_version_preserves_formatting_and_key_order() {
+        use super::set_json_version;
+        let pkg = "{\n  \"name\": \"@sideline/server\",\n  \"version\": \"0.38.7\",\n  \"private\": true,\n  \"dependencies\": { \"x\": \"^1.0.0\" }\n}\n";
+        let out = set_json_version(pkg, "0.39.0").unwrap();
+        assert!(out.contains("\"version\": \"0.39.0\""));
+        // Everything else untouched (name first, deps intact, no reordering).
+        assert!(out.starts_with("{\n  \"name\": \"@sideline/server\","));
+        assert!(out.contains("\"dependencies\": { \"x\": \"^1.0.0\" }"));
+        assert!(!out.contains("0.38.7"));
+        // No version key → error, not a silent no-op.
+        assert!(set_json_version("{\"name\":\"x\"}", "1.0.0").is_err());
+    }
+
+    #[test]
+    fn changelog_entry_demotes_sections_under_the_version() {
+        use super::changelog_entry;
+        let notes = "## 🚀 Features\n- add export\n## 🐛 Fixes\n- npe";
+        let e = changelog_entry("0.39.0", notes);
+        assert!(e.starts_with("## 0.39.0\n\n"));
+        assert!(e.contains("### 🚀 Features"));
+        assert!(e.contains("### 🐛 Fixes"));
+        assert!(!e.contains("\n## 🚀")); // demoted, no stray H2 sections
+    }
+
+    #[test]
+    fn prepend_changelog_keeps_title_and_stacks_newest_first() {
+        use super::prepend_changelog;
+        // Fresh file.
+        let fresh = prepend_changelog(None, "## 0.1.0\n\n- first\n");
+        assert_eq!(fresh, "# Changelog\n\n## 0.1.0\n\n- first\n");
+        // Existing with a title → new entry goes under the title, above the old.
+        let existing = "# Changelog\n\n## 0.1.0\n\n- first\n";
+        let out = prepend_changelog(Some(existing), "## 0.2.0\n\n- second\n");
+        assert!(out.starts_with("# Changelog\n\n## 0.2.0"));
+        assert!(out.find("0.2.0").unwrap() < out.find("0.1.0").unwrap());
+    }
+
+    #[test]
+    fn app_dir_is_the_first_path_prefix_for_per_app_only() {
+        use super::app_dir;
+        let mut d = per_app_decl("sideline-server", "sideline", "sideline");
+        d.release.as_mut().unwrap().paths =
+            vec!["applications/server/**".into(), "packages/shared/**".into()];
+        assert_eq!(app_dir(Some(&d)).as_deref(), Some("applications/server"));
+        // No paths → None (release just tags).
+        let d2 = per_app_decl("x", "r", "r");
+        assert_eq!(app_dir(Some(&d2)), None);
+        // Repo-wide (no scope) → None even with paths.
+        let repo_wide = AppDecl {
+            name: "blog".into(),
+            template: "web-app".into(),
+            repo: None,
+            release: None,
+        };
+        assert_eq!(app_dir(Some(&repo_wide)), None);
     }
 
     #[test]

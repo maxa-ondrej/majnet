@@ -68,6 +68,17 @@ apps:
   commits API filtered by `path`, bounded by the base commit's date) — so a busy
   monorepo doesn't inflate one app's changelog with sibling changes. No `paths`
   (or a leading-glob pattern) falls back to the whole-repo `base...main` diff.
+- **A release pushes the version bump + changelog into the repo.** For a per-app
+  unit with a derivable app dir (the literal prefix of its first `release.paths`
+  glob, e.g. `applications/server`), cut/submit first commit — directly to `main`,
+  one commit, no PR — the bumped `<dir>/package.json` `"version"` (bare semver,
+  formatting/key-order preserved via a targeted edit, not a serde round-trip) and
+  a prepended `<dir>/CHANGELOG.md` entry, **then tag that commit**. The commit
+  message carries a `chore(release): ` marker, and `on_app_main_push` skips
+  autorelease for such a push — so a release never re-triggers a release. The
+  fast-forward ref update means a concurrent push errors rather than being
+  clobbered. No `paths` / no package.json → the file push is skipped (the release
+  still tags).
 - **Provenance** resolves the app's *configured* scoped git tag first
   (`resolve_commit` → `AppDecl::release_tag`), covering a scope that differs from
   the repo name; the legacy `@<repo>/<leaf>@<ver>` and plain `vX.Y.Z` remain

@@ -170,7 +170,10 @@ async fn on_push(state: &AppState, org: &str, payload: &serde_json::Value) -> an
         // autorelease apps whose paths changed) — best-effort, a no-op unless
         // it's a declared app repo.
         let changed = changed_paths(payload);
-        crate::releases::on_app_main_push(state, org, repo, &changed).await;
+        let head_msg = payload["head_commit"]["message"]
+            .as_str()
+            .unwrap_or_default();
+        crate::releases::on_app_main_push(state, org, repo, &changed, head_msg).await;
     } else {
         tracing::debug!(
             org,
