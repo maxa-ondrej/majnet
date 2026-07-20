@@ -310,6 +310,22 @@ impl Store {
         Ok(rows)
     }
 
+    /// Delete a recorded release (and any changelog notes) — used by the registry
+    /// reconcile (ADR 0009) to drop a version whose tag was removed from GHCR.
+    /// Returns whether a row was deleted.
+    pub fn delete_release(&self, org: &str, app: &str, version: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM release_notes WHERE org = ?1 AND app = ?2 AND version = ?3",
+            rusqlite::params![org, app, version],
+        )?;
+        let n = conn.execute(
+            "DELETE FROM releases WHERE org = ?1 AND app = ?2 AND version = ?3",
+            rusqlite::params![org, app, version],
+        )?;
+        Ok(n > 0)
+    }
+
     /// The pending draft release for a repo, if any.
     pub fn release_draft(&self, org: &str, repo: &str) -> Result<Option<ReleaseDraft>> {
         use rusqlite::OptionalExtension;

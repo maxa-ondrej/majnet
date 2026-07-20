@@ -147,12 +147,16 @@ inside the app image**: `promote vX.Y.Z` pins that image, and the reconciler's
   release). Nothing auto-releases — a draft waits for an operator. Endpoints:
   `GET`/`DELETE …/draft`, `POST …/draft/refresh`, `PUT …/draft/notes`,
   `POST …/draft/submit`. Operator-edited notes survive a push refresh.
-- ✅ **Release backfill** — a missed `registry_package` for a `vX.Y.Z` tag left
-  the store (and stable) unaware of that release with no self-heal. Recovered
-  on demand: `releases::backfill` enumerates **GHCR package versions**
-  (tag→digest is authoritative there) and records any missing version-tagged
-  one; exposed as `POST /api/releases/{org}/{app}/backfill` (Developer-gated)
-  with a "Backfill from registry" button on the app's Releases panel. Needs
-  `packages:read` on the installation token (already requested).
+- ✅ **Registry reconcile** (was "backfill") — the store can drift from the
+  registry both ways: a missed `registry_package` webhook leaves a `vX.Y.Z`
+  publish unrecorded, and a tag deleted upstream leaves a stale record.
+  `releases::backfill` now **reconciles**: it enumerates **GHCR package versions**
+  (tag→digest is authoritative there), **records** any missing version-tagged one,
+  and **prunes** store releases whose tag no longer exists in the registry.
+  Pruning is guarded (only when the listing completed and found ≥1 version tag, so
+  a partial/empty listing can't mass-delete) and edits only the release store —
+  the stable/production git pins are untouched. Exposed as
+  `POST /api/releases/{org}/{app}/backfill` (Developer-gated) via the "Reconcile
+  with registry" button. Needs `read:packages` on the GHCR PAT.
 - Production promote: allow any release, or only newer-than-current?
 - `ephemeral` still builds per-PR; confirm it stays digest-from-PR-build (yes).

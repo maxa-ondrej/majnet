@@ -1003,15 +1003,33 @@ async fn track_stable(state: &AppState, org: &str, app: &str) -> Result<()> {
     Ok(())
 }
 
-/// Backfill releases for `org/app` from GHCR package versions (ADR 0009 open
-/// item). The `registry_package` webhook is the fast path, but a missed
-/// delivery leaves the store (and stable) unaware of a `vX.Y.Z` publish with no
-/// self-heal. The tag→digest map on the registry is authoritative, so this
-/// enumerates every container version, and records each version-tagged one that
-/// isn't already known (idempotent — `record` upserts + re-tracks stable).
-/// Returns how many *new* releases were recorded. Needs `packages:read` on the
-/// installation token.
-pub async fn backfill(state: &AppState, org: &str, app: &str) -> Result<usize> {
+/// The store versions to prune during a reconcile: version-tagged releases whose
+/// tag is no longer present in the registry's set. Pure — the caller supplies the
+/// guard (only reconcile when the registry set is complete + non-empty).
+fn stale_versions(
+    store_versions: &[String],
+    registry: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    store_versions
+        .iter()
+        .filter(|v| crate::digest::is_version_tag(v) && !registry.contains(v.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// Reconcile `org/app`'s releases against the GHCR registry (ADR 0009). The
+/// registry's tag→digest map is authoritative, so this enumerates every
+/// container version and: **records** each version-tagged one not already known
+/// (self-heal for a missed `registry_package` webhook — idempotent), and
+/// **prunes** store releases whose version tag no longer exists in the registry
+/// (e.g. a tag deleted upstream). Returns `(recorded, pruned)`.
+///
+/// Pruning is guarded: only when the listing completed (didn't hit the page cap)
+/// **and** found ≥1 version tag, so an API hiccup or an empty/renamed package can
+/// never wipe the store. Deploy-safe — it only edits the release *store*; the
+/// stable/production git pins are untouched (production moves only via promote).
+/// Needs `read:packages` on the GHCR PAT.
+pub async fn backfill(state: &AppState, org: &str, app: &str) -> Result<(usize, usize)> {
     let mut known: std::collections::HashSet<String> = state
         .store
         .releases(org, app)?
@@ -1029,8 +1047,11 @@ pub async fn backfill(state: &AppState, org: &str, app: &str) -> Result<usize> {
     let (package, image_base) = app_package(state, org, app).await;
     let package_enc = package.replace('/', "%2F");
     let mut recorded = 0;
+    // Every version tag the registry currently has (for the reconcile prune).
+    let mut registry_versions: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut complete = false;
     // Paginate defensively (cap at 10×100 versions) so a huge package can't spin
-    // forever; a break on a short page ends it early.
+    // forever; a break on a short page ends it early (and proves completeness).
     for page in 1..=10u32 {
         let resp = state
             .http
@@ -1061,24 +1082,51 @@ pub async fn backfill(state: &AppState, org: &str, app: &str) -> Result<usize> {
                 continue;
             };
             for tag in tags.iter().filter_map(|t| t.as_str()) {
-                if crate::digest::is_version_tag(tag) && known.insert(tag.to_string()) {
-                    let image = format!("{image_base}@{digest}");
-                    record(state, org, app, tag, &image).await?;
-                    recorded += 1;
+                if crate::digest::is_version_tag(tag) {
+                    registry_versions.insert(tag.to_string());
+                    if known.insert(tag.to_string()) {
+                        let image = format!("{image_base}@{digest}");
+                        record(state, org, app, tag, &image).await?;
+                        recorded += 1;
+                    }
                 }
             }
         }
         if count < 100 {
+            complete = true;
             break;
         }
     }
-    tracing::info!(org, app, recorded, "release backfill complete");
-    Ok(recorded)
+
+    // Reconcile: prune store releases whose tag vanished from the registry.
+    // Guarded so a partial/empty listing can never mass-delete.
+    let mut pruned = 0;
+    if complete && !registry_versions.is_empty() {
+        let have: Vec<String> = state
+            .store
+            .releases(org, app)?
+            .into_iter()
+            .map(|r| r.version)
+            .collect();
+        for v in stale_versions(&have, &registry_versions) {
+            if state.store.delete_release(org, app, &v)? {
+                state.store.log_event(
+                    "release-pruned",
+                    Some(org),
+                    &format!("{app} {v} (tag gone from registry)"),
+                )?;
+                pruned += 1;
+            }
+        }
+    }
+    tracing::info!(org, app, recorded, pruned, "release reconcile complete");
+    Ok((recorded, pruned))
 }
 
-/// `POST /api/releases/{org}/{app}/backfill` — recover missed releases from the
-/// registry (ADR 0009 open item). Developer-gated (a stable-class recovery, not
-/// a production change — production still moves only via promote).
+/// `POST /api/releases/{org}/{app}/backfill` — reconcile releases with the
+/// registry (ADR 0009): record missed `vX.Y.Z` publishes and prune records whose
+/// tag was deleted upstream. Developer-gated (a stable-class recovery, not a
+/// production change — production still moves only via promote).
 pub async fn backfill_post(
     State(state): State<Arc<AppState>>,
     Path((org, app)): Path<(String, String)>,
@@ -1087,11 +1135,11 @@ pub async fn backfill_post(
     crate::authz::require(&state, &headers, &org, Role::Developer)
         .await
         .map_err(|e| (StatusCode::FORBIDDEN, format!("{e:#}")))?;
-    let n = backfill(&state, &org, &app)
+    let (recorded, pruned) = backfill(&state, &org, &app)
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
     Ok(format!(
-        "backfilled {n} release(s) for {app} from the registry"
+        "reconciled {app} with the registry: recorded {recorded}, pruned {pruned}"
     ))
 }
 
@@ -1342,6 +1390,27 @@ mod tests {
         assert_eq!(cands[0], "@acme/server@v0.39.0", "{cands:?}");
         // Generic fallbacks remain.
         assert!(cands.iter().any(|c| c == "v0.39.0"));
+    }
+
+    #[test]
+    fn reconcile_prunes_only_versions_gone_from_the_registry() {
+        use super::stale_versions;
+        use std::collections::HashSet;
+        let have = vec![
+            "v0.39.0".to_string(), // deleted upstream → prune
+            "0.38.7".to_string(),  // still in registry → keep
+            "0.38.6".to_string(),  // still in registry → keep
+        ];
+        let registry: HashSet<String> = ["0.38.7", "0.38.6", "0.38.5"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            stale_versions(&have, &registry),
+            vec!["v0.39.0".to_string()]
+        );
+        // Nothing stale when every stored version is still present.
+        assert!(stale_versions(&have[1..], &registry).is_empty());
     }
 
     #[test]

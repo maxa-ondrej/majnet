@@ -586,13 +586,13 @@ function Releases({ org, app, repo, prodImage }: { org: string; app: string; rep
           </DropdownMenu>
         )}
         <Button variant="outline" size="sm" disabled={m.isPending}
-          title="Recover any vX.Y.Z publishes the registry_package webhook missed"
-          onClick={() => m.mutate(() => send(urls.releaseBackfill(org, app)))}>Backfill from registry</Button>
+          title="Reconcile with the registry: record vX.Y.Z publishes the webhook missed, and prune releases whose tag was deleted upstream"
+          onClick={() => m.mutate(() => send(urls.releaseBackfill(org, app)))}>Reconcile with registry</Button>
       </div>
       <ReleaseSettings org={org} app={app} repo={repo} />
       <DraftCard org={org} app={app} />
       {releases.length === 0 && (
-        <p className="text-sm text-muted-foreground">No releases yet. Tag <code className="font-mono">vX.Y.Z</code> in the app repo, or Backfill from the registry.</p>
+        <p className="text-sm text-muted-foreground">No releases yet. Tag <code className="font-mono">vX.Y.Z</code> in the app repo, or Reconcile with the registry.</p>
       )}
       <div className="flex flex-col gap-2">
         {shown.map((r) => {
