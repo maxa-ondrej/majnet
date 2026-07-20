@@ -189,6 +189,7 @@ export const urls = {
   appSecretValues: (org: string, cls: string, app: string) =>
     `${RECON}/secrets/${encodeURIComponent(org)}/${encodeURIComponent(cls)}/${encodeURIComponent(app)}`,
   releaseDrafts: `${BOT}/releases/drafts`,
+  releaseBulk: `${BOT}/releases/bulk`,
   releases: (org: string, app: string) => `${BOT}/releases/${encodeURIComponent(org)}/${encodeURIComponent(app)}`,
   releaseCut: (org: string, app: string, bump: string) =>
     `${BOT}/releases/${encodeURIComponent(org)}/${encodeURIComponent(app)}/cut?bump=${bump}`,

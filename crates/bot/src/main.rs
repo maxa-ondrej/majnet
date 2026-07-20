@@ -171,6 +171,7 @@ async fn main() -> Result<()> {
             post(dashboard_api::imports_retry),
         )
         .route("/api/releases/drafts", get(releases::drafts_all))
+        .route("/api/releases/bulk", post(releases::bulk_submit))
         .route("/api/releases/{org}/{app}", get(releases::list))
         .route("/api/releases/{org}/{app}/cut", post(releases::cut))
         // Same `{app}` param slot as the sibling release routes (matchit rejects a
