@@ -39,12 +39,17 @@ const EDGE_NANO_CPUS: i64 = 500_000_000; // 0.5 CPU
 
 // Managed Adminer (ADR 0014): a reconciler-owned DB browser on the prod node,
 // on a private network shared with postgres — never on the public `edge`
-// network (DB access stays off the public edge). Replaces the hand-deployed,
-// now-orphaned `majnet-adminer`. Routing to it (tailnet ingress) is ADR 0014
-// phase 2 — out of scope here; this brings it under management + caps it.
+// network (DB access stays off the public edge). Reachable over the tailnet:
+// the browser port is published on the prod node's WireGuard IP only (not a
+// public interface), and the main node's tailnet Caddy reverse-proxies
+// `adminer.<zone>` → `<prod-wireguard-ip>:8081` over WireGuard.
 const ADMINER_IMAGE: &str = "adminer:5";
 const ADMINER_NAME: &str = "majnet-adminer";
 const ADMIN_NETWORK: &str = "majnet-admin";
+// The browser listens on 8080 in-container; the Caddy tailnet route dials 8081
+// on the prod node's WireGuard IP (kept off any public interface).
+const ADMINER_CONTAINER_PORT: &str = "8080";
+const ADMINER_HOST_PORT: &str = "8081";
 const ADMINER_MEM: i64 = 256 * MB;
 const ADMINER_NANO_CPUS: i64 = 500_000_000; // 0.5 CPU
 
@@ -78,7 +83,7 @@ pub async fn converge_platform(state: &AppState, nodes: &NodesFile, platform: &S
             &format!("FAILED: {e:#}"),
         );
     }
-    if let Err(e) = converge_adminer(&docker).await {
+    if let Err(e) = converge_adminer(&docker, &prod.wireguard_ip).await {
         tracing::error!(error = format!("{e:#}"), "adminer convergence failed");
         let _ = state.store.record(
             &platform.commit,
@@ -93,7 +98,7 @@ pub async fn converge_platform(state: &AppState, nodes: &NodesFile, platform: &S
 /// Managed Adminer (ADR 0014): a DB browser on a private network shared with
 /// postgres, capped, config-hash-managed like edge-main. Idempotent; recreated
 /// only when its spec changes. Best-effort — never blocks project convergence.
-async fn converge_adminer(docker: &Docker) -> Result<()> {
+async fn converge_adminer(docker: &Docker, wireguard_ip: &str) -> Result<()> {
     ensure_network(docker, ADMIN_NETWORK).await?;
     // Put postgres (the engine humans browse) on the admin network so Adminer
     // can reach it by name. Best-effort: postgres may not exist yet, or may
@@ -109,12 +114,21 @@ async fn converge_adminer(docker: &Docker) -> Result<()> {
         .await;
 
     let env = vec!["ADMINER_DEFAULT_SERVER=majnet-postgres".to_string()];
-    let hash = adminer_hash(&env);
+    let hash = adminer_hash(&env, wireguard_ip);
     if running_with_hash(docker, ADMINER_NAME, &hash).await? {
         return Ok(());
     }
     ensure_image(docker, ADMINER_IMAGE).await?;
     remove_container(docker, ADMINER_NAME).await;
+    // Publish the browser on the prod node's WireGuard IP only — the tailnet
+    // Caddy dials `<wireguard_ip>:8081`; never bound to a public interface.
+    let port_bindings = HashMap::from([(
+        format!("{ADMINER_CONTAINER_PORT}/tcp"),
+        Some(vec![PortBinding {
+            host_ip: Some(wireguard_ip.to_string()),
+            host_port: Some(ADMINER_HOST_PORT.into()),
+        }]),
+    )]);
     let created = docker
         .create_container(
             Some(qp::CreateContainerOptions {
@@ -125,8 +139,10 @@ async fn converge_adminer(docker: &Docker) -> Result<()> {
                 image: Some(ADMINER_IMAGE.into()),
                 env: Some(env),
                 labels: Some(HashMap::from([(LABEL_CONFIG.to_string(), hash)])),
+                exposed_ports: Some(vec![format!("{ADMINER_CONTAINER_PORT}/tcp")]),
                 host_config: Some(HostConfig {
                     network_mode: Some(ADMIN_NETWORK.into()),
+                    port_bindings: Some(port_bindings),
                     memory: Some(ADMINER_MEM),
                     nano_cpus: Some(ADMINER_NANO_CPUS),
                     restart_policy: Some(RestartPolicy {
@@ -148,7 +164,7 @@ async fn converge_adminer(docker: &Docker) -> Result<()> {
     Ok(())
 }
 
-fn adminer_hash(env: &[String]) -> String {
+fn adminer_hash(env: &[String], wireguard_ip: &str) -> String {
     let mut h = Sha256::new();
     h.update(ADMINER_IMAGE.as_bytes());
     h.update(ADMIN_NETWORK.as_bytes());
@@ -158,6 +174,9 @@ fn adminer_hash(env: &[String]) -> String {
     }
     h.update(ADMINER_MEM.to_le_bytes());
     h.update(ADMINER_NANO_CPUS.to_le_bytes());
+    h.update(wireguard_ip.as_bytes());
+    h.update(ADMINER_HOST_PORT.as_bytes());
+    h.update(ADMINER_CONTAINER_PORT.as_bytes());
     hex::encode(h.finalize())[..16].to_string()
 }
 
