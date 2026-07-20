@@ -87,6 +87,18 @@ export const IMPORT_STEPS: { key: string; label: string }[] = [
 export interface StoredRelease {
   app: string; version: string; commit: string; app_image: string; published_at: string; notes: string | null
 }
+/** Live progress of a release moving through the pipeline (ADR 0022). */
+export interface ReleaseProgress {
+  app: string; version: string; status: 'active' | 'done' | 'failed'; stage: string; detail: string; updated_at: string
+}
+/** Canonical release-progress stage order + labels (mirrors releases.rs). */
+export const RELEASE_STAGES: { key: string; label: string }[] = [
+  { key: 'committing', label: 'Committing bump + changelog' },
+  { key: 'tagging', label: 'Tagging release' },
+  { key: 'building', label: 'Building image (CI)' },
+  { key: 'published', label: 'Image published' },
+  { key: 'tracked', label: 'Stable tracking' },
+]
 /** A pending draft release (bot-prepared, awaiting submit). Repo-wide for a
  *  monorepo. `notes` is the generated changelog (operator-editable). */
 export interface ReleaseDraft {
@@ -194,6 +206,7 @@ export const urls = {
   appSecretValues: (org: string, cls: string, app: string) =>
     `${RECON}/secrets/${encodeURIComponent(org)}/${encodeURIComponent(cls)}/${encodeURIComponent(app)}`,
   releaseDrafts: `${BOT}/releases/drafts`,
+  releaseProgress: (org: string) => `${BOT}/releases/progress/${encodeURIComponent(org)}`,
   releaseBulk: `${BOT}/releases/bulk`,
   releases: (org: string, app: string) => `${BOT}/releases/${encodeURIComponent(org)}/${encodeURIComponent(app)}`,
   releaseCut: (org: string, app: string, bump: string) =>
@@ -350,6 +363,8 @@ export const useReleaseDraft = (org: string, app: string) =>
   useQuery({ queryKey: ['releaseDraft', org, app], queryFn: () => getJSON<ReleaseDraft | null>(urls.releaseDraft(org, app)) })
 export const useReleaseDrafts = () =>
   useQuery({ queryKey: ['releaseDrafts'], queryFn: () => getJSON<ReleaseCandidate[]>(urls.releaseDrafts), refetchInterval: 30_000 })
+export const useReleaseProgress = (org: string, enabled = true) =>
+  useQuery({ queryKey: ['releaseProgress', org], queryFn: () => getJSON<ReleaseProgress[]>(urls.releaseProgress(org)), enabled, refetchInterval: 5_000 })
 export const useReleaseConfig = (org: string, app: string) =>
   useQuery({ queryKey: ['releaseConfig', org, app], queryFn: () => getJSON<ReleaseConfig | null>(urls.releaseConfig(org, app)) })
 export const useArchivedApps = (org: string) =>

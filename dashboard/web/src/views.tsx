@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { ChevronRight, Plus, Loader2, CheckCircle2, Circle, AlertCircle, MoreVertical, Boxes, Rocket, Trash2, Archive, GitPullRequest, RefreshCw, PenLine, TerminalSquare, FolderGit2 } from 'lucide-react'
-import { send, urls, useApps, useAppInfo, useArchivedApps, useBotEvents, useContainerHistory, useDeploys, useEvents, useImports, useMetricsHistory, useNodeMetrics, useNodes, useProjects, useWhoami, parseAt, IMPORT_STEPS, type ImportStatus, type Event, type AppSummary } from './api'
+import { send, urls, useApps, useAppInfo, useArchivedApps, useBotEvents, useContainerHistory, useDeploys, useEvents, useImports, useMetricsHistory, useNodeMetrics, useNodes, useProjects, useWhoami, parseAt, IMPORT_STEPS, RELEASE_STAGES, type ImportStatus, type ReleaseProgress, type Event, type AppSummary } from './api'
 import { useApiMutation } from './mutations'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -31,6 +31,35 @@ export function ImportSteps({ status }: { status: ImportStatus }) {
       })}
       {status.status === 'failed' && (
         <p className="mt-1 rounded-md border border-destructive/40 bg-destructive/10 p-2 font-mono text-xs text-destructive">{status.detail}</p>
+      )}
+    </div>
+  )
+}
+
+/** Step-by-step progress of a release moving through the pipeline (ADR 0022). */
+export function ReleaseSteps({ p }: { p: ReleaseProgress }) {
+  const idx = RELEASE_STAGES.findIndex((s) => s.key === p.stage)
+  // A `done` release has every stage complete (including the last); otherwise
+  // the current stage is active (spinning) or failed.
+  const current = p.status === 'done' ? RELEASE_STAGES.length : idx
+  return (
+    <div className="flex flex-col gap-1.5">
+      {RELEASE_STAGES.map((s, i) => {
+        const done = current > i
+        const active = current === i
+        const failed = active && p.status === 'failed'
+        return (
+          <div key={s.key} className={`flex items-center gap-2 text-sm ${done ? 'text-muted-foreground' : active ? 'font-medium' : 'text-muted-foreground/50'}`}>
+            {failed ? <AlertCircle className="size-4 text-destructive" />
+              : done ? <CheckCircle2 className="size-4 text-primary" />
+              : active ? <Loader2 className="size-4 animate-spin text-primary" />
+              : <Circle className="size-4" />}
+            {s.label}
+          </div>
+        )
+      })}
+      {p.status === 'failed' && (
+        <p className="mt-1 rounded-md border border-destructive/40 bg-destructive/10 p-2 font-mono text-xs text-destructive">{p.detail}</p>
       )}
     </div>
   )

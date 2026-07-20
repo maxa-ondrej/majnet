@@ -88,6 +88,23 @@ pub struct ImportStatus {
     pub updated_at: String,
 }
 
+/// Live progress of a release as it moves through the pipeline (ADR 0022) — the
+/// dashboard renders a per-release stepper from this. Keyed by `(org, app,
+/// version)`; `version` is bare (no leading `v`).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ReleaseProgress {
+    pub app: String,
+    pub version: String,
+    /// `active` | `done` | `failed`.
+    pub status: String,
+    /// Current (or failed) stage: `committing` | `tagging` | `building` |
+    /// `published` | `tracked`.
+    pub stage: String,
+    /// Human detail — the commit sha, the tag, the digest, or the error.
+    pub detail: String,
+    pub updated_at: String,
+}
+
 impl Store {
     pub fn open(dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(dir)?;
@@ -278,6 +295,80 @@ impl Store {
                     step: row.get(2)?,
                     detail: row.get(3)?,
                     updated_at: row.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Advance a release's progress stage (ADR 0022). `status` is `done` once it
+    /// reaches `tracked`, else `active`. Upsert keyed by `(org, app, version)`.
+    /// Best-effort — callers ignore the error (progress is cosmetic).
+    pub fn set_release_stage(
+        &self,
+        org: &str,
+        app: &str,
+        version: &str,
+        stage: &str,
+        detail: &str,
+    ) -> Result<()> {
+        let status = if stage == "tracked" { "done" } else { "active" };
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO release_progress (org, app, version, status, stage, detail)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(org, app, version) DO UPDATE SET
+                 status = excluded.status,
+                 stage = excluded.stage,
+                 detail = excluded.detail,
+                 updated_at = datetime('now')",
+            rusqlite::params![org, app, version, status, stage, detail],
+        )?;
+        Ok(())
+    }
+
+    /// Mark a release's progress failed, keeping the stage it reached.
+    pub fn fail_release_stage(
+        &self,
+        org: &str,
+        app: &str,
+        version: &str,
+        detail: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE release_progress SET status = 'failed', detail = ?4,
+                 updated_at = datetime('now')
+             WHERE org = ?1 AND app = ?2 AND version = ?3",
+            rusqlite::params![org, app, version, detail],
+        )?;
+        Ok(())
+    }
+
+    /// Release progress rows for `org`, newest first — active ones plus terminal
+    /// (done/failed) ones from the last hour (older terminal rows are pruned on
+    /// read, a lightweight TTL GC).
+    pub fn release_progress(&self, org: &str) -> Result<Vec<ReleaseProgress>> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM release_progress
+             WHERE status IN ('done', 'failed')
+               AND updated_at < datetime('now', '-1 hour')",
+            [],
+        )?;
+        let mut stmt = conn.prepare(
+            "SELECT app, version, status, stage, detail, updated_at
+             FROM release_progress WHERE org = ?1 ORDER BY updated_at DESC",
+        )?;
+        let rows = stmt
+            .query_map([org], |row| {
+                Ok(ReleaseProgress {
+                    app: row.get(0)?,
+                    version: row.get(1)?,
+                    status: row.get(2)?,
+                    stage: row.get(3)?,
+                    detail: row.get(4)?,
+                    updated_at: row.get(5)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -530,6 +621,60 @@ mod tests {
 
         s.delete_release_draft("o", "api").unwrap();
         assert!(s.release_draft("o", "api").unwrap().is_none());
+    }
+
+    #[test]
+    fn release_progress_advances_and_gcs() {
+        let s = store();
+        assert!(s.release_progress("o").unwrap().is_empty());
+
+        // Advancing keeps status `active` until the terminal `tracked` stage.
+        s.set_release_stage("o", "api", "1.2.0", "committing", "bump")
+            .unwrap();
+        s.set_release_stage("o", "api", "1.2.0", "building", "CI")
+            .unwrap();
+        let rows = s.release_progress("o").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].stage, "building");
+        assert_eq!(rows[0].status, "active");
+        assert_eq!(rows[0].version, "1.2.0");
+
+        s.set_release_stage("o", "api", "1.2.0", "tracked", "stable")
+            .unwrap();
+        assert_eq!(s.release_progress("o").unwrap()[0].status, "done");
+
+        // A failure keeps the stage it reached.
+        s.set_release_stage("o", "web", "0.4.1", "tagging", "v0.4.1")
+            .unwrap();
+        s.fail_release_stage("o", "web", "0.4.1", "boom").unwrap();
+        let web = s
+            .release_progress("o")
+            .unwrap()
+            .into_iter()
+            .find(|r| r.app == "web")
+            .unwrap();
+        assert_eq!(web.status, "failed");
+        assert_eq!(web.stage, "tagging");
+        assert_eq!(web.detail, "boom");
+
+        // Terminal rows older than the TTL are pruned on read; active rows stay.
+        {
+            let conn = s.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE release_progress SET updated_at = datetime('now', '-2 hours')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO release_progress (org, app, version, status, stage)
+                 VALUES ('o', 'live', '9.9.9', 'active', 'building')",
+                [],
+            )
+            .unwrap();
+        }
+        let rows = s.release_progress("o").unwrap();
+        assert_eq!(rows.len(), 1, "stale done/failed pruned, active kept");
+        assert_eq!(rows[0].app, "live");
     }
 
     #[test]

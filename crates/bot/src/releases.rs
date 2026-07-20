@@ -564,6 +564,24 @@ async fn create_release_tag(state: &AppState, org: &str, repo: &str, tag: &str) 
     Ok(())
 }
 
+/// Advance the release-progress stage (ADR 0022) for every app the release
+/// covers — best-effort and cosmetic; a store error never affects the release.
+/// `version` is normalized to bare (no leading `v`) to match the webhook key.
+fn stage_all(state: &AppState, org: &str, apps: &[&str], version: &str, stage: &str, detail: &str) {
+    let ver = version.trim_start_matches('v');
+    for a in apps {
+        let _ = state.store.set_release_stage(org, a, ver, stage, detail);
+    }
+}
+
+/// Mark the release-progress failed for every app the release covers.
+fn fail_all(state: &AppState, org: &str, apps: &[&str], version: &str, detail: &str) {
+    let ver = version.trim_start_matches('v');
+    for a in apps {
+        let _ = state.store.fail_release_stage(org, a, ver, detail);
+    }
+}
+
 async fn do_cut(state: &AppState, org: &str, app: &str, bump: &str, actor: &str) -> Result<String> {
     // The tag lives on the app's repo. In per-app mode (ADR 0020) the tag is
     // scoped to the app (`@<scope>/<leaf>@<ver>`) and both the "last version" and
@@ -636,6 +654,15 @@ async fn do_cut(state: &AppState, org: &str, app: &str, bump: &str, actor: &str)
         next_version(last.as_ref().map(|l| l.ver), &effective)?
     );
 
+    stage_all(
+        state,
+        org,
+        &[app],
+        &next,
+        "committing",
+        "version bump + changelog",
+    );
+
     // Per-app: push the version bump + changelog to the repo, then tag that
     // commit; otherwise just tag `main` HEAD. package.json takes the bare semver.
     if let Some(dir) = app_dir(decl.as_ref()) {
@@ -661,7 +688,19 @@ async fn do_cut(state: &AppState, org: &str, app: &str, bump: &str, actor: &str)
 
     // The git tag: per-app → `@<scope>/<leaf>@vX.Y.Z`, else the plain version.
     let tag = release_tag_to_create(decl.as_ref(), &next);
-    create_release_tag(state, org, &repo, &tag).await?;
+    stage_all(state, org, &[app], &next, "tagging", &tag);
+    if let Err(e) = create_release_tag(state, org, &repo, &tag).await {
+        fail_all(state, org, &[app], &next, &format!("tag failed: {e:#}"));
+        return Err(e);
+    }
+    stage_all(
+        state,
+        org,
+        &[app],
+        &next,
+        "building",
+        "CI is building the image",
+    );
     state.store.log_event(
         "release-cut",
         Some(org),
@@ -1296,15 +1335,52 @@ async fn submit_draft(
         .as_ref()
         .map(|d| d.release_unit().to_string())
         .unwrap_or_else(|| app.to_string());
+    let (apps, _last) = unit_apps_and_last(state, org, app).await;
+    let app_refs: Vec<&str> = apps.iter().map(String::as_str).collect();
+    stage_all(
+        state,
+        org,
+        &app_refs,
+        &draft.version,
+        "committing",
+        "version bump + changelog",
+    );
     // Per-app: push the version bump + changelog (the draft's notes), then tag
     // that commit; otherwise just tag `main` HEAD.
     if let Some(dir) = app_dir(decl.as_ref()) {
         let core = draft.version.trim_start_matches('v');
-        push_release_commit(state, org, &repo, app, &dir, core, &draft.notes).await?;
+        if let Err(e) = push_release_commit(state, org, &repo, app, &dir, core, &draft.notes).await
+        {
+            fail_all(
+                state,
+                org,
+                &app_refs,
+                &draft.version,
+                &format!("commit failed: {e:#}"),
+            );
+            return Err(e);
+        }
     }
     let tag = release_tag_to_create(decl.as_ref(), &draft.version);
-    create_release_tag(state, org, &repo, &tag).await?;
-    let (apps, _last) = unit_apps_and_last(state, org, app).await;
+    stage_all(state, org, &app_refs, &draft.version, "tagging", &tag);
+    if let Err(e) = create_release_tag(state, org, &repo, &tag).await {
+        fail_all(
+            state,
+            org,
+            &app_refs,
+            &draft.version,
+            &format!("tag failed: {e:#}"),
+        );
+        return Err(e);
+    }
+    stage_all(
+        state,
+        org,
+        &app_refs,
+        &draft.version,
+        "building",
+        "CI is building the image",
+    );
     for a in &apps {
         state
             .store
@@ -1419,6 +1495,17 @@ async fn submit_repo_group(
         return Ok(lines);
     }
 
+    for t in &targets {
+        stage_all(
+            state,
+            org,
+            &[&t.app],
+            &t.draft.version,
+            "committing",
+            "version bump + changelog",
+        );
+    }
+
     // 1. Merge every app's version bump + changelog into one commit on `main`.
     let mut changes: Changes = Default::default();
     let mut labels = Vec::new();
@@ -1449,8 +1536,17 @@ async fn submit_repo_group(
     // 2. Tag each app (all pointing at the one commit), record notes, clear drafts.
     for t in &targets {
         let tag = release_tag_to_create(t.decl.as_ref(), &t.draft.version);
+        stage_all(state, org, &[&t.app], &t.draft.version, "tagging", &tag);
         match create_release_tag(state, org, repo, &tag).await {
             Ok(()) => {
+                stage_all(
+                    state,
+                    org,
+                    &[&t.app],
+                    &t.draft.version,
+                    "building",
+                    "CI is building the image",
+                );
                 let key = t
                     .decl
                     .as_ref()
@@ -1474,7 +1570,16 @@ async fn submit_repo_group(
                 )?;
                 lines.push(format!("{}: released {}", t.app, t.draft.version));
             }
-            Err(e) => lines.push(format!("{}: FAILED tag — {e:#}", t.app)),
+            Err(e) => {
+                fail_all(
+                    state,
+                    org,
+                    &[&t.app],
+                    &t.draft.version,
+                    &format!("tag failed: {e:#}"),
+                );
+                lines.push(format!("{}: FAILED tag — {e:#}", t.app));
+            }
         }
     }
     Ok(lines)
@@ -1490,6 +1595,8 @@ pub async fn record(
     version: &str,
     app_image: &str,
 ) -> Result<()> {
+    let ver = version.trim_start_matches('v');
+    stage_all(state, org, &[app], version, "published", app_image);
     let commit = resolve_commit(state, org, app, version)
         .await
         .unwrap_or_default();
@@ -1502,7 +1609,27 @@ pub async fn record(
         &format!("{app} {version} ({app_image})"),
     )?;
     tracing::info!(org, app, version, "release recorded");
-    track_stable(state, org, app).await
+    match track_stable(state, org, app).await {
+        Ok(()) => {
+            let _ = state.store.set_release_stage(
+                org,
+                app,
+                ver,
+                "tracked",
+                "stable tracking the newest release",
+            );
+            Ok(())
+        }
+        Err(e) => {
+            let _ = state.store.fail_release_stage(
+                org,
+                app,
+                ver,
+                &format!("stable track failed: {e:#}"),
+            );
+            Err(e)
+        }
+    }
 }
 
 /// Resolve a tag to its commit SHA via the commits API, which follows both
@@ -1730,6 +1857,21 @@ pub async fn list(
     state
         .store
         .releases(&org, &app)
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+/// `GET /api/releases/progress/{org}` — live release-progress rows (ADR 0022):
+/// the in-flight stages for `org`'s releases, newest first, for the dashboard
+/// stepper. Static `progress` segment (not `{org}/{app}`) to keep the router
+/// unambiguous.
+pub async fn progress(
+    State(state): State<Arc<AppState>>,
+    Path(org): Path<String>,
+) -> Result<Json<Vec<crate::state::ReleaseProgress>>, ApiError> {
+    state
+        .store
+        .release_progress(&org)
         .map(Json)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
