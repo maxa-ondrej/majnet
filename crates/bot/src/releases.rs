@@ -208,9 +208,16 @@ impl LastRelease {
     fn tag_candidates(&self, repo: &str) -> Vec<String> {
         let (x, y, z) = self.ver;
         let core = format!("{x}.{y}.{z}");
-        let mut c = vec![format!("{}{core}", self.prefix), format!("v{core}"), core.clone()];
+        let mut c = vec![
+            format!("{}{core}", self.prefix),
+            format!("v{core}"),
+            core.clone(),
+        ];
         if self.app != repo {
-            let leaf = self.app.strip_prefix(&format!("{repo}-")).unwrap_or(&self.app);
+            let leaf = self
+                .app
+                .strip_prefix(&format!("{repo}-"))
+                .unwrap_or(&self.app);
             c.push(format!("@{repo}/{leaf}@{core}"));
         }
         c.dedup();
@@ -313,7 +320,10 @@ async fn do_cut(state: &AppState, org: &str, app: &str, bump: &str, actor: &str)
         (bump.to_string(), String::new())
     };
 
-    let next = format!("{prefix}{}", next_version(last.as_ref().map(|l| l.ver), &effective)?);
+    let next = format!(
+        "{prefix}{}",
+        next_version(last.as_ref().map(|l| l.ver), &effective)?
+    );
     create_release_tag(state, org, &repo, &next).await?;
     state.store.log_event(
         "release-cut",
@@ -413,7 +423,13 @@ pub(crate) async fn prepare_draft(state: &AppState, org: &str, repo: &str) -> Re
             let bump = classify_bump(&msgs);
             let version = format!("{prefix}{}", next_version(Some(l.ver), bump)?);
             let notes = generate_changelog(&msgs);
-            (version, bump.to_string(), l.display(), msgs.len() as u32, notes)
+            (
+                version,
+                bump.to_string(),
+                l.display(),
+                msgs.len() as u32,
+                notes,
+            )
         }
         // No release yet: a first-release draft (no base to diff a changelog from).
         None => (
