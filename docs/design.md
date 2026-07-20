@@ -201,7 +201,17 @@ apps:
     template: rust-service
   - name: zpevnik-web
     template: web-app
+services:                    # ADR 0021 — external image, no repo, one env
+  - name: signoz
+    exposure: internal       # internal → private node/tailnet; public → prod/edge
 ```
+
+**Service apps (ADR 0021).** A `services:` entry runs a prebuilt external image +
+config with **no source repo, no CI, and one environment** chosen by `exposure`
+(which maps to a class: `public`→production, `internal`→stable). Its manifest
+lives at `apps/<name>/` like any app, so render/converge/secrets/volumes/database
+are reused; org-sync + the digest webhook ignore it (not in `apps:`, no image it
+builds). Update it by editing its pinned image digest in git.
 
 Derived automatically: app repos created from templates with GHA workflow + branch protection; org teams + membership; Tailscale group + ACL grant; per-project Docker networks, ingress node, DB users; archive-on-removal for repos and apps.
 

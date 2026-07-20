@@ -106,6 +106,7 @@ mod tests {
                 },
             ],
             apps: Vec::<AppDecl>::new(),
+            services: vec![],
         }
     }
 
@@ -142,6 +143,7 @@ mod tests {
             name: "other".into(),
             members: vec![],
             apps: vec![],
+            services: vec![],
         };
         assert!(require_role(&bob, Some(&other), Role::Developer).is_err());
     }

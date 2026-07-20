@@ -9,6 +9,51 @@ pub struct ProjectConfig {
     pub name: String,
     pub members: Vec<Member>,
     pub apps: Vec<AppDecl>,
+    /// Project-owned "service" apps (ADR 0021): an external image + config with
+    /// no source repo, no CI, and one environment (chosen by `exposure`). Absent
+    /// = none. Their manifest lives at `apps/<name>/` like any app; this list
+    /// just tracks them (so the dashboard lists them + org-sync leaves them
+    /// alone — they're not `apps`, so no repo is created/archived for them).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<ServiceDecl>,
+}
+
+/// A project-owned service (ADR 0021). The full manifest (image, env, ingress,
+/// secrets, volumes, resources, database) is at `apps/<name>/base.yaml` + the
+/// single overlay for `exposure.class()`; this entry records that it's a service
+/// and where it runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceDecl {
+    pub name: String,
+    pub exposure: Exposure,
+}
+
+/// Where a service runs + how it's reached (ADR 0021). Maps to an `EnvClass` so
+/// a service reuses the class's static placement + ingress behavior:
+/// - `public` → `production`: prod node, Cloudflare edge, a custom domain.
+/// - `internal` → `stable`: private node, tailnet auto-host, no public exposure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Exposure {
+    Public,
+    Internal,
+}
+
+impl Exposure {
+    /// The env class this exposure renders/converges as.
+    pub fn class(&self) -> crate::EnvClass {
+        match self {
+            Exposure::Public => crate::EnvClass::Production,
+            Exposure::Internal => crate::EnvClass::Stable,
+        }
+    }
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Exposure::Public => "public",
+            Exposure::Internal => "internal",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -360,6 +405,26 @@ mod tests {
         // Round-trips back with the release block present.
         let out = serde_yaml::to_string(&a).unwrap();
         assert!(out.contains("autorelease: patch"), "{out}");
+    }
+
+    #[test]
+    fn services_default_empty_and_map_exposure_to_class() {
+        use super::{Exposure, ProjectConfig};
+        // Omitted `services:` → empty (backward compatible).
+        let p: ProjectConfig = serde_yaml::from_str("name: proj\nmembers: []\napps: []\n").unwrap();
+        assert!(p.services.is_empty());
+        // Exposure → class mapping.
+        assert_eq!(Exposure::Public.class(), crate::EnvClass::Production);
+        assert_eq!(Exposure::Internal.class(), crate::EnvClass::Stable);
+        // A services block round-trips.
+        let y = "name: proj\nmembers: []\napps: []\n\
+                 services:\n  - name: signoz\n    exposure: internal\n";
+        let p: ProjectConfig = serde_yaml::from_str(y).unwrap();
+        assert_eq!(p.services.len(), 1);
+        assert_eq!(p.services[0].name, "signoz");
+        assert_eq!(p.services[0].exposure, Exposure::Internal);
+        let out = serde_yaml::to_string(&p).unwrap();
+        assert!(out.contains("exposure: internal"), "{out}");
     }
 
     #[test]

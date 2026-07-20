@@ -20,10 +20,10 @@ use crate::AppState;
 
 pub(crate) type ApiError = (StatusCode, String);
 
-fn bad_gateway(e: anyhow::Error) -> ApiError {
+pub(crate) fn bad_gateway(e: anyhow::Error) -> ApiError {
     (StatusCode::BAD_GATEWAY, format!("{e:#}"))
 }
-fn bad_request(msg: impl Into<String>) -> ApiError {
+pub(crate) fn bad_request(msg: impl Into<String>) -> ApiError {
     (StatusCode::BAD_REQUEST, msg.into())
 }
 
@@ -261,7 +261,7 @@ pub async fn release_config_put(
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
-fn check_name(app: &str) -> Result<(), ApiError> {
+pub(crate) fn check_name(app: &str) -> Result<(), ApiError> {
     if app.is_empty()
         || !app
             .chars()
@@ -529,6 +529,12 @@ pub struct AppSummary {
     /// members (apps whose `repo` differs from their name). The dashboard groups
     /// apps by this value; `None` means the app owns its repo (solo).
     pub repo: Option<String>,
+    /// Set (to the exposure, `public`/`internal`) when this is a project-owned
+    /// **service** (ADR 0021) — an external image + config with no repo/CI, one
+    /// environment. `None` for a normal app. The dashboard badges it + shows the
+    /// exposure instead of the class gradient.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
 }
 
 /// `GET /api/apps/{org}` — one summary per app declared on the project's ops
@@ -553,6 +559,17 @@ pub async fn apps_get(
         .into_iter()
         .filter_map(|(p, b)| String::from_utf8(b).ok().map(|s| (p, s)))
         .collect();
+    // Services (ADR 0021): name → exposure, so the summary can flag them.
+    let services: BTreeMap<String, String> = text
+        .get("project.yaml")
+        .and_then(|s| serde_yaml::from_str::<ProjectConfig>(s).ok())
+        .map(|cfg| {
+            cfg.services
+                .into_iter()
+                .map(|s| (s.name, s.exposure.as_str().to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
     // Monorepo grouping: an app whose `project.yaml` decl shares its repo with
     // other apps is a member; map name → repo so the summary can carry it.
     let monorepo: BTreeMap<String, String> = text
@@ -568,7 +585,12 @@ pub async fn apps_get(
         .unwrap_or_default();
     let mut out = Vec::with_capacity(names.len());
     for name in names {
-        match summarize_app(&name, &text, monorepo.get(&name).cloned()) {
+        match summarize_app(
+            &name,
+            &text,
+            monorepo.get(&name).cloned(),
+            services.get(&name).cloned(),
+        ) {
             Ok(summary) => out.push(summary),
             Err(e) => tracing::warn!(
                 org,
@@ -1124,6 +1146,7 @@ fn summarize_app(
     name: &str,
     text: &BTreeMap<String, String>,
     repo: Option<String>,
+    service: Option<String>,
 ) -> Result<AppSummary> {
     let prefix = format!("apps/{name}/");
     let base_str = text
@@ -1168,11 +1191,12 @@ fn summarize_app(
                 .to_string()
         }),
         repo,
+        service,
     })
 }
 
 /// Build a minimal, valid `base.yaml` from the new-app form.
-fn scaffold_base(req: &NewApp) -> Result<String> {
+pub(crate) fn scaffold_base(req: &NewApp) -> Result<String> {
     let mut yaml = format!("name: {}\nimage: {}\n", req.name, req.image);
     if !req.host.is_empty() {
         anyhow::ensure!(req.port != 0, "a container port is required with a domain");
@@ -1899,8 +1923,13 @@ pub async fn app_archive_post(
         changes.insert(format!("apps/{app}/{rel}"), None);
     }
     let mut project = read_project(&state, &org).await.map_err(bad_gateway)?;
-    if project.apps.iter().any(|a| a.name == app) {
+    // Drop the app's declaration — from `apps:` (repo app) or `services:` (ADR
+    // 0021 service). Rewrite project.yaml if either changed.
+    let declared = project.apps.iter().any(|a| a.name == app)
+        || project.services.iter().any(|s| s.name == app);
+    if declared {
         project.apps.retain(|a| a.name != app);
+        project.services.retain(|s| s.name != app);
         changes.insert(
             "project.yaml".to_string(),
             Some(serde_yaml::to_string(&project).map_err(|e| bad_gateway(e.into()))?),
@@ -2447,12 +2476,16 @@ mod tests {
             ("apps/blog/production.yaml".to_string(), "{}\n".to_string()),
             ("apps/blog/stable.yaml".to_string(), "{}\n".to_string()),
         ]);
-        let s = summarize_app("blog", &text, None).unwrap();
+        let s = summarize_app("blog", &text, None, None).unwrap();
         assert_eq!(s.name, "blog");
         assert_eq!(s.classes, vec!["production", "stable"]);
         assert_eq!(s.host.as_deref(), Some("blog.example.com"));
         assert_eq!(s.domains, vec!["blog.example.com", "www.example.com"]);
         assert_eq!(s.database.as_deref(), Some("postgres"));
         assert_eq!(s.repo, None);
+        assert_eq!(s.service, None);
+        // A service is flagged with its exposure.
+        let svc = summarize_app("blog", &text, None, Some("internal".to_string())).unwrap();
+        assert_eq!(svc.service.as_deref(), Some("internal"));
     }
 }

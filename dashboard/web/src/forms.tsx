@@ -191,3 +191,83 @@ export function NewApp() {
     </>
   )
 }
+
+// ── New service (ADR 0021) ─────────────────────────────────────────────────────
+export function NewService() {
+  const { org } = useParams({ from: '/projects/$org/new-service' })
+  const nav = useNavigate()
+  const [name, setName] = useState('')
+  const [exposure, setExposure] = useState<'internal' | 'public'>('internal')
+  const [image, setImage] = useState('')
+  const [host, setHost] = useState('')
+  const [port, setPort] = useState('8080')
+  const [domains, setDomains] = useState('')
+  const [database, setDatabase] = useState('none')
+  const [secrets, setSecrets] = useState('')
+  const m = useApiMutation({ invalidate: [['apps', org]], onDone: () => nav({ to: '/projects/$org', params: { org } }) })
+  const isPublic = exposure === 'public'
+  return (
+    <>
+      <Crumbs><Link to="/projects">Projects</Link> / <Link to="/projects/$org" params={{ org }}>{org}</Link> / New service</Crumbs>
+      <PageHead title="New service" />
+      <Card><CardContent className="flex flex-col gap-4 pt-6">
+        <div className="flex gap-2.5 rounded-lg border bg-muted/40 p-3 text-sm text-muted-foreground">
+          <Info className="mt-0.5 size-4 shrink-0" />
+          <div>A <b>service</b> runs a prebuilt external image with no source repo or CI, in one environment. Update it later by editing its manifest (bump the pinned image digest) — changes flow through git.</div>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Service name" hint="Lowercase; its manifest directory."><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="signoz" /></Field>
+          <Field label="Image — required" hint="Digest-pinned; tags rejected."><Input value={image} onChange={(e) => setImage(e.target.value)} placeholder="docker.io/library/traefik/whoami@sha256:…" /></Field>
+        </div>
+        <Field label="Exposure" hint="internal → private node + tailnet host, no public access. public → prod node + your custom domain (Cloudflare edge + cert automatic).">
+          <Select value={exposure} onValueChange={(v) => setExposure(v as 'internal' | 'public')}>
+            <SelectTrigger className="w-72"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="internal">internal — private node / tailnet</SelectItem>
+              <SelectItem value="public">public — prod node / public domain</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+        <div className="grid gap-3 sm:grid-cols-2">
+          {isPublic && (
+            <Field label="Public domain — required" hint="Cloudflare DNS + origin cert issued automatically."><Input value={host} onChange={(e) => setHost(e.target.value)} placeholder="signoz.majksa.net" /></Field>
+          )}
+          <Field label="Container port" hint={isPublic ? 'Exposed via the edge on your domain.' : 'Exposed on the tailnet auto-host {name}.{project}.<base-domain>.'}><Input type="number" value={port} onChange={(e) => setPort(e.target.value)} /></Field>
+        </div>
+        {isPublic && (
+          <Field label="Additional domains — optional, one per line"><Textarea value={domains} onChange={(e) => setDomains(e.target.value)} className="min-h-16" placeholder="www.example.com" /></Field>
+        )}
+        <Field label="Database — optional" hint="A managed engine + logical DB, with connection env injected.">
+          <Select value={database} onValueChange={setDatabase}>
+            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {['none', 'postgres', 'mariadb', 'valkey', 'mongodb'].map((e) => <SelectItem key={e} value={e}>{e}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </Field>
+        <Field label="Secrets — optional (KEY=VALUE, one per line)" hint="Encrypted (SOPS) and delivered as tmpfs files, never committed in plaintext. Add env/volumes/resources afterward by editing the manifest.">
+          <Textarea value={secrets} onChange={(e) => setSecrets(e.target.value)} className="min-h-24 font-mono text-xs" placeholder={'LLM_API_KEY=…'} />
+        </Field>
+        <div className="flex items-center gap-3">
+          <Button disabled={m.isPending} onClick={() => {
+            if (!name.trim()) return toast.error('name is required')
+            if (!image.trim()) return toast.error('a digest-pinned image is required')
+            if (isPublic && !host.trim()) return toast.error('a public service needs a domain')
+            m.mutate(() => send(urls.services(org), {
+              json: {
+                name: name.trim(), exposure, image: image.trim(),
+                host: host.trim(), port: Number(port),
+                domains: domains.split('\n').map((s) => s.trim()).filter(Boolean),
+                database: database === 'none' ? null : database,
+                secrets: secrets.trim(),
+              },
+            }))
+          }}>Create service</Button>
+          <span className="text-xs text-muted-foreground">
+            Writes base.yaml + one overlay and records it in project.yaml. {isPublic ? 'Review the production render PR to deploy.' : 'Auto-deploys to the private node.'}
+          </span>
+        </div>
+      </CardContent></Card>
+    </>
+  )
+}

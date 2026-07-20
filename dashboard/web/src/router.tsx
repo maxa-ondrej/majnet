@@ -2,7 +2,7 @@ import { createRootRoute, createRoute, createRouter } from '@tanstack/react-rout
 import { Shell } from './shell'
 import { Activity, Nodes, ProjectDetail, Projects } from './views'
 import { Overview } from './overview'
-import { NewApp, NewProject } from './forms'
+import { NewApp, NewProject, NewService } from './forms'
 import { AppDetail } from './appDetail'
 import { Members } from './members'
 import { Deploys } from './deploys'
@@ -38,6 +38,7 @@ const terminalRoute = createRoute({
 })
 const projectRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects/$org', component: ProjectDetail })
 const newAppRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects/$org/new-app', component: NewApp })
+const newServiceRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects/$org/new-service', component: NewService })
 const membersRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects/$org/members', component: Members })
 const deploysRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects/$org/deploys', component: Deploys })
 const appRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects/$org/apps/$app', component: AppDetail })
@@ -45,7 +46,7 @@ const appRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects
 const routeTree = rootRoute.addChildren([
   indexRoute, projectsRoute, newProjectRoute, activityRoute, settingsRoute, nodesRoute, controlPlaneRoute, terminalRoute,
   releasesRoute, allDeploysRoute,
-  projectRoute, newAppRoute, membersRoute, deploysRoute, appRoute,
+  projectRoute, newAppRoute, newServiceRoute, membersRoute, deploysRoute, appRoute,
 ])
 
 export const router = createRouter({ routeTree, defaultPreload: 'intent' })

@@ -549,6 +549,7 @@ mod tests {
                     })
                     .collect(),
                 apps: vec![],
+                services: vec![],
             },
         )
     }

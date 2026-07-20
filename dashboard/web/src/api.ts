@@ -13,7 +13,11 @@ export interface AppSummary {
   host: string | null; domains: string[]; database: string | null
   /** The shared GitHub repo for a monorepo member; null when the app is solo. */
   repo: string | null
+  /** Set to the exposure ('public'|'internal') when this is a service (ADR 0021):
+   *  external image + config, no repo, one environment. Absent for a normal app. */
+  service?: string
 }
+export type Exposure = 'public' | 'internal'
 export interface PlatformNode {
   name: string; role: string; wireguard_ip: string
   public_endpoint: string; wireguard_pubkey: string
@@ -162,6 +166,7 @@ export const urls = {
   whoami: `${BOT}/whoami`,
   projects: `${BOT}/projects`,
   apps: (org: string) => `${BOT}/apps/${encodeURIComponent(org)}`,
+  services: (org: string) => `${BOT}/services/${encodeURIComponent(org)}`,
   imports: (org: string) => `${BOT}/imports/${encodeURIComponent(org)}`,
   importRetry: (org: string, app: string) => `${BOT}/imports/${encodeURIComponent(org)}/${encodeURIComponent(app)}/retry`,
   nodes: `${BOT}/nodes`,

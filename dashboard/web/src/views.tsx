@@ -283,7 +283,9 @@ export function ProjectDetail() {
         <div className="pointer-events-none relative flex min-w-0 flex-1 flex-col gap-1">
           <div className="flex flex-wrap items-center gap-2 font-semibold">
             {label ?? a.name}
-            <AppEnvBadges org={org} app={a.name} classes={a.classes} digestFor={(c) => runningDigest(a.name, c)} />
+            {a.service
+              ? <StatusBadge tone="accent">service · {a.service}</StatusBadge>
+              : <AppEnvBadges org={org} app={a.name} classes={a.classes} digestFor={(c) => runningDigest(a.name, c)} />}
           </div>
           <div className="truncate font-mono text-xs text-muted-foreground">
             {meta || '—'}
@@ -319,6 +321,7 @@ export function ProjectDetail() {
         <Button asChild variant="outline" size="sm"><a href={`https://github.com/${org}/ops`} target="_blank" rel="noreferrer">ops repo ↗</a></Button>
         <Button asChild variant="outline" size="sm"><Link to="/projects/$org/deploys" params={{ org }}>Deployments{pending ? ` · ${pending}` : ''}</Link></Button>
         <Button asChild variant="outline" size="sm"><Link to="/projects/$org/members" params={{ org }}>Members</Link></Button>
+        <Button asChild variant="outline" size="sm"><Link to="/projects/$org/new-service" params={{ org }}><Plus className="size-4" /> New service</Link></Button>
         <Button asChild size="sm"><Link to="/projects/$org/new-app" params={{ org }}><Plus className="size-4" /> New app</Link></Button>
         {isAdmin && <ProjectAdminMenu org={org} name={name} activeApps={apps.data?.length ?? 0} />}
       </PageHead>
