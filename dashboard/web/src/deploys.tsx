@@ -18,7 +18,7 @@ function DiffBlock({ patch }: { patch: string }) {
   )
 }
 
-function FileDiff({ f }: { f: DeployFile }) {
+export function FileDiff({ f }: { f: DeployFile }) {
   return (
     <details className="group">
       <summary className="cursor-pointer select-none font-mono text-xs">

@@ -136,6 +136,7 @@ function Deployments() {
             ))}
           </div>
         )}
+        <Link to="/deploys" onClick={() => setOpen(false)} className="block border-t px-3 py-2 text-center text-xs text-primary hover:underline">View all deployments →</Link>
       </PopoverContent>
     </Popover>
   )
@@ -266,6 +267,7 @@ function Releases() {
             })}
           </div>
         )}
+        <Link to="/releases" onClick={() => setOpen(false)} className="block border-t px-3 py-2 text-center text-xs text-primary hover:underline">View all release candidates →</Link>
       </PopoverContent>
     </Popover>
   )

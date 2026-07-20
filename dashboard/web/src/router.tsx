@@ -6,6 +6,7 @@ import { NewApp, NewProject } from './forms'
 import { AppDetail } from './appDetail'
 import { Members } from './members'
 import { Deploys } from './deploys'
+import { AllReleases, AllDeploys } from './fleet'
 import { Settings } from './settings'
 import { ControlPlane } from './controlPlane'
 import { Terminal } from './terminal'
@@ -19,6 +20,8 @@ const newProjectRoute = createRoute({ getParentRoute: () => rootRoute, path: '/n
 const activityRoute = createRoute({ getParentRoute: () => rootRoute, path: '/activity', component: Activity })
 const settingsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/settings', component: Settings })
 const nodesRoute = createRoute({ getParentRoute: () => rootRoute, path: '/nodes', component: Nodes })
+const releasesRoute = createRoute({ getParentRoute: () => rootRoute, path: '/releases', component: AllReleases })
+const allDeploysRoute = createRoute({ getParentRoute: () => rootRoute, path: '/deploys', component: AllDeploys })
 const controlPlaneRoute = createRoute({ getParentRoute: () => rootRoute, path: '/control-plane', component: ControlPlane })
 interface TermSearch { mode?: string; node?: string; project?: string; app?: string; class?: string }
 const terminalRoute = createRoute({
@@ -41,6 +44,7 @@ const appRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects
 
 const routeTree = rootRoute.addChildren([
   indexRoute, projectsRoute, newProjectRoute, activityRoute, settingsRoute, nodesRoute, controlPlaneRoute, terminalRoute,
+  releasesRoute, allDeploysRoute,
   projectRoute, newAppRoute, membersRoute, deploysRoute, appRoute,
 ])
 
