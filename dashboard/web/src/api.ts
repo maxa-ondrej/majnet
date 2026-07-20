@@ -93,8 +93,12 @@ export interface ReleaseDraft {
  *  app into per-app scoped release tags `@<scope>/<leaf>@<ver>`; `autorelease`
  *  auto-cuts on merge for paths that match. Null (no block) ⇒ repo-wide vX.Y.Z. */
 export type Autorelease = 'off' | 'patch' | 'auto'
+export type Bump = 'major' | 'minor' | 'patch'
 export interface ReleaseConfig {
   scope: string | null; autorelease: Autorelease; paths: string[]
+  /** Override the conventional-commit type → bump mapping (breaking is always
+   *  major; unlisted types ignored). Absent = default (feat→minor, fix→patch). */
+  bumps?: Record<string, Bump> | null
 }
 /** Build metadata an app reported at its `/info` endpoint, recorded per env at
  *  deploy time. `info` is whatever JSON the app returned (or null). */

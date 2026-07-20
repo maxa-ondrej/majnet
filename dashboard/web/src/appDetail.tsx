@@ -501,6 +501,9 @@ function ReleaseSettings({ org, app, repo }: { org: string; app: string; repo?: 
       scope: scope.trim() || null,
       autorelease: auto,
       paths: paths.split('\n').map((s) => s.trim()).filter(Boolean),
+      // Preserve any bump-rule override (edited via project.yaml) — this editor
+      // doesn't expose it, so pass it through rather than wiping it.
+      bumps: cfg?.bumps ?? null,
     } satisfies ReleaseConfig,
   })
   const perApp = !!cfg?.scope
@@ -535,6 +538,14 @@ function ReleaseSettings({ org, app, repo }: { org: string; app: string; repo?: 
             placeholder={'applications/server/**\npackages/shared/**'}
             onChange={(e) => { setPaths(e.target.value); setDirty(true) }} aria-label="Autorelease paths" />
         </label>
+        <div className="flex flex-col gap-1">
+          <span className="text-xs text-muted-foreground">Bump rules — commit type → semver bump for auto/changelog (breaking is always major; set in <code className="font-mono">project.yaml</code> <code className="font-mono">release.bumps</code>)</span>
+          <span className="font-mono text-xs">
+            {cfg?.bumps && Object.keys(cfg.bumps).length > 0
+              ? Object.entries(cfg.bumps).map(([t, b]) => `${t}→${b}`).join(', ')
+              : 'feat→minor, fix→patch (default)'}
+          </span>
+        </div>
         <div className="flex justify-end">
           <Button size="sm" disabled={!isAdmin || !dirty || m.isPending}
             onClick={() => m.mutate(async () => { const r = await save(); setDirty(false); return r })}>Save settings</Button>

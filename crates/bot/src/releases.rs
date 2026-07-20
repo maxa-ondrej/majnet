@@ -17,7 +17,8 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use base64::Engine;
-use majnet_common::project::{AppDecl, Autorelease, Role};
+use majnet_common::project::{default_bump_rules, AppDecl, Autorelease, Bump, Role};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::state::StoredRelease;
@@ -62,24 +63,39 @@ fn next_version(last: Option<Ver>, bump: &str) -> Result<String> {
     Ok(format!("{x}.{y}.{z}"))
 }
 
-/// Derive a semver bump from conventional-commit messages (option 2). Takes the
-/// strongest signal across all commits: a breaking change (`type!:` header or a
-/// `BREAKING CHANGE` footer) → major; any `feat` → minor; otherwise patch.
-fn classify_bump(messages: &[String]) -> &'static str {
-    let mut bump = "patch";
+/// The commit `type` of a conventional-commit subject (`feat(scope)!: …` → `feat`),
+/// and whether it's a breaking change (`type!` or a `BREAKING CHANGE` footer).
+fn commit_type(message: &str) -> (&str, bool) {
+    let header = message.lines().next().unwrap_or("");
+    let (typ_scope, _) = header.split_once(':').unwrap_or((header, ""));
+    let breaking = message.contains("BREAKING CHANGE") || typ_scope.trim_end().ends_with('!');
+    let typ = typ_scope
+        .split('(')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches('!')
+        .trim();
+    (typ, breaking)
+}
+
+/// Derive a semver bump from conventional-commit messages using `rules`
+/// (type → bump, ADR 0020): a breaking change (`type!` / `BREAKING CHANGE`) is
+/// always major; else the strongest bump any commit's type maps to. Types absent
+/// from `rules` are ignored. `None` when nothing qualifies — no releasable change.
+fn classify_bump(messages: &[String], rules: &BTreeMap<String, Bump>) -> Option<&'static str> {
+    let mut best: Option<Bump> = None;
     for m in messages {
-        let header = m.lines().next().unwrap_or("");
-        let (typ_scope, _) = header.split_once(':').unwrap_or((header, ""));
-        let breaking = m.contains("BREAKING CHANGE") || typ_scope.trim_end().ends_with('!');
+        let (typ, breaking) = commit_type(m);
         if breaking {
-            return "major";
+            return Some("major");
         }
-        let typ = typ_scope.split('(').next().unwrap_or("").trim();
-        if typ == "feat" {
-            bump = "minor";
+        if let Some(&b) = rules.get(typ) {
+            if best.is_none_or(|cur| b.rank() > cur.rank()) {
+                best = Some(b);
+            }
         }
     }
-    bump
+    best.map(|b| b.as_str())
 }
 
 #[derive(serde::Deserialize)]
@@ -550,6 +566,10 @@ async fn do_cut(state: &AppState, org: &str, app: &str, bump: &str, actor: &str)
         .map(|d| d.repo().to_string())
         .unwrap_or_else(|| app.to_string());
     let per_app = decl.as_ref().is_some_and(|d| d.is_per_app_release());
+    let rules = decl
+        .as_ref()
+        .map(|d| d.bump_rules())
+        .unwrap_or_else(default_bump_rules);
     let (_unit_apps, last) = unit_apps_and_last(state, org, app).await;
     // Preserve the existing version-prefix style (`v` or bare); default to `v`
     // for a brand-new app with no prior release.
@@ -571,7 +591,12 @@ async fn do_cut(state: &AppState, org: &str, app: &str, bump: &str, actor: &str)
                     "no new commits since {} — nothing to release",
                     l.display()
                 );
-                let b = classify_bump(&msgs);
+                let b = classify_bump(&msgs, &rules).with_context(|| {
+                    format!(
+                        "no releasable (feat/fix/breaking) commits since {} — nothing to release",
+                        l.display()
+                    )
+                })?;
                 (
                     b.to_string(),
                     format!(" (auto → {b} from {} commits)", msgs.len()),
@@ -608,7 +633,7 @@ async fn do_cut(state: &AppState, org: &str, app: &str, bump: &str, actor: &str)
         let notes = if last.is_none() {
             "_Initial release._\n".to_string()
         } else {
-            generate_changelog(&msgs)
+            generate_changelog(&msgs, &rules)
         };
         let core = next.trim_start_matches('v');
         push_release_commit(state, org, &repo, app, &dir, core, &notes).await?;
@@ -643,44 +668,38 @@ async fn do_cut(state: &AppState, org: &str, app: &str, bump: &str, actor: &str)
 
 use crate::state::ReleaseDraft;
 
-/// A markdown changelog from conventional-commit subjects, grouped by type.
-/// Unrecognized messages land under "Other changes"; merge commits are skipped.
-fn generate_changelog(messages: &[String]) -> String {
-    let (mut breaking, mut feats, mut fixes, mut other) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+/// A markdown changelog from conventional-commit subjects, grouped by the bump
+/// level each commit resolves to under `rules` (ADR 0020): breaking → Breaking,
+/// minor-level types → Features, patch-level types → Fixes. Types absent from
+/// `rules` are ignored; merge commits are skipped.
+fn generate_changelog(messages: &[String], rules: &BTreeMap<String, Bump>) -> String {
+    let (mut breaking, mut feats, mut fixes) = (Vec::new(), Vec::new(), Vec::new());
     for m in messages {
         let subject = m.lines().next().unwrap_or("").trim();
         if subject.is_empty() || subject.starts_with("Merge ") {
             continue;
         }
-        // `type(scope)!: description` → (type_scope, description).
-        let (typ_scope, desc) = match subject.split_once(':') {
-            Some((ts, d)) => (ts.trim(), d.trim().to_string()),
-            None => ("", subject.to_string()),
-        };
-        let is_breaking = m.contains("BREAKING CHANGE") || typ_scope.ends_with('!');
-        let typ = typ_scope
-            .split('(')
-            .next()
-            .unwrap_or("")
-            .trim_end_matches('!')
-            .trim();
+        let desc = subject
+            .split_once(':')
+            .map(|(_, d)| d.trim())
+            .unwrap_or(subject);
+        let (typ, is_breaking) = commit_type(m);
         let line = format!("- {desc}");
         if is_breaking {
             breaking.push(line);
-        } else if typ == "feat" {
-            feats.push(line);
-        } else if typ == "fix" {
-            fixes.push(line);
-        } else {
-            other.push(line);
+            continue;
+        }
+        match rules.get(typ) {
+            Some(Bump::Major) => breaking.push(line),
+            Some(Bump::Minor) => feats.push(line),
+            Some(Bump::Patch) => fixes.push(line),
+            None => {} // ignored type
         }
     }
     let mut out = String::new();
     changelog_section("⚠️ Breaking changes", &breaking, &mut out);
     changelog_section("🚀 Features", &feats, &mut out);
     changelog_section("🐛 Fixes", &fixes, &mut out);
-    changelog_section("Other changes", &other, &mut out);
     if out.is_empty() {
         out.push_str("_No notable changes._\n");
     }
@@ -872,6 +891,10 @@ pub(crate) async fn prepare_draft(state: &AppState, org: &str, app: &str) -> Res
         .as_ref()
         .map(|d| d.release_unit().to_string())
         .unwrap_or_else(|| app.to_string());
+    let rules = decl
+        .as_ref()
+        .map(|d| d.bump_rules())
+        .unwrap_or_else(default_bump_rules);
     let (_apps, last) = unit_apps_and_last(state, org, app).await;
     let prefix = last.as_ref().map(|l| l.prefix).unwrap_or("v");
     let (version, bump, base, count, notes) = match &last {
@@ -879,13 +902,14 @@ pub(crate) async fn prepare_draft(state: &AppState, org: &str, app: &str) -> Res
             let cands = base_tag_candidates(decl.as_ref(), &repo, l);
             let msgs =
                 commits_since(state, org, &repo, &cands, scoped_diff_paths(decl.as_ref())).await?;
-            if msgs.is_empty() {
+            // No commits, or only ignored types (chore/docs/…) → no releasable
+            // change, so there's no candidate: clear any stale draft.
+            let Some(bump) = classify_bump(&msgs, &rules) else {
                 state.store.delete_release_draft(org, &key)?;
                 return Ok(());
-            }
-            let bump = classify_bump(&msgs);
+            };
             let version = format!("{prefix}{}", next_version(Some(l.ver), bump)?);
-            let notes = generate_changelog(&msgs);
+            let notes = generate_changelog(&msgs, &rules);
             (
                 version,
                 bump.to_string(),
@@ -1602,7 +1626,8 @@ mod tests {
         base_tag_candidates, classify_bump, generate_changelog, next_version, parse_semver,
         production_overlay, LastRelease,
     };
-    use majnet_common::project::{AppDecl, Autorelease, ReleaseConfig};
+    use majnet_common::project::{default_bump_rules, AppDecl, Autorelease, Bump, ReleaseConfig};
+    use std::collections::BTreeMap;
 
     fn per_app_decl(name: &str, repo: &str, scope: &str) -> AppDecl {
         AppDecl {
@@ -1613,6 +1638,7 @@ mod tests {
                 scope: Some(scope.into()),
                 autorelease: Autorelease::Off,
                 paths: vec![],
+                bumps: None,
             }),
         }
     }
@@ -1623,61 +1649,97 @@ mod tests {
 
     #[test]
     fn changelog_groups_by_conventional_type() {
-        let cl = generate_changelog(&msgs(&[
-            "feat(api): add CSV export (#41)",
-            "fix: null deref on empty query (#43)",
-            "chore: bump deps",
-            "refactor!: drop the v1 endpoint",
-            "docs: tidy readme",
-            "Merge branch 'main' into feature",
-        ]));
+        let cl = generate_changelog(
+            &msgs(&[
+                "feat(api): add CSV export (#41)",
+                "fix: null deref on empty query (#43)",
+                "chore: bump deps",
+                "refactor!: drop the v1 endpoint",
+                "docs: tidy readme",
+                "Merge branch 'main' into feature",
+            ]),
+            &default_bump_rules(),
+        );
         // Sections present in priority order; merge commit dropped.
         let breaking = cl.find("Breaking changes").unwrap();
         let feats = cl.find("Features").unwrap();
         let fixes = cl.find("Fixes").unwrap();
-        let other = cl.find("Other changes").unwrap();
-        assert!(breaking < feats && feats < fixes && fixes < other);
+        assert!(breaking < feats && feats < fixes);
         // The `type(scope):` prefix is stripped from the displayed line.
         assert!(cl.contains("- add CSV export (#41)"));
         assert!(cl.contains("- drop the v1 endpoint"));
-        assert!(cl.contains("- bump deps"));
+        // Non-feat/fix/breaking commits are ignored — no "Other changes", and the
+        // chore/docs lines don't appear.
+        assert!(!cl.contains("Other changes"));
+        assert!(!cl.contains("- bump deps"));
+        assert!(!cl.contains("tidy readme"));
         assert!(!cl.contains("Merge branch"));
     }
 
     #[test]
     fn changelog_empty_is_placeholder() {
-        assert_eq!(generate_changelog(&[]), "_No notable changes._\n");
+        assert_eq!(
+            generate_changelog(&[], &default_bump_rules()),
+            "_No notable changes._\n"
+        );
         // A lone merge commit produces no entries either.
         assert_eq!(
-            generate_changelog(&msgs(&["Merge pull request #9"])),
+            generate_changelog(&msgs(&["Merge pull request #9"]), &default_bump_rules()),
             "_No notable changes._\n"
         );
     }
 
     #[test]
+    fn custom_bump_rules_override_the_defaults() {
+        let rules = BTreeMap::from([
+            ("feat".to_string(), Bump::Minor),
+            ("fix".to_string(), Bump::Patch),
+            ("perf".to_string(), Bump::Minor), // custom: perf counts as minor
+        ]);
+        assert_eq!(
+            classify_bump(&msgs(&["perf: faster"]), &rules),
+            Some("minor")
+        );
+        // a type absent from the map is still ignored
+        assert_eq!(classify_bump(&msgs(&["docs: x"]), &rules), None);
+        // breaking is always major regardless of the map
+        assert_eq!(
+            classify_bump(&msgs(&["perf!: drop cache"]), &rules),
+            Some("major")
+        );
+        // the changelog groups a custom minor type under Features
+        let cl = generate_changelog(&msgs(&["perf: faster"]), &rules);
+        assert!(cl.contains("Features") && cl.contains("- faster"), "{cl}");
+    }
+
+    #[test]
     fn auto_bump_from_conventional_commits() {
-        // patch by default (fixes/chores only)
+        let r = default_bump_rules();
+        // a `fix` → patch; the chore/docs alongside are ignored
         assert_eq!(
-            classify_bump(&msgs(&["fix: a", "chore: deps", "docs: x"])),
-            "patch"
+            classify_bump(&msgs(&["fix: a", "chore: deps", "docs: x"]), &r),
+            Some("patch")
         );
-        // any feat wins over patch
-        assert_eq!(classify_bump(&msgs(&["fix: a", "feat(api): b"])), "minor");
-        // breaking wins over everything
+        // any feat wins over a fix
         assert_eq!(
-            classify_bump(&msgs(&["feat: a", "refactor!: drop v1"])),
-            "major"
+            classify_bump(&msgs(&["fix: a", "feat(api): b"]), &r),
+            Some("minor")
+        );
+        // breaking wins over everything (any `type!`)
+        assert_eq!(
+            classify_bump(&msgs(&["feat: a", "refactor!: drop v1"]), &r),
+            Some("major")
         );
         assert_eq!(
-            classify_bump(&msgs(&["fix: a\n\nBREAKING CHANGE: db reset"])),
-            "major"
+            classify_bump(&msgs(&["fix: a\n\nBREAKING CHANGE: db reset"]), &r),
+            Some("major")
         );
         // `feat!:` header is breaking, not just a feature
-        assert_eq!(classify_bump(&msgs(&["feat!: rewrite"])), "major");
-        // empty → patch
-        assert_eq!(classify_bump(&[]), "patch");
-        // non-conventional messages → patch
-        assert_eq!(classify_bump(&msgs(&["wip", "merge branch"])), "patch");
+        assert_eq!(classify_bump(&msgs(&["feat!: rewrite"]), &r), Some("major"));
+        // nothing releasable → None: empty, only-ignored types, non-conventional
+        assert_eq!(classify_bump(&[], &r), None);
+        assert_eq!(classify_bump(&msgs(&["chore: deps", "docs: x"]), &r), None);
+        assert_eq!(classify_bump(&msgs(&["wip", "merge branch"]), &r), None);
     }
 
     #[test]

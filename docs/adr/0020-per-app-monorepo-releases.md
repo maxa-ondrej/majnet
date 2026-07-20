@@ -83,6 +83,15 @@ apps:
   (`resolve_commit` → `AppDecl::release_tag`), covering a scope that differs from
   the repo name; the legacy `@<repo>/<leaf>@<ver>` and plain `vX.Y.Z` remain
   fallbacks.
+- **Bump mapping is configurable, ignore-by-default.** `auto` bumps + the
+  changelog derive from a commit-type → bump map: a breaking change
+  (`type!` / `BREAKING CHANGE`) is always **major**; the default maps
+  `feat` → minor, `fix` → patch and **ignores every other type** (chore/docs/
+  refactor/… no longer force a patch or clutter the changelog). Override per app
+  with `release.bumps` (`{ <type>: major|minor|patch }`, e.g. add `perf: patch`).
+  A commit range with no releasable commit is **no candidate**: an `auto` cut
+  errors "nothing to release" and the draft clears. (`classify_bump` /
+  `generate_changelog` take the rules; `AppDecl::bump_rules`, `default_bump_rules`.)
 - **Reusable CI.** `app-release.yaml` gains `leaf` + `version` inputs (image
   nests at `ghcr.io/<owner>/<repo>/<leaf>:<version>`, `VERSION` baked for
   `/info`); unset ⇒ `github.ref_name` (solo apps unchanged). Template-sync seeds

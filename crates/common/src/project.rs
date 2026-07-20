@@ -1,6 +1,7 @@
 //! Project `ops` repo config (`project.yaml`) — §9.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -73,6 +74,48 @@ pub struct ReleaseConfig {
     /// consulted when `autorelease` is `patch`/`auto`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<String>,
+    /// Override the conventional-commit → semver-bump mapping for `auto` bumps +
+    /// the changelog (ADR 0020): commit `type` → the bump it triggers. A breaking
+    /// change (`type!` / `BREAKING CHANGE`) is always major regardless; unlisted
+    /// types are ignored. Absent ⇒ the default (`feat: minor`, `fix: patch`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bumps: Option<BTreeMap<String, Bump>>,
+}
+
+/// A semver bump level (ADR 0020) — the value in a `release.bumps` mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Bump {
+    Major,
+    Minor,
+    Patch,
+}
+
+impl Bump {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Bump::Major => "major",
+            Bump::Minor => "minor",
+            Bump::Patch => "patch",
+        }
+    }
+    /// Precedence for picking the strongest bump across commits (major wins).
+    pub fn rank(&self) -> u8 {
+        match self {
+            Bump::Major => 3,
+            Bump::Minor => 2,
+            Bump::Patch => 1,
+        }
+    }
+}
+
+/// The default conventional-commit → bump mapping when an app configures none:
+/// `feat` → minor, `fix` → patch (breaking is always major; other types ignored).
+pub fn default_bump_rules() -> BTreeMap<String, Bump> {
+    BTreeMap::from([
+        ("feat".to_string(), Bump::Minor),
+        ("fix".to_string(), Bump::Patch),
+    ])
 }
 
 /// Autorelease bump strategy for an app (ADR 0020).
@@ -149,6 +192,15 @@ impl AppDecl {
             .as_ref()
             .map(|r| r.autorelease)
             .unwrap_or_default()
+    }
+
+    /// The effective conventional-commit → bump mapping for this app: its
+    /// configured `release.bumps`, else the default (`feat: minor`, `fix: patch`).
+    pub fn bump_rules(&self) -> BTreeMap<String, Bump> {
+        self.release
+            .as_ref()
+            .and_then(|r| r.bumps.clone())
+            .unwrap_or_else(default_bump_rules)
     }
 
     /// Path globs that trigger an autorelease for this app.
@@ -268,6 +320,7 @@ mod tests {
                 scope: Some("sideline".into()),
                 autorelease: Autorelease::Auto,
                 paths: vec!["applications/server/**".into()],
+                bumps: None,
             },
         );
         assert!(a.is_per_app_release());
@@ -307,6 +360,26 @@ mod tests {
         // Round-trips back with the release block present.
         let out = serde_yaml::to_string(&a).unwrap();
         assert!(out.contains("autorelease: patch"), "{out}");
+    }
+
+    #[test]
+    fn bump_rules_default_and_override() {
+        use super::Bump;
+        // No config → the default mapping.
+        let d = decl("api", Some("mono"));
+        let r = d.bump_rules();
+        assert_eq!(r.get("feat"), Some(&Bump::Minor));
+        assert_eq!(r.get("fix"), Some(&Bump::Patch));
+        assert_eq!(r.get("chore"), None);
+        // Override round-trips + replaces the default entirely.
+        let y = "name: api\ntemplate: byo\nrepo: mono\n\
+                 release:\n  scope: mono\n  bumps:\n    feat: minor\n    fix: patch\n    perf: patch\n";
+        let a: AppDecl = serde_yaml::from_str(y).unwrap();
+        let r = a.bump_rules();
+        assert_eq!(r.get("perf"), Some(&Bump::Patch));
+        assert_eq!(r.len(), 3);
+        let out = serde_yaml::to_string(&a).unwrap();
+        assert!(out.contains("perf: patch"), "{out}");
     }
 
     #[test]

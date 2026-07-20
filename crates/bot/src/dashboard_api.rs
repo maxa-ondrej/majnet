@@ -235,10 +235,12 @@ pub async fn release_config_put(
         .iter_mut()
         .find(|a| a.name == app)
         .ok_or_else(|| bad_request(format!("no app {app} in {org}")))?;
-    // Normalize an empty policy (no scope, autorelease off, no paths) back to
-    // "no release block" so the config file stays minimal.
-    let is_default =
-        cfg.scope.is_none() && cfg.autorelease == Autorelease::Off && cfg.paths.is_empty();
+    // Normalize an empty policy (no scope, autorelease off, no paths, no bump
+    // overrides) back to "no release block" so the config file stays minimal.
+    let is_default = cfg.scope.is_none()
+        && cfg.autorelease == Autorelease::Off
+        && cfg.paths.is_empty()
+        && cfg.bumps.is_none();
     decl.release = if is_default { None } else { Some(cfg) };
 
     let yaml = serde_yaml::to_string(&project).map_err(|e| bad_gateway(e.into()))?;
