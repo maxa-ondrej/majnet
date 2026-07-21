@@ -83,10 +83,20 @@ pub async fn ensure_domains(state: &AppState, rendered: &BTreeMap<String, String
 /// `*.{project}.{base_domain}` (DNS-only) → the project ingress's MagicDNS name
 /// `{project}.{tailnet}`. On the tailnet, MagicDNS resolves that target to the
 /// ingress sidecar's `100.x` address; off-tailnet the target is unresolvable,
-/// so VPN hosts publish no tailnet IPs and stay VPN-only. No-op without a
+/// so VPN hosts publish no tailnet IPs and stay VPN-only. A single wildcard also
+/// covers dynamic ephemeral PR-preview hosts (`<app>-pr<N>.…`).
+///
+/// `has_ingress` gates it: a project with no tailnet ingress (e.g. production-
+/// only) gets the wildcard CNAME **retracted** instead — so no stale record
+/// lingers pointing at a MagicDNS name that never resolves. No-op without a
 /// Cloudflare token or a configured tailnet, or if the base domain's zone isn't
 /// on this Cloudflare account (logged, non-fatal to the caller).
-pub async fn ensure_ingress_dns(state: &AppState, project: &str, base_domain: &str) -> Result<()> {
+pub async fn ensure_ingress_dns(
+    state: &AppState,
+    project: &str,
+    base_domain: &str,
+    has_ingress: bool,
+) -> Result<()> {
     let (Some(token), Some(tailnet)) = (
         state.config.cloudflare_token.clone(),
         // DB-first (dashboard Settings), literal name only — not the `-` API
@@ -102,6 +112,11 @@ pub async fn ensure_ingress_dns(state: &AppState, project: &str, base_domain: &s
     let cf = Cloudflare::new(state.http.clone(), token);
     let zone = cf.zone_for(&format!("{project}.{base_domain}")).await?;
     let name = format!("*.{project}.{base_domain}");
+    if !has_ingress {
+        cf.delete_dns_record(&zone, "CNAME", &name).await?;
+        tracing::debug!(project, %name, "no tailnet ingress — split-DNS CNAME retracted");
+        return Ok(());
+    }
     let target = format!("{project}.{tailnet}");
     cf.ensure_dns_cname(&zone, &name, &target).await?;
     tracing::info!(project, %name, %target, "ingress split-DNS CNAME ensured");
@@ -386,6 +401,34 @@ impl Cloudflare {
                 .await
                 .with_context(|| format!("creating CNAME for {name}")),
         }
+    }
+
+    /// Delete every DNS record of `record_type` at `name` in the zone (no-op if
+    /// none exist). Used to retract the split-DNS wildcard CNAME when a project
+    /// no longer serves any tailnet ingress.
+    pub async fn delete_dns_record(
+        &self,
+        zone: &Zone,
+        record_type: &str,
+        name: &str,
+    ) -> Result<()> {
+        let existing: Vec<DnsRecord> = self
+            .get(&format!(
+                "/zones/{}/dns_records?type={record_type}&name={name}",
+                zone.id
+            ))
+            .await
+            .context("listing DNS records for deletion")?;
+        for rec in existing {
+            self.send(
+                reqwest::Method::DELETE,
+                &format!("/zones/{}/dns_records/{}", zone.id, rec.id),
+                None,
+            )
+            .await
+            .with_context(|| format!("deleting {record_type} record {name}"))?;
+        }
+        Ok(())
     }
 
     /// Set the zone's SSL/TLS mode to Full (strict).
