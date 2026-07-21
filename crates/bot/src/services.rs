@@ -96,6 +96,7 @@ pub async fn create(
     project.services.push(ServiceDecl {
         name: name.clone(),
         exposure: req.exposure,
+        repo: None,
     });
     dashboard_api::commit_file(
         &state,

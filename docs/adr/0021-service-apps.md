@@ -35,10 +35,19 @@ reused unchanged.
   as that single class exactly like a manifests-only app — **no reconciler
   change**.
 - **Tracked in a `services:` block** on `ProjectConfig`
-  (`Vec<ServiceDecl{ name, exposure }>`, `#[serde(default)]`). This records
+  (`Vec<ServiceDecl{ name, exposure, repo? }>`, `#[serde(default)]`). This records
   ownership + lets the dashboard list/badge services. Because services are **not**
   in `apps:` and have no repo, `org_sync` never creates/archives anything for them
   and the digest webhook never fires — no carve-outs needed.
+  - **Optional build `repo:`.** A service's image usually comes from outside the
+    managed org, but some are built *in* the org from config-baked Dockerfiles
+    (e.g. the observability backend's `observability` repo → collector/tempo/loki/
+    grafana images). Such a repo lives in the org yet is referenced by no `app`, so
+    `org_sync` would archive it as an unreferenced leftover — breaking future
+    rebuilds. Naming it in the service's `repo:` adds it to org-sync's declared set:
+    it is reconciled toward **active** (unarchived if archived, self-healing) but
+    never scaffolded or branch-protected (services aren't `apps`). Several services
+    may share one build repo.
 - **The manifest lives at `apps/<name>/`** (`base.yaml` + the single
   exposure-class overlay) like any app, so edit-image/config, secrets, archive,
   and delete all reuse the existing app paths. Updating a service = editing its

@@ -153,17 +153,30 @@ pub async fn sync_org(
         .filter(|a| !a.is_monorepo())
         .map(|a| a.name.as_str())
         .collect();
-    let referenced: std::collections::HashSet<&str> =
+    // Monorepo app repos: referenced by an app but not a managed (solo) repo —
+    // user-owned, bring-your-own-CI, so org-sync leaves them entirely alone.
+    let app_referenced: std::collections::HashSet<&str> =
         project.apps.iter().map(|a| a.repo()).collect();
+    // Build repos a service names (e.g. `observability`): a service has no
+    // scaffolded repo, but its image build repo lives in the org and must stay
+    // active. Reconciled toward active like a managed repo — but not scaffolded
+    // or protected (services aren't `apps`).
+    let service_repos: std::collections::HashSet<&str> = project
+        .services
+        .iter()
+        .filter_map(|s| s.repo.as_deref())
+        .collect();
     for (repo, archived) in &existing {
         if is_reserved_repo(repo, org) {
             continue;
         }
         // A repo referenced only by monorepo apps is user-owned — leave it alone.
-        if referenced.contains(repo.as_str()) && !managed.contains(repo.as_str()) {
+        if app_referenced.contains(repo.as_str()) && !managed.contains(repo.as_str()) {
             continue;
         }
-        let declared = managed.contains(repo.as_str());
+        // A declared repo (a managed solo-app repo, or a service's build repo)
+        // must be active; anything else in the org is an un-declared leftover.
+        let declared = managed.contains(repo.as_str()) || service_repos.contains(repo.as_str());
         match (declared, *archived) {
             // Reconcile archived state to the declaration (project.yaml is the
             // source of truth): a declared app's repo must be active. This also

@@ -27,6 +27,14 @@ pub struct ProjectConfig {
 pub struct ServiceDecl {
     pub name: String,
     pub exposure: Exposure,
+    /// Build repo hosting this service's image(s), if one lives in the managed
+    /// org (e.g. `observability` for config-baked backend images). A service has
+    /// no scaffolded repo of its own, but org-sync would otherwise archive any
+    /// unreferenced repo in the org — naming it here keeps it active (like a
+    /// monorepo `repo:`). Absent ⇒ the image is hosted elsewhere (nothing to
+    /// keep active). Several services may share one build repo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
 }
 
 /// Where a service runs + how it's reached (ADR 0021). Maps to an `EnvClass` so
@@ -425,6 +433,21 @@ mod tests {
         assert_eq!(p.services[0].exposure, Exposure::Internal);
         let out = serde_yaml::to_string(&p).unwrap();
         assert!(out.contains("exposure: internal"), "{out}");
+        // No `repo:` by default (backward compatible + not serialized when None).
+        assert_eq!(p.services[0].repo, None);
+        assert!(!out.contains("repo:"), "{out}");
+    }
+
+    #[test]
+    fn service_build_repo_round_trips() {
+        use super::ProjectConfig;
+        // A service naming its image build repo (kept active by org-sync).
+        let y = "name: majnet\nmembers: []\napps: []\n\
+                 services:\n  - name: otel-collector\n    exposure: internal\n    repo: observability\n";
+        let p: ProjectConfig = serde_yaml::from_str(y).unwrap();
+        assert_eq!(p.services[0].repo.as_deref(), Some("observability"));
+        let out = serde_yaml::to_string(&p).unwrap();
+        assert!(out.contains("repo: observability"), "{out}");
     }
 
     #[test]
