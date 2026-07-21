@@ -12,7 +12,7 @@
 use anyhow::{bail, Context, Result};
 use bollard::models::{
     ContainerCreateBody, ContainerSummary, EndpointSettings, HealthConfig, HostConfig,
-    NetworkingConfig, RestartPolicy, RestartPolicyNameEnum,
+    NetworkingConfig, PortBinding, RestartPolicy, RestartPolicyNameEnum,
 };
 use bollard::query_parameters as qp;
 use bollard::Docker;
@@ -31,6 +31,11 @@ pub struct DeployCtx<'a> {
     /// For fetching a GHCR pull credential from the bot (ADR 0012).
     pub http: &'a reqwest::Client,
     pub bot_url: &'a str,
+    /// This class's node's WireGuard mesh IP. Used to publish an app's
+    /// `wg_ports` on the WG tunnel so cross-node peers can reach them. Empty for
+    /// imperative paths that never create containers (purge/rename/restart) and
+    /// for local smoke tests (no WG mesh) — an empty IP publishes nothing.
+    pub wireguard_ip: &'a str,
 }
 
 pub const LABEL_PROJECT: &str = "majnet.project";
@@ -111,7 +116,7 @@ pub async fn converge_app(
     secrets: Option<&BTreeMap<String, String>>,
     extra_env: &[(String, String)],
 ) -> Result<String> {
-    let config_hash = config_hash(manifest, secrets, extra_env);
+    let config_hash = config_hash(manifest, secrets, extra_env, ctx.wireguard_ip);
     let replicas = manifest.replicas.max(1);
     let base = format!(
         "{}-{}-{}-{}",
@@ -343,6 +348,7 @@ fn config_hash(
     manifest: &AppManifest,
     secrets: Option<&BTreeMap<String, String>>,
     extra_env: &[(String, String)],
+    wireguard_ip: &str,
 ) -> String {
     let mut hasher = sha2::Sha256::new();
     hasher.update(SPEC_VERSION);
@@ -352,6 +358,15 @@ fn config_hash(
     let mut normalized = manifest.clone();
     normalized.replicas = 1;
     hasher.update(serde_yaml::to_string(&normalized).expect("manifest serializes"));
+    // When the app publishes `wg_ports`, the node's WG IP is part of the spec
+    // (it's the published host IP) but not of the manifest — fold it in so a
+    // node re-address re-converges. Only when wg_ports is set, so apps that
+    // don't use the mesh keep a WG-IP-independent hash (no fleet re-converge).
+    if !manifest.wg_ports.is_empty() {
+        hasher.update(b"wg\0");
+        hasher.update(wireguard_ip.as_bytes());
+        hasher.update([0]);
+    }
     for (k, v) in secrets
         .into_iter()
         .flatten()
@@ -473,15 +488,23 @@ fn container_spec(
         )])),
     };
 
+    // Cross-node mesh endpoints (ADR 0023): publish each `wg_ports` entry on the
+    // node's WireGuard IP only — reachable fleet-wide over the WG tunnel, never
+    // on a public interface (mirrors the Adminer host-IP binding). Skipped when
+    // there's no WG IP (local smoke tests).
+    let (exposed_ports, port_bindings) = wg_port_bindings(&manifest.wg_ports, ctx.wireguard_ip);
+
     ContainerCreateBody {
         image: Some(manifest.image.clone()),
         env: Some(env_list(manifest, extra_env)),
         labels: Some(labels),
         healthcheck: health,
         networking_config: Some(networking_config),
+        exposed_ports,
         host_config: Some(HostConfig {
             network_mode: Some(net),
             binds: mount_binds(ctx, manifest, with_secrets, secrets_dir),
+            port_bindings,
             memory,
             nano_cpus,
             restart_policy: Some(RestartPolicy {
@@ -492,6 +515,37 @@ fn container_spec(
         }),
         ..Default::default()
     }
+}
+
+/// Build the `exposed_ports` + `port_bindings` that publish an app's `wg_ports`
+/// on the node's WireGuard IP (`<wg_ip>:<port>` → `<port>/tcp`). Returns
+/// `(None, None)` when there are no ports or no WG IP, so non-mesh apps and
+/// local smoke tests publish nothing.
+#[allow(clippy::type_complexity)]
+fn wg_port_bindings(
+    wg_ports: &[u16],
+    wireguard_ip: &str,
+) -> (
+    Option<Vec<String>>,
+    Option<HashMap<String, Option<Vec<PortBinding>>>>,
+) {
+    if wg_ports.is_empty() || wireguard_ip.is_empty() {
+        return (None, None);
+    }
+    let exposed = wg_ports.iter().map(|p| format!("{p}/tcp")).collect();
+    let bindings = wg_ports
+        .iter()
+        .map(|p| {
+            (
+                format!("{p}/tcp"),
+                Some(vec![PortBinding {
+                    host_ip: Some(wireguard_ip.to_string()),
+                    host_port: Some(p.to_string()),
+                }]),
+            )
+        })
+        .collect();
+    (Some(exposed), Some(bindings))
 }
 
 async fn run_migration(
@@ -761,5 +815,58 @@ pub async fn remove_volume(docker: &Docker, name: &str) -> Result<()> {
             status_code: 404, ..
         }) => Ok(()),
         Err(e) => Err(e).with_context(|| format!("removing volume {name}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manifest(wg_ports: Vec<u16>) -> AppManifest {
+        AppManifest::parse(&format!(
+            "name: api\nimage: ghcr.io/org/api@sha256:{}\nwg_ports: {wg_ports:?}\n",
+            "a".repeat(64)
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn wg_port_bindings_publish_on_the_wireguard_ip_only() {
+        let (exposed, bindings) = wg_port_bindings(&[4317, 4318], "10.88.0.3");
+        assert_eq!(
+            exposed.unwrap(),
+            vec!["4317/tcp".to_string(), "4318/tcp".to_string()]
+        );
+        let b = bindings.unwrap();
+        let one = b["4317/tcp"].as_ref().unwrap();
+        assert_eq!(one[0].host_ip.as_deref(), Some("10.88.0.3"));
+        assert_eq!(one[0].host_port.as_deref(), Some("4317"));
+    }
+
+    #[test]
+    fn wg_port_bindings_publish_nothing_without_ports_or_ip() {
+        // No WG IP (local smoke test) → nothing published even with ports.
+        assert!(wg_port_bindings(&[4317], "").0.is_none());
+        assert!(wg_port_bindings(&[4317], "").1.is_none());
+        // No ports → nothing published.
+        assert!(wg_port_bindings(&[], "10.88.0.3").0.is_none());
+    }
+
+    #[test]
+    fn config_hash_folds_wg_ip_only_when_wg_ports_set() {
+        // With no wg_ports, the WG IP is not part of the identity — same hash
+        // on any node, so no spurious fleet-wide re-converge.
+        let plain = manifest(vec![]);
+        assert_eq!(
+            config_hash(&plain, None, &[], "10.88.0.2"),
+            config_hash(&plain, None, &[], "10.88.0.3"),
+        );
+        // With wg_ports, a different node IP re-converges (the published host IP
+        // is part of the spec).
+        let mesh = manifest(vec![4317]);
+        assert_ne!(
+            config_hash(&mesh, None, &[], "10.88.0.2"),
+            config_hash(&mesh, None, &[], "10.88.0.3"),
+        );
     }
 }

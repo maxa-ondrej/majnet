@@ -60,6 +60,7 @@ pub async fn purge_app(state: &AppState, org: &str, app: &str) -> Result<Vec<Str
             dry_run: state.config.dry_run,
             http: &state.http,
             bot_url: &state.config.bot_url,
+            wireguard_ip: "",
         };
 
         // Residual containers (usually already gc'd once un-rendered).
