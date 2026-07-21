@@ -70,11 +70,19 @@ and what phase 2 flips on.
 
 A shared **OTEL Collector gateway** (a service) is the single indirection point:
 sampling, PII redaction, and fan-out to the backends live there, so swapping or
-adding a backend is a collector-config change, not a fleet change. Because
-project networks are isolated (ADR 0019 aliases are per-network), the reconciler
-attaches the collector to each project network — the same pattern used to reach
-`majnet-postgres` from the admin network for Adminer (ADR 0014) — so an app
-resolves the collector by a stable alias on its own network.
+adding a backend is a collector-config change, not a fleet change.
+
+**Reaching the collector — cross-node over WireGuard.** The collector runs on the
+private node (an `internal` service → `stable` class). Attaching it to each
+project network (the Adminer-network pattern, ADR 0014) only makes it resolvable
+**for apps on that same node** — a production app on the prod node cannot dial a
+private-node container by a network alias. The fleet-wide reachable address is the
+private node's **WireGuard IP**: the manifest gains a `wg_ports` field (e.g.
+`[4317, 4318]`), and the reconciler publishes those container ports on the node's
+`wireguard_ip` (reusing the Adminer `PortBinding{host_ip}` pattern), so any node
+reaches them over the WG mesh. `MAJNET_OTLP_ENDPOINT` is then the collector's
+`http://<private-node-wg-ip>:4317`, uniform for every app on every node — no
+per-network attach needed.
 
 ### Backend — Grafana Tempo + Loki, metrics reused
 
@@ -124,10 +132,16 @@ natively today. (UX prototyped as a mock, 2026-07-21; pending sign-off.)
    pure `otel_env` helper, folded into `extra_env`/the config hash so toggling
    re-converges) when `otel` is set **and** `MAJNET_OTLP_ENDPOINT` is configured.
    Inert until then. Dashboard toggle deferred to phase 3.
-2. **Backend.** Collector + Tempo + Loki + Grafana as internal service apps;
-   collector attached to project networks. **Gated on the private node** (still
-   parked) + volume placement for the stateful stores (Tempo/Loki) — the same
-   dependency as per-project Adminer routes (ADR 0014).
+2. ✅ **Backend — done 2026-07-21.** Collector + Tempo + Loki + Grafana as
+   internal service apps (`majnet/observability` config-baked images, deployed in
+   `majnet/ops`) on the private node; Grafana reachable over the tailnet. OTLP
+   trace round-trip through Tempo verified.
+2b. **Cross-node collector reachability.** `wg_ports: Vec<u16>` on `AppManifest`;
+   the reconciler binds those ports on the node's `wireguard_ip` (folded into the
+   config hash so toggling re-converges). Collector sets `wg_ports: [4317, 4318]`
+   → `<private-node-wg-ip>:4317`; the reconciler's `MAJNET_OTLP_ENDPOINT` points
+   there, so `otel: true` apps on **any** node push to it over the WG mesh.
+   sideline is the first customer.
 3. **Dashboard.** The Observability tab + "Open in Grafana" deep-links.
 
 ## Open questions

@@ -51,6 +51,21 @@ pub struct AppManifest {
     /// the backend. Per-manifest (per-class via overlays).
     #[serde(default)]
     pub otel: bool,
+    /// Container ports to publish on the node's WireGuard mesh IP so they are
+    /// reachable fleet-wide over the WG tunnel — not just within the project
+    /// network or from same-node containers. Each listed container port is bound
+    /// to `<node wireguard_ip>:<same port>`; never to a public interface.
+    ///
+    /// Used for cross-node service endpoints: e.g. the OTEL collector on the
+    /// private node publishing `[4317, 4318]` so prod-node apps can push OTLP
+    /// over WG (ADR 0023). Empty (the default) publishes nothing. Requires
+    /// `replicas: 1` — a fixed host port has a single binder.
+    ///
+    /// Skipped when empty on serialization so adding this field doesn't perturb
+    /// the reconciler's `config_hash` for existing apps — no fleet-wide recycle
+    /// on rollout; only an app that actually sets `wg_ports` re-converges.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wg_ports: Vec<u16>,
 }
 
 fn default_replicas() -> u32 {
@@ -318,6 +333,13 @@ impl AppManifest {
             self.replicas == 1 || self.volumes.is_empty(),
             "cannot run more than one replica of an app with persistent volumes (single-writer)"
         );
+        for p in &self.wg_ports {
+            ensure!(*p != 0, "wg_ports entry must be a non-zero port");
+        }
+        ensure!(
+            self.wg_ports.is_empty() || self.replicas == 1,
+            "cannot run more than one replica of an app that publishes wg_ports (single host-port binder)"
+        );
         Ok(())
     }
 }
@@ -461,6 +483,34 @@ mod tests {
         assert!(AppManifest::parse(&valid().replace("name: api", "name: -api")).is_err());
         let with_secret = format!("{}secrets: [../etc/passwd]\n", valid());
         assert!(AppManifest::parse(&with_secret).is_err());
+    }
+
+    #[test]
+    fn parses_wg_ports() {
+        let yaml =
+            format!("name: api\nimage: ghcr.io/org/api@{DIGEST}\nwg_ports:\n  - 4317\n  - 4318\n");
+        let m = AppManifest::parse(&yaml).unwrap();
+        assert_eq!(m.wg_ports, vec![4317, 4318]);
+    }
+
+    #[test]
+    fn empty_wg_ports_is_not_serialized() {
+        // Skipped-when-empty so the reconciler's manifest-serialized config_hash
+        // is unchanged for existing apps — no fleet-wide recycle on rollout.
+        let m = AppManifest::parse(&valid()).unwrap();
+        assert!(m.wg_ports.is_empty());
+        assert!(!serde_yaml::to_string(&m).unwrap().contains("wg_ports"));
+    }
+
+    #[test]
+    fn rejects_wg_ports_with_replicas() {
+        let yaml = format!(
+            "name: api\nimage: ghcr.io/org/api@{DIGEST}\nreplicas: 2\nwg_ports:\n  - 4317\n"
+        );
+        assert!(AppManifest::parse(&yaml)
+            .unwrap_err()
+            .to_string()
+            .contains("wg_ports"));
     }
 
     #[test]

@@ -131,6 +131,7 @@ async fn migrate_stack(
         dry_run: state.config.dry_run,
         http: &state.http,
         bot_url: &state.config.bot_url,
+        wireguard_ip: "",
     };
     deploy::remove_app(&ctx_old, old_app).await?;
 
