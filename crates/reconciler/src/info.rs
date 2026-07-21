@@ -34,12 +34,24 @@ pub async fn capture(
         Ok(value) => (Some(value), None),
         Err(e) => (None, Some(format!("{e:#}"))),
     };
-    let version = value
+    let mut version = value
         .as_ref()
         .and_then(|v| v.get("version"))
         .and_then(|v| v.as_str())
         .map(str::to_string);
-    let info = value.as_ref().map(serde_json::Value::to_string);
+    let mut info = value.as_ref().map(serde_json::Value::to_string);
+    // Fallback for images with no MajNet `/info` route — notably services
+    // running an off-the-shelf image: read the OCI `org.opencontainers.image
+    // .version` label off the pulled image so the dashboard shows a real
+    // version (e.g. `v1.0.0-beta34`) instead of a bare digest (ADR 0021).
+    let mut error = error;
+    if version.is_none() {
+        if let Some(v) = image_oci_version(ctx.docker, &manifest.image).await {
+            info = Some(serde_json::json!({ "version": v, "source": "image" }).to_string());
+            version = Some(v);
+            error = None;
+        }
+    }
     if let Err(e) = state.store.record_app_info(
         ctx.project,
         &manifest.name,
@@ -57,6 +69,19 @@ pub async fn capture(
         );
     }
     version
+}
+
+/// Read the OCI `org.opencontainers.image.version` label off a pulled image —
+/// the version fallback for images with no `/info` route. The image is local
+/// (just deployed), so this is a cheap inspect. Best-effort → `None`.
+async fn image_oci_version(docker: &Docker, image: &str) -> Option<String> {
+    let inspect = docker.inspect_image(image).await.ok()?;
+    inspect
+        .config?
+        .labels?
+        .get("org.opencontainers.image.version")
+        .cloned()
+        .filter(|v| !v.is_empty())
 }
 
 /// GET `/info` from inside the running app container and parse it as JSON.

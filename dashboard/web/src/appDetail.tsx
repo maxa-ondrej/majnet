@@ -5,7 +5,7 @@ import {
 } from 'lucide-react'
 import {
   send, urls, useApps, useAppContainers, useAppInfo, useAppLogs, useAppSecrets, useEvents, useImports,
-  useManifest, useNodeMetrics, useProjects, useReleases, useReleaseConfig, useReleaseDraft, useWhoami,
+  useManifest, useNodeMetrics, useProjects, useReleases, useReleaseConfig, useReleaseDraft, useServiceReleases, useWhoami,
   type AppInfo, type Autorelease, type ManifestFile, type ReleaseConfig,
 } from './api'
 import { useApiMutation } from './mutations'
@@ -244,6 +244,9 @@ export function AppDetail() {
 
       {/* Releases (cut/draft/promote) need a repo + CI — N/A for a service. */}
       {!isService && <Releases org={org} app={app} repo={a?.repo} prodImage={prodImage} />}
+      {/* A service has no CI, but its external image has upstream versions we can
+          promote to (ADR 0021 follow-up). */}
+      {isService && <ServiceVersions org={org} app={app} current={versionFor('production')} />}
 
       {appEvents.length > 0 && (
         <>
@@ -567,6 +570,61 @@ function ReleaseSettings({ org, app, repo }: { org: string; app: string; repo?: 
         </div>
       </div>
     </details>
+  )
+}
+
+/** Version + upstream releases + promote for a service (ADR 0021). The running
+ *  version comes from the reconciler's OCI-label capture (`current`); available
+ *  versions from the image repo's registry tags. */
+function ServiceVersions({ org, app, current }: { org: string; app: string; current: string | null }) {
+  const q = useServiceReleases(org, app)
+  const m = useApiMutation({ invalidate: [['deploys'], ['events'], ['serviceReleases', org, app]] })
+  const versions = q.data?.versions ?? []
+  const currentIdx = current ? versions.indexOf(current) : -1
+  return (
+    <Card className="gap-0 py-0">
+      <div className="flex flex-wrap items-center gap-2.5 border-b px-4 py-3">
+        <h2 className="font-semibold">Version</h2>
+        {current
+          ? <StatusBadge tone="accent">{current}</StatusBadge>
+          : <span className="text-xs text-muted-foreground">unknown</span>}
+        {q.data?.image_repo && <span className="font-mono text-[11px] text-muted-foreground">{q.data.image_repo}</span>}
+        <div className="flex-1" />
+        {currentIdx === 0 && <span className="text-xs text-muted-foreground">up to date</span>}
+      </div>
+      <div className="px-4 py-3">
+        <QueryState isLoading={q.isLoading} error={q.error}>
+          {versions.length === 0 && (
+            <span className="text-xs text-muted-foreground">No upstream versions found for this image.</span>
+          )}
+          {versions.length > 0 && (
+            <div className="flex flex-col gap-0.5">
+              {versions.slice(0, 15).map((v) => {
+                const isCurrent = v === current
+                const isNewer = currentIdx >= 0 && versions.indexOf(v) < currentIdx
+                return (
+                  <div key={v} className="flex items-center gap-3 rounded-md px-2 py-1.5 text-sm hover:bg-accent/40">
+                    <span className="font-mono">{v}</span>
+                    {isCurrent && <StatusBadge tone="accent">running</StatusBadge>}
+                    {isNewer && <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">newer</span>}
+                    <div className="flex-1" />
+                    {!isCurrent && (
+                      <ConfirmButton size="sm" variant={isNewer ? 'default' : 'outline'} disabled={m.isPending}
+                        title={`Promote ${app} to ${v}?`}
+                        description="Pins this version's digest into the service manifest and opens the env/production render PR — merging it deploys."
+                        confirmText={`Promote ${v}`}
+                        onConfirm={() => m.mutate(() => send(urls.servicePromote(org, app, v), { method: 'POST' }))}>
+                        Promote
+                      </ConfirmButton>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </QueryState>
+      </div>
+    </Card>
   )
 }
 

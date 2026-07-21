@@ -91,6 +91,10 @@ export interface StoredRelease {
 export interface ReleaseProgress {
   app: string; version: string; status: 'active' | 'done' | 'failed'; stage: string; detail: string; updated_at: string
 }
+/** Available upstream versions for a service's external image (ADR 0021). */
+export interface ServiceReleases {
+  image_repo: string; current_image: string; versions: string[]
+}
 /** Canonical release-progress stage order + labels (mirrors releases.rs). */
 export const RELEASE_STAGES: { key: string; label: string }[] = [
   { key: 'committing', label: 'Committing bump + changelog' },
@@ -207,6 +211,10 @@ export const urls = {
     `${RECON}/secrets/${encodeURIComponent(org)}/${encodeURIComponent(cls)}/${encodeURIComponent(app)}`,
   releaseDrafts: `${BOT}/releases/drafts`,
   releaseProgress: (org: string) => `${BOT}/releases/progress/${encodeURIComponent(org)}`,
+  serviceReleases: (org: string, app: string) =>
+    `${BOT}/service-releases/${encodeURIComponent(org)}/${encodeURIComponent(app)}`,
+  servicePromote: (org: string, app: string, version: string) =>
+    `${BOT}/service-releases/${encodeURIComponent(org)}/${encodeURIComponent(app)}/promote?version=${encodeURIComponent(version)}`,
   releaseBulk: `${BOT}/releases/bulk`,
   releases: (org: string, app: string) => `${BOT}/releases/${encodeURIComponent(org)}/${encodeURIComponent(app)}`,
   releaseCut: (org: string, app: string, bump: string) =>
@@ -365,6 +373,8 @@ export const useReleaseDrafts = () =>
   useQuery({ queryKey: ['releaseDrafts'], queryFn: () => getJSON<ReleaseCandidate[]>(urls.releaseDrafts), refetchInterval: 30_000 })
 export const useReleaseProgress = (org: string, enabled = true) =>
   useQuery({ queryKey: ['releaseProgress', org], queryFn: () => getJSON<ReleaseProgress[]>(urls.releaseProgress(org)), enabled, refetchInterval: 5_000 })
+export const useServiceReleases = (org: string, app: string, enabled = true) =>
+  useQuery({ queryKey: ['serviceReleases', org, app], queryFn: () => getJSON<ServiceReleases>(urls.serviceReleases(org, app)), enabled })
 export const useReleaseConfig = (org: string, app: string) =>
   useQuery({ queryKey: ['releaseConfig', org, app], queryFn: () => getJSON<ReleaseConfig | null>(urls.releaseConfig(org, app)) })
 export const useArchivedApps = (org: string) =>

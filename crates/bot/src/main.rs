@@ -31,6 +31,7 @@ mod proxy;
 mod registry;
 mod releases;
 mod render;
+mod service_releases;
 mod services;
 mod state;
 mod tailscale;
@@ -110,6 +111,14 @@ async fn main() -> Result<()> {
             get(dashboard_api::apps_get).post(dashboard_api::apps_post),
         )
         .route("/api/services/{org}", post(services::create))
+        .route(
+            "/api/service-releases/{org}/{app}",
+            get(service_releases::list),
+        )
+        .route(
+            "/api/service-releases/{org}/{app}/promote",
+            post(service_releases::promote),
+        )
         .route(
             "/api/apps/{org}/{app}/rename",
             post(dashboard_api::app_rename_post),
