@@ -43,15 +43,25 @@ mechanism that already injects `DATABASE_URL` (the reconciler's per-app
 `extra_env` in `converge_one`):
 
 ```
-OTEL_EXPORTER_OTLP_ENDPOINT = http://otel-collector:4317   # project-network alias
-OTEL_RESOURCE_ATTRIBUTES    = service.name=<app>, service.version=<from /info>,
-                              deployment.environment=<class>, project=<project>
+OTEL_EXPORTER_OTLP_ENDPOINT = <platform OTLP endpoint>     # e.g. http://otel-collector:4317
+OTEL_SERVICE_NAME           = <app>
+OTEL_RESOURCE_ATTRIBUTES    = service.name=<app>, deployment.environment=<class>,
+                              project=<project>
 ```
 
-Opt in per app with an `otel: on` field on `AppDecl` (GitOps in `project.yaml`,
-dashboard-written, like `release:`). The app only has to add an OTEL SDK — no
-endpoint to configure, no secret to manage, resource attributes filled in by the
-platform so every signal is already tagged by app/version/env/project.
+Opt in with an **`otel: true`** field on the app **manifest** — refined from the
+original `AppDecl` idea: `render` merges `base.yaml` ⊕ overlay into the
+`AppManifest` and never consults `project.yaml`, and env injection is a
+deploy-spec concern (like `database`), so the flag belongs on the manifest the
+reconciler already reads. A bonus: it can be set per class via overlays. The app
+only has to add an OTEL SDK — no endpoint to configure, no secret to manage,
+resource attributes filled in by the platform so every signal is already tagged
+by app/env/project (the SDK supplies `service.version`).
+
+The endpoint itself comes from a **platform config** (`MAJNET_OTLP_ENDPOINT` on
+the reconciler), unset by default — so `otel: true` injects nothing until a
+collector exists. That is what makes phase 1 safe to ship ahead of the backend,
+and what phase 2 flips on.
 
 ### Layering — don't duplicate what already works
 
@@ -108,9 +118,12 @@ natively today. (UX prototyped as a mock, 2026-07-21; pending sign-off.)
 
 ## Phasing
 
-1. **App emit-readiness (no infra).** `otel: on` on `AppDecl` + reconciler
-   auto-injection of `OTEL_EXPORTER_OTLP_ENDPOINT` + `OTEL_RESOURCE_ATTRIBUTES`.
-   Cheap; makes every app emit-ready before a backend exists.
+1. ✅ **App emit-readiness (no infra) — done 2026-07-21.** `otel: bool` on
+   `AppManifest` (`common`); reconciler injects `OTEL_EXPORTER_OTLP_ENDPOINT` +
+   `OTEL_SERVICE_NAME` + `OTEL_RESOURCE_ATTRIBUTES` in `converge_one` (via the
+   pure `otel_env` helper, folded into `extra_env`/the config hash so toggling
+   re-converges) when `otel` is set **and** `MAJNET_OTLP_ENDPOINT` is configured.
+   Inert until then. Dashboard toggle deferred to phase 3.
 2. **Backend.** Collector + Tempo + Loki + Grafana as internal service apps;
    collector attached to project networks. **Gated on the private node** (still
    parked) + volume placement for the stateful stores (Tempo/Loki) — the same

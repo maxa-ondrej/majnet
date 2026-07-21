@@ -297,7 +297,7 @@ async fn converge_one(
 
     // Managed database (§15): deploy the engine on this node on first use, then
     // provision the logical DB — both before the app (and its migrations) run.
-    let extra_env = match &manifest.database {
+    let mut extra_env = match &manifest.database {
         Some(db) => {
             // Per-project Adminer auto-login map (ADR 0014): the prod Adminer
             // browses `majnet-postgres`, so collect only production Postgres DBs
@@ -337,6 +337,17 @@ async fn converge_one(
         }
         None => Vec::new(),
     };
+
+    // OpenTelemetry (ADR 0023): inject the OTLP endpoint + resource attributes
+    // when the app opts in and the platform has a collector. Folded into the
+    // config hash via extra_env, so toggling `otel` re-converges the app.
+    extra_env.extend(otel_env(
+        manifest.otel,
+        state.config.otlp_endpoint.as_deref(),
+        ctx.project,
+        app,
+        ctx.class,
+    ));
 
     let summary = deploy::converge_app(ctx, &manifest, secrets.as_ref(), &extra_env).await?;
     // On an actual rollout (not a no-op "in sync"), scrape the app's standard
@@ -379,4 +390,86 @@ async fn ensure_network(docker: &bollard::Docker, project: &str, dry_run: bool) 
         .with_context(|| format!("creating network {name}"))?;
     tracing::info!(network = name, "created project network");
     Ok(())
+}
+
+/// OTEL env to inject when an app opts in (`otel: true`) and the platform has a
+/// collector endpoint configured (ADR 0023). Empty when either is missing — so
+/// `otel` is inert until the backend exists. Resource attributes tag every
+/// signal by app / environment / project; the app's OTEL SDK supplies the rest.
+fn otel_env(
+    otel: bool,
+    endpoint: Option<&str>,
+    project: &str,
+    app: &str,
+    class: EnvClass,
+) -> Vec<(String, String)> {
+    match (otel, endpoint) {
+        (true, Some(ep)) if !ep.is_empty() => vec![
+            ("OTEL_EXPORTER_OTLP_ENDPOINT".to_string(), ep.to_string()),
+            ("OTEL_SERVICE_NAME".to_string(), app.to_string()),
+            (
+                "OTEL_RESOURCE_ATTRIBUTES".to_string(),
+                format!(
+                    "service.name={app},deployment.environment={},project={project}",
+                    class.as_str()
+                ),
+            ),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn otel_env_is_inert_unless_opted_in_and_endpoint_set() {
+        // No opt-in, or no endpoint → nothing injected (safe before the backend).
+        assert!(otel_env(
+            false,
+            Some("http://otel-collector:4317"),
+            "sideline",
+            "sideline-server",
+            EnvClass::Production
+        )
+        .is_empty());
+        assert!(otel_env(
+            true,
+            None,
+            "sideline",
+            "sideline-server",
+            EnvClass::Production
+        )
+        .is_empty());
+        assert!(otel_env(
+            true,
+            Some(""),
+            "sideline",
+            "sideline-server",
+            EnvClass::Production
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn otel_env_injects_endpoint_and_tagged_attributes() {
+        let env = otel_env(
+            true,
+            Some("http://otel-collector:4317"),
+            "sideline",
+            "sideline-server",
+            EnvClass::Production,
+        );
+        let m: std::collections::BTreeMap<_, _> = env.into_iter().collect();
+        assert_eq!(
+            m["OTEL_EXPORTER_OTLP_ENDPOINT"],
+            "http://otel-collector:4317"
+        );
+        assert_eq!(m["OTEL_SERVICE_NAME"], "sideline-server");
+        assert_eq!(
+            m["OTEL_RESOURCE_ATTRIBUTES"],
+            "service.name=sideline-server,deployment.environment=production,project=sideline"
+        );
+    }
 }
