@@ -121,6 +121,15 @@ async fn obtain_or_renew(
     let out = tokio::process::Command::new("lego")
         .args(lego_args(dir, email, domain, staging, action))
         .env("CF_DNS_API_TOKEN", cf_token)
+        // The phase-4 split-DNS wildcard CNAME `*.{project}.{base} → {project}.
+        // {tailnet}` shadows `_acme-challenge.{project}.{base}`: with CNAME
+        // support on (lego's default), lego follows that CNAME to the `.ts.net`
+        // target and tries to solve DNS-01 in a zone Cloudflare doesn't host →
+        // issuance fails. Disabling it makes lego write the TXT at the literal
+        // `_acme-challenge.{project}.{base}`, where an explicit record wins over
+        // the wildcard — so the wildcard CNAME (which we keep, to cover dynamic
+        // ephemeral preview hosts) and DNS-01 wildcard issuance coexist.
+        .env("LEGO_DISABLE_CNAME_SUPPORT", "true")
         .output()
         .await
         .context("spawning lego (is it installed?)")?;

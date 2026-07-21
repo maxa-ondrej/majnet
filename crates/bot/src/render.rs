@@ -57,6 +57,53 @@ pub async fn on_ops_main_push(state: &AppState, org: &str, commit: &str) -> Resu
     Ok(())
 }
 
+/// The VPN-class (tailnet) ingress hosts a project serves from its private-node
+/// Traefik — every host across the persistent VPN classes (`testing`, `stable`).
+/// Empty ⇒ the project has no tailnet ingress, so it needs no split-DNS CNAME
+/// and no ingress cert (used by org-sync to gate + skip production-only projects).
+///
+/// Renders the ops `main` tree exactly as a real render would (same auto-host
+/// assignment), so the hosts match what the reconciler deploys. Ephemeral
+/// PR-preview hosts are dynamic (not in `main`) and intentionally excluded — they
+/// are covered by the wildcard split-DNS CNAME + wildcard cert, not enumerated.
+pub async fn project_ingress_hosts(
+    state: &AppState,
+    org: &str,
+    project: &str,
+    base_domain: &str,
+) -> Result<Vec<String>> {
+    let (_, tarball) = crate::proxy::fetch_snapshot(state, org, "ops", "main").await?;
+    let sources = majnet_common::tarball::untar(&tarball)?;
+    vpn_ingress_hosts(&sources, project, base_domain)
+}
+
+/// Pure core of [`project_ingress_hosts`]: collect the tailnet ingress hosts
+/// across the persistent VPN classes from an ops `main` sources tree.
+fn vpn_ingress_hosts(
+    sources: &BTreeMap<String, Vec<u8>>,
+    project: &str,
+    base_domain: &str,
+) -> Result<Vec<String>> {
+    const VPN_CLASSES: [EnvClass; 2] = [EnvClass::Testing, EnvClass::Stable];
+    let mut hosts = std::collections::BTreeSet::new();
+    for class in VPN_CLASSES {
+        let Some(rendered) = render_class(sources, class, project, base_domain)? else {
+            continue;
+        };
+        for (path, yaml) in &rendered {
+            if path.starts_with("secrets/") {
+                continue; // rendered secrets file, not a manifest
+            }
+            let manifest = AppManifest::parse(yaml)
+                .with_context(|| format!("{path}: rendered manifest (ingress-host scan)"))?;
+            if let Some(ingress) = &manifest.ingress {
+                hosts.extend(ingress.hosts().into_iter().map(str::to_string));
+            }
+        }
+    }
+    Ok(hosts.into_iter().collect())
+}
+
 /// Pure render: sources tree → rendered env-branch tree. None = class empty.
 fn render_class(
     sources: &BTreeMap<String, Vec<u8>>,
@@ -452,6 +499,53 @@ mod tests {
             rendered["secrets/api.yaml"],
             "db-url: ENC[AES256_GCM,...]\n"
         );
+    }
+
+    #[test]
+    fn vpn_ingress_hosts_collects_auto_hosts_and_ignores_prod_and_hostless() {
+        let src = sources(&[
+            // A stable service with an ingress → gets an auto-assigned VPN host.
+            ("apps/grafana/base.yaml", "ingress:\n  port: 3000\n"),
+            (
+                "apps/grafana/stable.yaml",
+                &format!("image: ghcr.io/o/grafana@{DIGEST}\n"),
+            ),
+            // A production-only app → NOT a VPN host (production is edge, not tailnet).
+            (
+                "apps/web/base.yaml",
+                "ingress:\n  host: web.example.com\n  port: 80\n",
+            ),
+            (
+                "apps/web/production.yaml",
+                &format!("image: ghcr.io/o/web@{DIGEST}\n"),
+            ),
+            // A stable app with no ingress → contributes no host.
+            ("apps/worker/base.yaml", "resources:\n  memory: 64m\n"),
+            (
+                "apps/worker/stable.yaml",
+                &format!("image: ghcr.io/o/worker@{DIGEST}\n"),
+            ),
+        ]);
+        let hosts = super::vpn_ingress_hosts(&src, "majnet", "majksa.net").unwrap();
+        assert_eq!(hosts, vec!["grafana.majnet.majksa.net".to_string()]);
+    }
+
+    #[test]
+    fn vpn_ingress_hosts_empty_for_production_only_project() {
+        // A project whose apps render only for production has no tailnet ingress.
+        let src = sources(&[
+            (
+                "apps/api/base.yaml",
+                "ingress:\n  host: api.example.com\n  port: 8080\n",
+            ),
+            (
+                "apps/api/production.yaml",
+                &format!("image: ghcr.io/o/api@{DIGEST}\n"),
+            ),
+        ]);
+        assert!(super::vpn_ingress_hosts(&src, "sideline", "majksa.net")
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

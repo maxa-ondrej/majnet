@@ -71,15 +71,63 @@ pub async fn sync_all(state: &AppState) -> Result<()> {
         }
     }
 
-    // Per-project VPN ingress wildcard cert (ADR 0013): issue/renew
-    // `*.{project}.{base_domain}` and commit it (age-encrypted key) for the
-    // reconciler. Non-fatal — a cert failure must not block org sync.
+    // Per-project VPN ingress (ADR 0013): the split-DNS wildcard CNAME + a
+    // browser-trusted wildcard cert, but ONLY for projects that actually serve a
+    // tailnet ingress. Production-only projects have none, so we skip the cert
+    // (no more failing issuance every sync) and retract any stale CNAME.
+    // Non-fatal — an ingress step must never block the rest of org sync.
     let base_domain = platform
         .get("nodes.yaml")
         .and_then(|y| NodesFile::parse(y).ok())
         .map(|n| n.base_domain)
         .unwrap_or_else(|| "majksa.net".to_string());
+    // Project name → its GitHub org, to fetch the project's ops repo below.
+    let org_by_name: std::collections::HashMap<&str, &str> = projects
+        .projects
+        .iter()
+        .map(|e| (e.name.as_str(), e.org.as_str()))
+        .collect();
     for (name, _) in &synced {
+        let Some(org) = org_by_name.get(name.as_str()).copied() else {
+            continue; // synced ⇒ registered, so this is unreachable in practice
+        };
+        // Does this project serve any tailnet ingress? (No ⇒ skip cert, retract
+        // the stale CNAME.) A discovery failure is non-fatal — treat as "unknown"
+        // and skip this project's ingress steps rather than churn DNS on a fluke.
+        let hosts = match crate::render::project_ingress_hosts(state, org, name, &base_domain).await
+        {
+            Ok(hosts) => hosts,
+            Err(e) => {
+                tracing::error!(
+                    project = name,
+                    error = format!("{e:#}"),
+                    "ingress host discovery failed — skipping ingress DNS/cert"
+                );
+                continue;
+            }
+        };
+        let has_ingress = !hosts.is_empty();
+
+        // Split DNS first: ensure (or retract) the wildcard CNAME. With CNAME
+        // support disabled in lego (see acme.rs), the wildcard and DNS-01
+        // wildcard issuance coexist, so order isn't load-bearing — but keeping
+        // DNS first means a fresh project routes before its cert lands.
+        if let Err(e) =
+            crate::cloudflare::ensure_ingress_dns(state, name, &base_domain, has_ingress).await
+        {
+            tracing::error!(
+                project = name,
+                error = format!("{e:#}"),
+                "ingress DNS ensure failed"
+            );
+            state
+                .store
+                .log_event("ingress-dns", Some(name), &format!("FAILED: {e:#}"))?;
+        }
+        // Cert only for projects that actually have a tailnet ingress.
+        if !has_ingress {
+            continue;
+        }
         if let Err(e) = crate::acme::ensure_ingress_cert(state, name, &base_domain).await {
             tracing::error!(
                 project = name,
@@ -89,18 +137,6 @@ pub async fn sync_all(state: &AppState) -> Result<()> {
             state
                 .store
                 .log_event("ingress-cert", Some(name), &format!("FAILED: {e:#}"))?;
-        }
-        // Split DNS so the wildcard resolves to the project ingress over the
-        // tailnet (ADR 0013 phase 4). Independent of the cert; non-fatal.
-        if let Err(e) = crate::cloudflare::ensure_ingress_dns(state, name, &base_domain).await {
-            tracing::error!(
-                project = name,
-                error = format!("{e:#}"),
-                "ingress DNS ensure failed"
-            );
-            state
-                .store
-                .log_event("ingress-dns", Some(name), &format!("FAILED: {e:#}"))?;
         }
     }
     Ok(())

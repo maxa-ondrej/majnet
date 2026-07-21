@@ -165,8 +165,25 @@ edits inside the bot's existing Cloudflare + Tailscale ownership.)*
 4. ✅ **Split DNS.** `cloudflare::ensure_ingress_dns` ensures a DNS-only CNAME
    `*.{project}.{base_domain}` → `{project}.{tailnet}` (`Cloudflare::ensure_dns_cname`),
    hooked into org-sync per project (non-fatal). No-op without a Cloudflare
-   token or configured tailnet. *Code-complete; unverified until the private
-   node is enrolled.*
+   token or configured tailnet.
+5. ✅ **Gate + un-shadow (2026-07-21).** Two problems surfaced once the private
+   node ran phases 2–4 live:
+   - **Cert issuance was attempted for _every_ project**, including production-only
+     ones with no tailnet ingress — 6+ failing lego runs per org-sync. Fixed by
+     **gating**: `render::project_ingress_hosts` renders the VPN classes
+     (`testing`+`stable`) from ops `main` and returns the tailnet hosts; org-sync
+     skips the cert (and **retracts** any stale wildcard CNAME) for projects with
+     none. Only projects that actually serve a tailnet ingress get a CNAME + cert.
+   - **The phase-4 wildcard CNAME shadowed `_acme-challenge.{project}.{base}`**:
+     lego (CNAME support on by default) followed it to the `.ts.net` target and
+     tried DNS-01 in a zone Cloudflare doesn't host → wildcard issuance never
+     succeeded. Fixed with **`LEGO_DISABLE_CNAME_SUPPORT=true`**: lego writes the
+     TXT at the literal `_acme-challenge.{project}.{base}`, where an explicit
+     record wins over the wildcard. The wildcard CNAME is **kept** (it uniquely
+     covers the dynamic `<app>-pr<N>` ephemeral preview hosts) and now coexists
+     with wildcard DNS-01 issuance. *(Per-host CNAMEs were considered — they'd
+     un-shadow too — but rejected: they can't cover the dynamic ephemeral preview
+     hostnames a wildcard does.)*
 
 ## Consequences
 
