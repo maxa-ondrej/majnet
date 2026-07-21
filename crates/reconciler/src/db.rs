@@ -55,15 +55,29 @@ pub async fn ensure(
                 "DATABASE_URL".into(),
                 format!("postgres://{name}:{password}@{container}:5432/{name}"),
             ),
+            // Laravel/Symfony read `DB_URL` (Laravel's `database.connections.*.url`),
+            // not `DATABASE_URL`; inject it too so a Laravel app (e.g. Pelican) uses
+            // the managed DB with no per-app wiring. Same value as DATABASE_URL.
+            (
+                "DB_URL".into(),
+                format!("postgres://{name}:{password}@{container}:5432/{name}"),
+            ),
             ("PGHOST".into(), container.to_string()),
             ("PGDATABASE".into(), name.clone()),
             ("PGUSER".into(), name.clone()),
             ("PGPASSWORD".into(), password.clone()),
         ],
-        DbEngine::Mariadb => vec![(
-            "DATABASE_URL".into(),
-            format!("mysql://{name}:{password}@{container}:3306/{name}"),
-        )],
+        DbEngine::Mariadb => vec![
+            (
+                "DATABASE_URL".into(),
+                format!("mysql://{name}:{password}@{container}:3306/{name}"),
+            ),
+            // Laravel's `DB_URL` (see above), for a Laravel app on MariaDB/MySQL.
+            (
+                "DB_URL".into(),
+                format!("mysql://{name}:{password}@{container}:3306/{name}"),
+            ),
+        ],
         DbEngine::Valkey => vec![
             (
                 "DATABASE_URL".into(),
