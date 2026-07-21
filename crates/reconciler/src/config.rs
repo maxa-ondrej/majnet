@@ -32,6 +32,11 @@ pub struct Config {
     /// carrying `nsenter`. Run `--privileged --pid=host` so `nsenter -t 1`
     /// enters the host namespaces. Pin by digest in production.
     pub term_helper_image: String,
+    /// OTLP collector endpoint (ADR 0023). When set, apps with `otel: true` in
+    /// their manifest get `OTEL_EXPORTER_OTLP_ENDPOINT` + resource attributes
+    /// injected. Unset (the default) ⇒ OTEL injection is inert, so an app can be
+    /// marked `otel` before the collector backend exists. `MAJNET_OTLP_ENDPOINT`.
+    pub otlp_endpoint: Option<String>,
 }
 
 impl Config {
@@ -66,6 +71,9 @@ impl Config {
             term_helper_image: std::env::var("MAJNET_TERM_HELPER_IMAGE").unwrap_or_else(|_| {
                 "debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818".into()
             }),
+            otlp_endpoint: std::env::var("MAJNET_OTLP_ENDPOINT")
+                .ok()
+                .filter(|v| !v.is_empty()),
         })
     }
 }

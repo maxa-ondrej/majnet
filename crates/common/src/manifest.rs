@@ -43,6 +43,14 @@ pub struct AppManifest {
     /// (a persistent volume is single-writer).
     #[serde(default = "default_replicas")]
     pub replicas: u32,
+    /// Opt into OpenTelemetry (ADR 0023): when set, and the platform has an OTLP
+    /// collector endpoint configured, the reconciler injects
+    /// `OTEL_EXPORTER_OTLP_ENDPOINT` + `OTEL_RESOURCE_ATTRIBUTES` (service.name,
+    /// deployment.environment, project) into the container — the app just needs
+    /// an OTEL SDK. Inert until a collector exists, so it's safe to set ahead of
+    /// the backend. Per-manifest (per-class via overlays).
+    #[serde(default)]
+    pub otel: bool,
 }
 
 fn default_replicas() -> u32 {
