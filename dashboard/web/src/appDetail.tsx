@@ -12,6 +12,7 @@ import { useApiMutation } from './mutations'
 import { ConfirmButton, ExtLink, QueryState, short, StatusBadge } from './ui'
 import { Crumbs, ContainerSpark, ImportSteps } from './views'
 import { fromData, ManifestForm, toManifest, type ManifestDraft } from './manifestForm'
+import { Observability } from './observability'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -240,6 +241,12 @@ export function AppDetail() {
             })}
           </div>
         </>
+      )}
+
+      {/* Observability tab (ADR 0023): traces/logs/RED for apps that opt into
+          OTEL, scoped to the selected environment. */}
+      {a?.otel && classes.includes(env) && (
+        <Observability org={org} app={app} cls={env} containers={containersFor(env)} />
       )}
 
       {/* Releases (cut/draft/promote) need a repo + CI — N/A for a service. */}

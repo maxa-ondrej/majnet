@@ -142,7 +142,20 @@ natively today. (UX prototyped as a mock, 2026-07-21; pending sign-off.)
    → `<private-node-wg-ip>:4317`; the reconciler's `MAJNET_OTLP_ENDPOINT` points
    there, so `otel: true` apps on **any** node push to it over the WG mesh.
    sideline is the first customer.
-3. **Dashboard.** The Observability tab + "Open in Grafana" deep-links.
+3. ✅ **Dashboard — done 2026-07-22.** A per-app **Observability** section in
+   app-detail, gated on `otel` (surfaced on `AppSummary`), scoped to the selected
+   environment: RED tiles (request rate / error rate / p95 *from traces*, memory
+   *native · reconciler*), a **Traces⇄Logs** panel with an inline span waterfall
+   and trace_id-tagged logs, and an **Open in Grafana ↗** deep-link. The
+   **reconciler** is the query plane (it's on the WG mesh, alongside metrics/logs):
+   new `obs.rs` handlers query Tempo (`/api/search` + `/api/traces/{id}`) and Loki
+   (`/loki/api/v1/query_range`), filtered by `service.name`/`deployment.environment`.
+   RED is computed from a Tempo search over the window — the deployed Tempo has no
+   metrics-generator, so TraceQL metrics aren't available. Reachability reuses
+   phase-2b `wg_ports`: Tempo publishes `[3200]`, Loki `[3100]` on the private
+   node's WG IP; the reconciler dials `MAJNET_TEMPO_ENDPOINT` / `MAJNET_LOKI_ENDPOINT`
+   (unset ⇒ 503, tab degrades gracefully). Grafana remains the power-analysis
+   escape hatch.
 
 ## Open questions
 

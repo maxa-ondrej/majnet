@@ -37,6 +37,14 @@ pub struct Config {
     /// injected. Unset (the default) ⇒ OTEL injection is inert, so an app can be
     /// marked `otel` before the collector backend exists. `MAJNET_OTLP_ENDPOINT`.
     pub otlp_endpoint: Option<String>,
+    /// Tempo query base URL for the dashboard Observability tab (ADR 0023 phase
+    /// 3), e.g. `http://<private-node-wg-ip>:3200`. Unset ⇒ the obs endpoints
+    /// return 503 (tab degrades gracefully). `MAJNET_TEMPO_ENDPOINT`.
+    pub tempo_endpoint: Option<String>,
+    /// Loki query base URL for the Observability tab, e.g.
+    /// `http://<private-node-wg-ip>:3100`. Unset ⇒ obs logs return 503.
+    /// `MAJNET_LOKI_ENDPOINT`.
+    pub loki_endpoint: Option<String>,
 }
 
 impl Config {
@@ -73,6 +81,14 @@ impl Config {
             }),
             otlp_endpoint: std::env::var("MAJNET_OTLP_ENDPOINT")
                 .ok()
+                .filter(|v| !v.is_empty()),
+            tempo_endpoint: std::env::var("MAJNET_TEMPO_ENDPOINT")
+                .ok()
+                .map(|v| v.trim_end_matches('/').to_string())
+                .filter(|v| !v.is_empty()),
+            loki_endpoint: std::env::var("MAJNET_LOKI_ENDPOINT")
+                .ok()
+                .map(|v| v.trim_end_matches('/').to_string())
                 .filter(|v| !v.is_empty()),
         })
     }

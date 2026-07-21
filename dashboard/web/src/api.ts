@@ -16,6 +16,8 @@ export interface AppSummary {
   /** Set to the exposure ('public'|'internal') when this is a service (ADR 0021):
    *  external image + config, no repo, one environment. Absent for a normal app. */
   service?: string
+  /** App opts into OpenTelemetry (ADR 0023) — gates the Observability tab. */
+  otel: boolean
 }
 export type Exposure = 'public' | 'internal'
 export interface PlatformNode {
@@ -47,6 +49,24 @@ export interface ControlPlaneStatus {
 export interface ContainerMetric {
   name: string; image: string; state: string
   cpu_pct: number; mem_used: number; mem_limit: number
+}
+// ── observability (ADR 0023 phase 3) ─────────────────────────────────────────
+export interface ObsRed {
+  rate_per_min: number; error_pct: number; p95_ms: number
+  window_min: number; sampled: number; capped: boolean
+}
+export interface ObsTrace {
+  trace_id: string; root_service: string; root_name: string
+  duration_ms: number; start_unix_nano: number; error: boolean
+}
+export interface ObsOverview { red: ObsRed; traces: ObsTrace[] }
+export interface ObsSpan {
+  span_id: string; parent_id: string; service: string; name: string
+  start_offset_ms: number; duration_ms: number; depth: number; error: boolean
+}
+export interface ObsTraceDetail { trace_id: string; duration_ms: number; spans: ObsSpan[] }
+export interface ObsLog {
+  ts_unix_nano: number; level: string; service: string; msg: string; trace_id: string
 }
 export interface NodeMetrics {
   name: string; role: string; reachable: boolean; error: string | null
@@ -205,6 +225,11 @@ export const urls = {
     `${RECON}/containers/${encodeURIComponent(org)}/${encodeURIComponent(cls)}/${encodeURIComponent(app)}`,
   appInfo: (org: string, app: string) =>
     `${RECON}/info/${encodeURIComponent(org)}/${encodeURIComponent(app)}`,
+  obsOverview: (org: string, cls: string, app: string, windowMin = 15) =>
+    `${RECON}/obs/${encodeURIComponent(org)}/${encodeURIComponent(cls)}/${encodeURIComponent(app)}/overview?window_min=${windowMin}`,
+  obsLogs: (org: string, cls: string, app: string, windowMin = 15) =>
+    `${RECON}/obs/${encodeURIComponent(org)}/${encodeURIComponent(cls)}/${encodeURIComponent(app)}/logs?window_min=${windowMin}`,
+  obsTrace: (traceId: string) => `${RECON}/obs/trace/${encodeURIComponent(traceId)}`,
   events: (limit = 300) => `${RECON}/events?limit=${limit}`,
   botEvents: `${BOT}/events`,
   deploys: (org: string) => `${BOT}/deploys/${encodeURIComponent(org)}`,
@@ -309,6 +334,29 @@ export const useAppLogs = (org: string, cls: string, app: string, enabled: boole
 export interface AppContainer { name: string; image: string; state: string; status: string; created: number }
 export const useAppContainers = (org: string, cls: string, app: string, enabled = true) =>
   useQuery({ queryKey: ['containers', org, cls, app], queryFn: () => getJSON<AppContainer[]>(urls.appContainers(org, cls, app)), enabled, refetchInterval: 30000 })
+export const useObsOverview = (org: string, cls: string, app: string, enabled: boolean) =>
+  useQuery({
+    queryKey: ['obs-overview', org, cls, app],
+    queryFn: () => getJSON<ObsOverview>(urls.obsOverview(org, cls, app)),
+    enabled,
+    refetchInterval: 15000,
+    retry: false,
+  })
+export const useObsLogs = (org: string, cls: string, app: string, enabled: boolean) =>
+  useQuery({
+    queryKey: ['obs-logs', org, cls, app],
+    queryFn: () => getJSON<ObsLog[]>(urls.obsLogs(org, cls, app)),
+    enabled,
+    refetchInterval: 15000,
+    retry: false,
+  })
+export const useObsTrace = (traceId: string | null) =>
+  useQuery({
+    queryKey: ['obs-trace', traceId],
+    queryFn: () => getJSON<ObsTraceDetail>(urls.obsTrace(traceId!)),
+    enabled: !!traceId,
+    retry: false,
+  })
 export const useNodes = () =>
   useQuery({ queryKey: ['nodes'], queryFn: () => getJSON<PlatformNode[]>(urls.nodes) })
 // WebSocket URL for the reconciler terminal (ADR 0016), same origin as the

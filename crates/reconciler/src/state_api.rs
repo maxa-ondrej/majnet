@@ -39,6 +39,17 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(crate::terminal::transcript_get),
         )
         .route("/api/info/{org}/{app}", get(info_get))
+        // Observability tab (ADR 0023 phase 3): Tempo/Loki queries over the mesh.
+        // `{project}` carries the org (like /api/logs), resolved for authz.
+        .route(
+            "/api/obs/{project}/{class}/{app}/overview",
+            get(crate::obs::overview),
+        )
+        .route(
+            "/api/obs/{project}/{class}/{app}/logs",
+            get(crate::obs::logs),
+        )
+        .route("/api/obs/trace/{trace_id}", get(crate::obs::trace))
         .route("/api/settings/alerts", get(alerts_get).post(alerts_set))
         .route("/api/settings/alerts/test", post(alerts_test))
         .route("/api/rename/prepare/{org}", post(rename_prepare))

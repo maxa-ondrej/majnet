@@ -535,6 +535,9 @@ pub struct AppSummary {
     /// exposure instead of the class gradient.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
+    /// The app opts into OpenTelemetry (`otel: true` on the manifest, ADR 0023):
+    /// the dashboard gates the Observability tab on this.
+    pub otel: bool,
 }
 
 /// `GET /api/apps/{org}` — one summary per app declared on the project's ops
@@ -1192,6 +1195,7 @@ fn summarize_app(
         }),
         repo,
         service,
+        otel: manifest.otel,
     })
 }
 

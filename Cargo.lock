@@ -1020,6 +1020,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64",
  "bollard",
  "futures-util",
  "hex",

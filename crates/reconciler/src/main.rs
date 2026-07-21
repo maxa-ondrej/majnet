@@ -27,6 +27,7 @@ mod info;
 mod ingress;
 mod metrics;
 mod migrate;
+mod obs;
 mod platform;
 mod purge;
 mod rename;
