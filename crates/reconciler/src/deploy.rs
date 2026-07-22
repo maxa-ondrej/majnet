@@ -115,6 +115,7 @@ pub async fn converge_app(
     manifest: &AppManifest,
     secrets: Option<&BTreeMap<String, String>>,
     extra_env: &[(String, String)],
+    tracker: &crate::state::DeployTracker<'_>,
 ) -> Result<String> {
     let config_hash = config_hash(manifest, secrets, extra_env, ctx.wireguard_ip);
     let replicas = manifest.replicas.max(1);
@@ -166,6 +167,9 @@ pub async fn converge_app(
         ));
     }
 
+    // Past the in-sync/dry-run short-circuits: this is an actual rollout, so
+    // start tracking its stages (deploy trackability).
+    tracker.stage("pulling", &manifest.image);
     pull_image(ctx, &manifest.image).await?;
 
     // Secrets land on the node's tmpfs before anything runs.
@@ -182,6 +186,7 @@ pub async fn converge_app(
     // Migrations: one-shot, must exit 0 before the rollout (§12.6). Runs in its
     // own image when the manifest gives one (ADR 0009), else the app image.
     if let Some(migration) = &manifest.migration {
+        tracker.stage("migrating", migration.image(&manifest.image));
         run_migration(
             ctx,
             manifest,
@@ -194,6 +199,10 @@ pub async fn converge_app(
         .await?;
     }
 
+    tracker.stage(
+        "starting",
+        &format!("{replicas} replica{}", if replicas == 1 { "" } else { "s" }),
+    );
     // Create each missing replica, health-gating before moving on. A failure
     // removes just that replica and aborts — the old set keeps serving (nothing
     // is drained until all desired replicas are healthy).
@@ -249,6 +258,7 @@ pub async fn converge_app(
         }
 
         // Health gate. Failure leaves the old set serving.
+        tracker.stage("health", name);
         if let Err(e) = await_healthy(ctx.docker, name, manifest).await {
             let _ = ctx
                 .docker
@@ -266,6 +276,7 @@ pub async fn converge_app(
 
     // Drain: the new replicas are healthy (and routed); remove old-hash
     // containers and any surplus replicas (scale-down).
+    tracker.stage("finalizing", "routing + draining previous generation");
     for old in &existing {
         if let Some(old_name) = container_name(old) {
             if !desired_set.contains(old_name.as_str()) {

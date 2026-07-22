@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { useQueries } from '@tanstack/react-query'
 import { Bell, GitPullRequest, Loader2, Tag } from 'lucide-react'
-import { getJSON, parseAt, urls, useApps, useEvents, useProjects, useReleaseDrafts, type DeployPr, type Event } from './api'
+import { getJSON, parseAt, urls, useApps, useDeployProgress, useEvents, useProjects, useReleaseDrafts, DEPLOY_STAGES, type DeployPr, type Event } from './api'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -49,6 +49,13 @@ function Deployments() {
   })
   const pending = onboarded.flatMap((p, i) => (results[i]?.data ?? []).map((pr) => ({ p, pr })))
   const events = useEvents()
+  const progress = useDeployProgress()
+  // The live rollout stage for a deploying (project, app), if the reconciler is
+  // reporting one — turns "converging" into e.g. "Health-gating".
+  const stageOf = (project: string, app: string): string | null => {
+    const d = (progress.data ?? []).find((x) => x.project === project && x.app === app && x.status === 'active')
+    return d ? (DEPLOY_STAGES.find((s) => s.key === d.stage)?.label ?? d.stage) : null
+  }
   // Tick a re-render every 10s so the 90s "deploying" window ages out even when
   // the polled events are unchanged — TanStack structural sharing skips
   // re-renders on identical data, which would otherwise freeze `now` here and
@@ -108,7 +115,7 @@ function Deployments() {
                   <div className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
                     {ver && <span>→ <span className="font-mono text-foreground">{ver}</span></span>}
                     {e.node && <span className="font-mono">{e.node}</span>}
-                    <span className={`ml-auto bg-warning/15 text-warning ${stateChip}`}><Loader2 className="size-3 animate-spin" /> converging</span>
+                    <span className={`ml-auto bg-warning/15 text-warning ${stateChip}`}><Loader2 className="size-3 animate-spin" /> {stageOf(e.project, app) ?? 'converging'}</span>
                   </div>
                 </div>
               )

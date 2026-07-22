@@ -22,6 +22,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/healthz", get(|| async { "ok" }))
         .route("/notify", post(notify))
         .route("/api/events", get(events))
+        .route("/api/deploy-progress", get(deploy_progress))
         .route("/api/restart/{project}/{class}/{app}", post(restart))
         .route("/api/secrets/{project}/{class}/{app}", get(secrets_get))
         .route("/api/metrics", get(metrics_get))
@@ -906,6 +907,18 @@ async fn events(
     state
         .store
         .recent(query.limit.min(1000))
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+/// `GET /api/deploy-progress` — every app's latest rollout stage (deploy
+/// trackability). Read-only runtime state, like the event feed.
+async fn deploy_progress(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<crate::state::DeployProgress>>, (StatusCode, String)> {
+    state
+        .store
+        .deploy_progress()
         .map(Json)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }

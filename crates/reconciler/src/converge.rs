@@ -352,15 +352,30 @@ async fn converge_one(
         ctx.class,
     ));
 
-    let summary = deploy::converge_app(ctx, &manifest, secrets.as_ref(), &extra_env).await?;
-    // On an actual rollout (not a no-op "in sync"), scrape the app's standard
-    // `/info` now that the health gate has proven it serves HTTP, and record the
-    // build metadata for the dashboard. Best-effort — never fails the deploy.
-    // Label the deploy event with the reported version instead of the raw image
-    // digest when the app reports one.
-    if !ctx.dry_run && summary.starts_with("deployed") {
-        if let Some(version) = crate::info::capture(state, ctx, &manifest).await {
-            return Ok(summary.replace(&manifest.image, &version));
+    // Track the rollout's stages (deploy trackability). converge_app writes
+    // stages only past its in-sync/dry-run short-circuit; here we cap it with
+    // done/failed so the dashboard sees a terminal state.
+    let tracker =
+        crate::state::DeployTracker::new(&state.store, ctx.project, app, ctx.class.as_str());
+    let summary =
+        match deploy::converge_app(ctx, &manifest, secrets.as_ref(), &extra_env, &tracker).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracker.fail(&format!("{e:#}"));
+                return Err(e);
+            }
+        };
+    // On an actual rollout (not a no-op "in sync"), mark it deployed, then scrape
+    // the app's standard `/info` now that the health gate has proven it serves
+    // HTTP, and record the build metadata for the dashboard. Best-effort — never
+    // fails the deploy. Label the deploy event with the reported version instead
+    // of the raw image digest when the app reports one.
+    if summary.starts_with("deployed") {
+        tracker.done(&summary);
+        if !ctx.dry_run {
+            if let Some(version) = crate::info::capture(state, ctx, &manifest).await {
+                return Ok(summary.replace(&manifest.image, &version));
+            }
         }
     }
     Ok(summary)

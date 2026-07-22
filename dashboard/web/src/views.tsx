@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, Outlet, useNavigate, useParams } from '@tanstack/react-router'
 import { ChevronRight, Plus, Loader2, CheckCircle2, Circle, AlertCircle, MoreVertical, Boxes, Rocket, Trash2, Archive, GitPullRequest, RefreshCw, PenLine, TerminalSquare, FolderGit2, Activity as ActivityIcon } from 'lucide-react'
-import { send, urls, useApps, useAppInfo, useArchivedApps, useBotEvents, useContainerHistory, useDeploys, useEvents, useImports, useMetricsHistory, useNodeMetrics, useNodes, useProjects, useWhoami, parseAt, IMPORT_STEPS, RELEASE_STAGES, type ImportStatus, type ReleaseProgress, type Event, type AppSummary } from './api'
+import { send, urls, useApps, useAppInfo, useArchivedApps, useBotEvents, useContainerHistory, useDeploys, useEvents, useImports, useMetricsHistory, useNodeMetrics, useNodes, useProjects, useWhoami, parseAt, IMPORT_STEPS, RELEASE_STAGES, DEPLOY_STAGES, type ImportStatus, type ReleaseProgress, type DeployProgress, type Event, type AppSummary } from './api'
 import { useApiMutation } from './mutations'
 import { ProjectObservability } from './observability'
 import { Button } from '@/components/ui/button'
@@ -46,6 +46,36 @@ export function ReleaseSteps({ p }: { p: ReleaseProgress }) {
   return (
     <div className="flex flex-col gap-1.5">
       {RELEASE_STAGES.map((s, i) => {
+        const done = current > i
+        const active = current === i
+        const failed = active && p.status === 'failed'
+        return (
+          <div key={s.key} className={`flex items-center gap-2 text-sm ${done ? 'text-muted-foreground' : active ? 'font-medium' : 'text-muted-foreground/50'}`}>
+            {failed ? <AlertCircle className="size-4 text-destructive" />
+              : done ? <CheckCircle2 className="size-4 text-primary" />
+              : active ? <Loader2 className="size-4 animate-spin text-primary" />
+              : <Circle className="size-4" />}
+            {s.label}
+          </div>
+        )
+      })}
+      {p.status === 'failed' && (
+        <p className="mt-1 rounded-md border border-destructive/40 bg-destructive/10 p-2 font-mono text-xs text-destructive">{p.detail}</p>
+      )}
+    </div>
+  )
+}
+
+/** Step-by-step progress of an in-flight (or failed) deploy — the blue-green
+ *  rollout stages the reconciler advances through (deploy trackability). */
+export function DeploySteps({ p }: { p: DeployProgress }) {
+  const idx = DEPLOY_STAGES.findIndex((s) => s.key === p.stage)
+  // A `done` deploy has every stage complete; otherwise the current stage is
+  // active (spinning) or failed.
+  const current = p.status === 'done' ? DEPLOY_STAGES.length : idx
+  return (
+    <div className="flex flex-col gap-1.5">
+      {DEPLOY_STAGES.map((s, i) => {
         const done = current > i
         const active = current === i
         const failed = active && p.status === 'failed'

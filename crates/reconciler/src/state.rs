@@ -51,6 +51,19 @@ pub struct AppInfo {
     pub at: String,
 }
 
+/// A per-deploy stage row (deploy trackability): where an app's rollout is, or
+/// why it stopped. One per (project, app, class), overwritten each rollout.
+#[derive(Debug, serde::Serialize)]
+pub struct DeployProgress {
+    pub project: String,
+    pub app: String,
+    pub class: String,
+    pub stage: String,
+    pub status: String,
+    pub detail: String,
+    pub updated_at: i64,
+}
+
 /// One recorded terminal session (ADR 0016) — the audit row; the transcript
 /// itself lives at `data_dir/transcripts/<id>.log`.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -155,6 +168,52 @@ impl Store {
             rusqlite::params![commit, project, node, action, result, event_kind(action)],
         )?;
         Ok(())
+    }
+
+    // ── Deploy progress (deploy trackability) ──────────────────────────────
+
+    /// Upsert the current stage of an app's rollout in one env. `status` is
+    /// `active` | `done` | `failed`; `detail` carries the image / error / etc.
+    pub fn set_deploy_progress(
+        &self,
+        project: &str,
+        app: &str,
+        class: &str,
+        stage: &str,
+        status: &str,
+        detail: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO deploy_progress (project, app, class, stage, status, detail, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, strftime('%s','now'))
+             ON CONFLICT (project, app, class) DO UPDATE
+             SET stage = ?4, status = ?5, detail = ?6, updated_at = strftime('%s','now')",
+            rusqlite::params![project, app, class, stage, status, detail],
+        )?;
+        Ok(())
+    }
+
+    /// Every app's latest deploy-progress row, newest first — the dashboard
+    /// shows active rollouts + freshly-finished ones.
+    pub fn deploy_progress(&self) -> Result<Vec<DeployProgress>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT project, app, class, stage, status, detail, updated_at
+             FROM deploy_progress ORDER BY updated_at DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(DeployProgress {
+                project: row.get(0)?,
+                app: row.get(1)?,
+                class: row.get(2)?,
+                stage: row.get(3)?,
+                status: row.get(4)?,
+                detail: row.get(5)?,
+                updated_at: row.get(6)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     // ── App `/info` build metadata (scraped at deploy time) ────────────────
@@ -659,6 +718,56 @@ impl Store {
     }
 }
 
+/// Records an app's rollout stage as it advances through `converge_app` (deploy
+/// trackability). Best-effort: a progress-write failure is logged, never
+/// surfaced — it must not fail a deploy. Holds the current stage in a `Mutex` so
+/// `&DeployTracker` stays `Send`/`Sync` across the deploy future's awaits.
+pub struct DeployTracker<'a> {
+    store: &'a Store,
+    project: String,
+    app: String,
+    class: String,
+    current: Mutex<&'static str>,
+}
+
+impl<'a> DeployTracker<'a> {
+    pub fn new(store: &'a Store, project: &str, app: &str, class: &str) -> Self {
+        Self {
+            store,
+            project: project.to_string(),
+            app: app.to_string(),
+            class: class.to_string(),
+            current: Mutex::new("starting"),
+        }
+    }
+    fn write(&self, stage: &str, status: &str, detail: &str) {
+        if let Err(e) = self.store.set_deploy_progress(
+            &self.project,
+            &self.app,
+            &self.class,
+            stage,
+            status,
+            detail,
+        ) {
+            tracing::warn!(app = %self.app, error = %format!("{e:#}"), "recording deploy progress failed");
+        }
+    }
+    /// Enter a stage (marks it active).
+    pub fn stage(&self, stage: &'static str, detail: &str) {
+        *self.current.lock().unwrap() = stage;
+        self.write(stage, "active", detail);
+    }
+    /// The rollout finished successfully.
+    pub fn done(&self, detail: &str) {
+        self.write("deployed", "done", detail);
+    }
+    /// The rollout failed at whatever stage was active.
+    pub fn fail(&self, detail: &str) {
+        let stage = *self.current.lock().unwrap();
+        self.write(stage, "failed", detail);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -671,6 +780,24 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         Store::open(&dir).unwrap()
+    }
+
+    #[test]
+    fn deploy_progress_upserts_per_app_env() {
+        let s = store();
+        s.set_deploy_progress("proj", "api", "production", "pulling", "active", "img")
+            .unwrap();
+        s.set_deploy_progress("proj", "api", "production", "health", "active", "api-7f3")
+            .unwrap();
+        s.set_deploy_progress("proj", "web", "stable", "deployed", "done", "deployed web")
+            .unwrap();
+        let rows = s.deploy_progress().unwrap();
+        // One row per (project, app, class) — the api row was overwritten, not duplicated.
+        assert_eq!(rows.len(), 2);
+        let api = rows.iter().find(|r| r.app == "api").unwrap();
+        assert_eq!((api.stage.as_str(), api.status.as_str()), ("health", "active"));
+        let web = rows.iter().find(|r| r.app == "web").unwrap();
+        assert_eq!((web.stage.as_str(), web.status.as_str()), ("deployed", "done"));
     }
 
     #[test]

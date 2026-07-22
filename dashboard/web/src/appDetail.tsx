@@ -5,13 +5,13 @@ import {
   LayoutGrid, Activity as ActivityIcon, Tag, ChevronRight,
 } from 'lucide-react'
 import {
-  send, urls, useApps, useAppContainers, useAppInfo, useAppLogs, useAppSecrets, useEvents, useImports,
+  send, urls, useApps, useAppContainers, useAppInfo, useAppLogs, useAppSecrets, useDeployProgress, useEvents, useImports,
   useManifest, useNodeMetrics, useProjects, useReleases, useReleaseConfig, useReleaseDraft, useServiceReleases, useWhoami,
   type AppInfo, type Autorelease, type ManifestFile, type ReleaseConfig,
 } from './api'
 import { useApiMutation } from './mutations'
 import { ConfirmButton, ExtLink, QueryState, short, StatusBadge } from './ui'
-import { Crumbs, ContainerSpark, ImportSteps } from './views'
+import { Crumbs, ContainerSpark, ImportSteps, DeploySteps } from './views'
 import { fromData, ManifestForm, toManifest, type ManifestDraft } from './manifestForm'
 import { Observability } from './observability'
 import { Button } from '@/components/ui/button'
@@ -208,6 +208,11 @@ export function AppOverview() {
   const [logsOpen, setLogsOpen] = useState(false)
   const act = useApiMutation({ invalidate: [['events']] })
   const events = useEvents()
+  // Live rollout stage for the selected env — show while active, and briefly
+  // after it finishes/fails so the outcome is visible (deploy trackability).
+  const progress = useDeployProgress()
+  const dp = (progress.data ?? []).find((d) => d.project === project && d.app === app && d.class === env)
+  const showDeploy = dp && (dp.status === 'active' || Date.now() / 1000 - dp.updated_at < 120)
   const appEvents = (events.data ?? []).filter((e) => e.action.trim().split(/\s+/).pop() === app)
   const adminerUrl =
     project && a?.database && a.classes.includes('production')
@@ -216,6 +221,19 @@ export function AppOverview() {
 
   return (
     <>
+      {showDeploy && dp && (
+        <Card className="mb-4 border-primary/40"><CardContent className="pt-6">
+          <div className="mb-3 flex items-center gap-2">
+            <h2 className="text-sm font-semibold">
+              {dp.status === 'failed' ? 'Deploy failed' : dp.status === 'done' ? 'Deployed' : 'Deploying…'}
+            </h2>
+            <StatusBadge tone="accent">{env}</StatusBadge>
+            {dp.detail && <span className="truncate font-mono text-xs text-muted-foreground">{dp.detail}</span>}
+          </div>
+          <DeploySteps p={dp} />
+        </CardContent></Card>
+      )}
+
       {classes.length > 0 && (
         <EnvironmentZone
           app={app} env={env} org={org} isAdmin={isAdmin}

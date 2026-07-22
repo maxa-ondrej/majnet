@@ -118,6 +118,20 @@ export interface ReleaseProgress {
 export interface ServiceReleases {
   image_repo: string; current_image: string; versions: string[]
 }
+/** Live per-app rollout stage (deploy trackability). One per (project, app,
+ *  class); `updated_at` is unix seconds. */
+export interface DeployProgress {
+  project: string; app: string; class: string
+  stage: string; status: 'active' | 'done' | 'failed'; detail: string; updated_at: number
+}
+/** Canonical deploy-stage order + labels (mirrors deploy.rs converge_app). */
+export const DEPLOY_STAGES: { key: string; label: string }[] = [
+  { key: 'pulling', label: 'Pulling image' },
+  { key: 'migrating', label: 'Running migration' },
+  { key: 'starting', label: 'Creating containers' },
+  { key: 'health', label: 'Health-gating' },
+  { key: 'finalizing', label: 'Routing & draining' },
+]
 /** Canonical release-progress stage order + labels (mirrors releases.rs). */
 export const RELEASE_STAGES: { key: string; label: string }[] = [
   { key: 'committing', label: 'Committing bump + changelog' },
@@ -257,6 +271,7 @@ export const urls = {
   events: (limit = 300) => `${RECON}/events?limit=${limit}`,
   botEvents: `${BOT}/events`,
   deploys: (org: string) => `${BOT}/deploys/${encodeURIComponent(org)}`,
+  deployProgress: `${RECON}/deploy-progress`,
   deployMerge: (org: string, n: number) => `${BOT}/deploys/${encodeURIComponent(org)}/${n}/merge`,
   deployClose: (org: string, n: number) => `${BOT}/deploys/${encodeURIComponent(org)}/${n}/close`,
   manifest: (org: string, app: string) => `${BOT}/manifest/${encodeURIComponent(org)}/${encodeURIComponent(app)}`,
@@ -402,6 +417,8 @@ export const useAppInfo = (org: string, app: string) =>
   useQuery({ queryKey: ['info', org, app], queryFn: () => getJSON<AppInfo[]>(urls.appInfo(org, app)), refetchInterval: 30000 })
 export const useEvents = (limit = 300) =>
   useQuery({ queryKey: ['events', limit], queryFn: () => getJSON<Event[]>(urls.events(limit)), refetchInterval: 15000 })
+export const useDeployProgress = () =>
+  useQuery({ queryKey: ['deploy-progress'], queryFn: () => getJSON<DeployProgress[]>(urls.deployProgress), refetchInterval: 5000 })
 export const useBotEvents = () =>
   useQuery({ queryKey: ['botEvents'], queryFn: () => getJSON<Event[]>(urls.botEvents), refetchInterval: 15000 })
 export const useDeploys = (org: string) =>
