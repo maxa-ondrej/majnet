@@ -37,6 +37,62 @@ const MB: i64 = 1024 * 1024;
 const EDGE_MEM: i64 = 256 * MB;
 const EDGE_NANO_CPUS: i64 = 500_000_000; // 0.5 CPU
 
+// Branded edge error pages (backlog): instead of Traefik's raw 502/503/504 (a
+// backend that's down/crashing/mid-first-deploy) or an unrouted 404, the edge
+// serves a small MajNet-branded static page. A reconciler-owned nginx on the
+// `edge` network backs both the Traefik `errors` middleware (5xx, via
+// `dynamic/edge-errors.yaml`) and a lowest-priority catch-all router (404 for
+// unrouted hosts). Never touches app routers' own 4xx/5xx bodies — the errors
+// middleware is scoped to 502–504 (gateway errors), so app 500s/APIs pass through.
+const ERROR_PAGES_NAME: &str = "edge-error-pages";
+const ERROR_PAGES_IMAGE: &str = "nginx:1.27-alpine";
+const ERROR_PAGES_CONFIG_DIR: &str = "/etc/majnet/edge-error-pages";
+const ERROR_PAGES_MEM: i64 = 32 * MB;
+const ERROR_PAGES_NANO_CPUS: i64 = 100_000_000; // 0.1 CPU
+
+const ERROR_PAGES_NGINX_CONF: &str = r#"server {
+  listen 80 default_server;
+  root /www;
+  charset utf-8;
+  # The Traefik errors middleware fetches /{status}.html for 502-504; serve the
+  # shared 5xx page (200 — Traefik re-applies the original status to the client).
+  location ~ "^/5[0-9][0-9]\.html$" { try_files /50x.html =404; }
+  # Everything else (incl. the catch-all router's original path) → branded 404.
+  location / { return 404; }
+  error_page 404 /404.html;
+  location = /404.html { internal; }
+  location = /50x.html { internal; }
+}
+"#;
+
+fn error_page_html(code: &str, title: &str, blurb: &str) -> String {
+    format!(
+        r##"<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>{code} · {title}</title>
+<style>
+  :root{{color-scheme:dark light}}
+  html,body{{height:100%}}
+  body{{margin:0;display:grid;place-items:center;min-height:100vh;
+    font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:#0b1220;color:#e7ecf3}}
+  .card{{max-width:30rem;padding:2.5rem;text-align:center}}
+  .mk{{width:44px;height:44px;margin:0 auto 1.25rem}}
+  .code{{font-size:3.5rem;font-weight:700;letter-spacing:-.03em;margin:0;color:#2dd4bf}}
+  h1{{font-size:1.35rem;font-weight:600;margin:.4rem 0 .6rem}}
+  p{{margin:0;color:#95a1b2}}
+  .foot{{margin-top:1.75rem;font-size:.8rem;color:#5f6b7a}}
+  @media(prefers-color-scheme:light){{body{{background:#f7f9fb;color:#0f1720}}p{{color:#586170}}.foot{{color:#8a94a3}}.code{{color:#0d8a80}}}}
+</style></head><body><div class="card">
+  <svg class="mk" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+    <path d="M16 3l11 6.35v12.7L16 28.4 5 22.05V9.35L16 3z" stroke="#2dd4bf" stroke-width="1.7" fill="rgba(45,212,191,.12)"/>
+    <circle cx="16" cy="16" r="2.6" fill="#2dd4bf"/></svg>
+  <p class="code">{code}</p><h1>{title}</h1><p>{blurb}</p>
+  <div class="foot">MajNet</div>
+</div></body></html>
+"##
+    )
+}
+
 // Managed Adminer (ADR 0014): a reconciler-owned DB browser on the prod node,
 // on a private network shared with postgres — never on the public `edge`
 // network (DB access stays off the public edge). Reachable over the tailnet:
@@ -137,6 +193,14 @@ pub async fn converge_platform(state: &AppState, nodes: &NodesFile, platform: &S
             return;
         }
     };
+    // Error-pages backend first, so it's resolvable when edge-main's
+    // errors-middleware / catch-all router reference it. Best-effort.
+    if let Err(e) = converge_error_pages(&docker).await {
+        tracing::error!(
+            error = format!("{e:#}"),
+            "edge-error-pages convergence failed"
+        );
+    }
     if let Err(e) = converge_edge_main(&docker, platform, &state.config.age_key_dir).await {
         tracing::error!(error = format!("{e:#}"), "edge-main convergence failed");
         let _ = state.store.record(
@@ -341,6 +405,17 @@ async fn converge_edge_main(
         config.insert("dynamic/majnet-certs.yaml".into(), tls.into_bytes());
     }
 
+    // Branded edge error pages: the `errors` middleware (gateway 502–504 →
+    // /50x.html) + service + a lowest-priority catch-all router (unrouted host →
+    // branded 404), all backed by the reconciler-owned `edge-error-pages` nginx.
+    // The middleware is applied fleet-wide via the `websecure` entrypoint in
+    // traefik.yaml; the catch-all router is active on its own. Generated (not from
+    // the platform repo) so it's versioned with the reconciler.
+    config.insert(
+        "dynamic/edge-errors.yaml".into(),
+        edge_errors_dynamic().into_bytes(),
+    );
+
     // Image + all config + certs → hash. Any change forces a recreate; an
     // unchanged, running edge-main is left alone.
     let hash = config_hash(&config, &cert_files);
@@ -404,6 +479,96 @@ async fn converge_edge_main(
         .await
         .context("starting edge-main")?;
     tracing::info!(commit = %platform.commit, "edge-main deployed");
+    Ok(())
+}
+
+/// The `dynamic/edge-errors.yaml` Traefik file provider config: the `errors`
+/// middleware (gateway 502–504 → the branded 5xx page), the error-pages service,
+/// and a lowest-priority catch-all router (unrouted host → branded 404). The
+/// middleware is applied fleet-wide via the `websecure` entrypoint in traefik.yaml;
+/// the catch-all router is active on its own.
+fn edge_errors_dynamic() -> String {
+    format!(
+        "http:\n  routers:\n    edge-catchall:\n      rule: \"PathPrefix(`/`)\"\n      \
+         priority: 1\n      entryPoints: [websecure]\n      service: {svc}\n      tls: {{}}\n  \
+         middlewares:\n    edge-errors:\n      errors:\n        status: [\"502-504\"]\n        \
+         service: {svc}\n        query: \"/{{status}}.html\"\n  services:\n    {svc}:\n      \
+         loadBalancer:\n        servers:\n          - url: \"http://{ERROR_PAGES_NAME}:80\"\n",
+        svc = ERROR_PAGES_NAME,
+    )
+}
+
+/// Branded edge error pages (backlog): a reconciler-owned nginx on the `edge`
+/// network serving MajNet 404 / 5xx pages. Backs the Traefik `errors` middleware
+/// (502–504) and the catch-all 404 router defined in `dynamic/edge-errors.yaml`.
+/// Config-hash-managed like edge-main; best-effort — never blocks the fleet.
+async fn converge_error_pages(docker: &Docker) -> Result<()> {
+    let files: BTreeMap<String, Vec<u8>> = BTreeMap::from([
+        ("nginx.conf".to_string(), ERROR_PAGES_NGINX_CONF.as_bytes().to_vec()),
+        (
+            "www/404.html".to_string(),
+            error_page_html(
+                "404",
+                "Not found",
+                "There’s nothing routed here. Check the address, or the app may not be deployed yet.",
+            )
+            .into_bytes(),
+        ),
+        (
+            "www/50x.html".to_string(),
+            error_page_html(
+                "5xx",
+                "Service unavailable",
+                "This service is temporarily unavailable — it may be starting up or recovering. Try again in a moment.",
+            )
+            .into_bytes(),
+        ),
+    ]);
+
+    let hash = config_hash(&files, &BTreeMap::new());
+    if running_with_hash(docker, ERROR_PAGES_NAME, &hash).await? {
+        return Ok(());
+    }
+    ensure_network(docker, EDGE_NETWORK).await?;
+    ensure_image(docker, ERROR_PAGES_IMAGE).await?;
+    ensure_image(docker, HELPER_IMAGE).await?;
+    deliver_files(docker, ERROR_PAGES_CONFIG_DIR, &files).await?;
+    remove_container(docker, ERROR_PAGES_NAME).await;
+
+    let binds = vec![
+        format!("{ERROR_PAGES_CONFIG_DIR}/nginx.conf:/etc/nginx/conf.d/default.conf:ro"),
+        format!("{ERROR_PAGES_CONFIG_DIR}/www:/www:ro"),
+    ];
+    let created = docker
+        .create_container(
+            Some(qp::CreateContainerOptions {
+                name: Some(ERROR_PAGES_NAME.into()),
+                ..Default::default()
+            }),
+            ContainerCreateBody {
+                image: Some(ERROR_PAGES_IMAGE.into()),
+                labels: Some(HashMap::from([(LABEL_CONFIG.to_string(), hash)])),
+                host_config: Some(HostConfig {
+                    network_mode: Some(EDGE_NETWORK.into()),
+                    binds: Some(binds),
+                    memory: Some(ERROR_PAGES_MEM),
+                    nano_cpus: Some(ERROR_PAGES_NANO_CPUS),
+                    restart_policy: Some(RestartPolicy {
+                        name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .context("creating edge-error-pages")?;
+    docker
+        .start_container(&created.id, None::<qp::StartContainerOptions>)
+        .await
+        .context("starting edge-error-pages")?;
+    tracing::info!("edge-error-pages deployed");
     Ok(())
 }
 
@@ -816,4 +981,43 @@ async fn remove_container(docker: &Docker, name: &str) {
             }),
         )
         .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edge_errors_dynamic_is_valid_traefik_config() {
+        let doc: serde_yaml::Value = serde_yaml::from_str(&edge_errors_dynamic()).unwrap();
+        let http = &doc["http"];
+        // errors middleware scoped to gateway 502-504 (not app 500s/4xx).
+        assert_eq!(
+            http["middlewares"]["edge-errors"]["errors"]["status"][0],
+            "502-504"
+        );
+        assert_eq!(
+            http["middlewares"]["edge-errors"]["errors"]["service"],
+            ERROR_PAGES_NAME
+        );
+        // catch-all router is lowest priority so real app routers always win.
+        assert_eq!(http["routers"]["edge-catchall"]["priority"], 1);
+        assert_eq!(
+            http["routers"]["edge-catchall"]["service"],
+            ERROR_PAGES_NAME
+        );
+        // service points at the reconciler-owned nginx on the edge network.
+        assert_eq!(
+            http["services"][ERROR_PAGES_NAME]["loadBalancer"]["servers"][0]["url"],
+            format!("http://{ERROR_PAGES_NAME}:80")
+        );
+    }
+
+    #[test]
+    fn error_page_html_renders_code_and_blurb() {
+        let h = error_page_html("404", "Not found", "nothing here");
+        assert!(h.contains("<title>404 · Not found</title>"));
+        assert!(h.contains("nothing here"));
+        assert!(h.contains("MajNet"));
+    }
 }
