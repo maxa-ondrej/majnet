@@ -303,12 +303,8 @@ async fn ensure_ops_repo(state: &AppState, client: &octocrab::Octocrab, org: &st
             "project.yaml".to_string(),
             format!("name: {org}\nmembers: []\napps: []\n"),
         ),
-        (
-            ".sops.yaml".to_string(),
-            "# SOPS recipient rules — add the platform class keys and project\n\
-             # admins' age keys per secrets.<class>.yaml (design doc §14).\ncreation_rules: []\n"
-                .to_string(),
-        ),
+        // No `.sops.yaml`: secrets are inline `majnet:` envelopes now (ADR 0024),
+        // not SOPS files, so new ops repos don't need recipient rules.
         (
             "README.md".to_string(),
             format!(

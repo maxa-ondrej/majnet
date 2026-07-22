@@ -1345,28 +1345,34 @@ pub async fn secrets_post(
     })
 }
 
-/// `POST /api/secrets/{org}/{app}/migrate` — convert an app's legacy per-class
-/// SOPS secret files to inline `majnet:` maps (ADR 0024 phase 3). Admin-gated
-/// (touches every class, incl. production). Idempotent — a class already inline
-/// (or with no secrets) is skipped.
-pub async fn secrets_migrate_post(
-    State(state): State<Arc<AppState>>,
-    Path((org, app)): Path<(String, String)>,
-    headers: HeaderMap,
-) -> Result<String, ApiError> {
-    check_name(&app)?;
-    crate::authz::require(&state, &headers, &org, Role::Admin)
-        .await
-        .map_err(|e| (StatusCode::FORBIDDEN, format!("{e:#}")))?;
-    let n = crate::migrate::migrate_app_to_inline(&state, &org, &app)
-        .await
-        .map_err(bad_gateway)?;
-    Ok(if n == 0 {
-        format!("{app}: no legacy SOPS secrets to migrate (already inline)")
-    } else {
-        format!(
-            "migrated {n} class(es) of {app} to inline secrets — review the render PR(s) to deploy"
-        )
+/// The platform's PUBLIC age recipients, for encoding secrets locally (ADR 0024).
+#[derive(Serialize)]
+pub struct Recipients {
+    /// Recipient for `base.yaml` + `production.yaml` secrets.
+    pub production: Option<String>,
+    /// Recipient for non-production (`stable`/`testing`/`ephemeral`) secrets.
+    pub stable: Option<String>,
+    /// Copy-paste one-liner (`{recipient}` is the placeholder).
+    pub howto: String,
+}
+
+/// `GET /api/secrets/recipients` — the platform's **public** age recipients, so a
+/// developer can encode a secret value **locally** (plaintext never leaves their
+/// machine) and paste the `majnet:…` result into a manifest `secrets:` map:
+///
+/// ```sh
+/// printf %s "$VALUE" | age -r <recipient> | base64 -w0 | sed 's/^/majnet:/'
+/// ```
+///
+/// Encode-only by construction: a public recipient can encrypt but never decrypt —
+/// only the reconciler's private class key decrypts, and that path is never exposed.
+/// Unauthenticated (the recipients are public keys); `production` covers base.yaml.
+pub async fn secrets_recipients(State(state): State<Arc<AppState>>) -> Json<Recipients> {
+    Json(Recipients {
+        production: state.config.age_production_recipient.clone(),
+        stable: state.config.age_stable_recipient.clone(),
+        howto: "printf %s \"$VALUE\" | age -r {recipient} | base64 -w0 | sed 's/^/majnet:/'"
+            .to_string(),
     })
 }
 

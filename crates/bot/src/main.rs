@@ -75,6 +75,13 @@ async fn main() -> Result<()> {
         // Caddy forward_auth target: resolve the caller's tailnet IP → identity
         // for the dash.majksa.net edge (ADR 0016). Reached on localhost by Caddy.
         .route("/tsauth", get(tailscale::tsauth))
+        // PUBLIC, unauthenticated: the platform's public age recipients, so anyone
+        // can encode a secret value locally (ADR 0024). Encode-only — public keys
+        // can't decrypt; the private-key decrypt path is never exposed.
+        .route(
+            "/api/secrets/recipients",
+            get(dashboard_api::secrets_recipients),
+        )
         .with_state(state.clone());
 
     // WG-internal listener: the reconciler's snapshot + authkey API. Trust
@@ -153,10 +160,6 @@ async fn main() -> Result<()> {
         .route(
             "/api/secrets/{org}/{app}",
             post(dashboard_api::secrets_post),
-        )
-        .route(
-            "/api/secrets/{org}/{app}/migrate",
-            post(dashboard_api::secrets_migrate_post),
         )
         .route("/api/nodes", get(dashboard_api::nodes_get))
         .route("/api/control-plane", get(control_plane::status_get))

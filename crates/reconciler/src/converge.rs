@@ -191,7 +191,7 @@ async fn converge_project_class(
             continue; // deliberately not in the keep-list
         }
 
-        let result = converge_one(state, &ctx, &snapshot, app, content, adminer_creds).await;
+        let result = converge_one(state, &ctx, app, content, adminer_creds).await;
         match result {
             Ok(summary) => {
                 tracing::info!(project, class = class.as_str(), app, %summary, "converged");
@@ -268,7 +268,6 @@ async fn converge_project_class(
 async fn converge_one(
     state: &AppState,
     ctx: &DeployCtx<'_>,
-    snapshot: &crate::snapshot::Snapshot,
     app: &str,
     manifest_bytes: &[u8],
     adminer_creds: &mut BTreeMap<String, (String, String)>,
@@ -283,21 +282,17 @@ async fn converge_one(
         manifest.name
     );
 
-    // Secrets delivered as tmpfs files (§14, ADR 0024). The two shapes are
-    // mutually exclusive and inline is authoritative: if the manifest carries an
-    // inline `secrets:` map (majnet: envelopes) it fully defines the set, and any
-    // stale legacy SOPS file is ignored (cleaned up by the phase-3 migration).
-    // Otherwise fall back to the legacy `secrets/<app>.yaml` SOPS file.
+    // Secrets delivered as tmpfs files (§14, ADR 0024): the inline `secrets:` map
+    // (majnet: envelopes) decrypted here. SOPS was fully retired (ADR 0024 phase 3);
+    // a legacy bare-name declaration has no delivery path, so fail loudly rather than
+    // deploy an app missing its secrets.
     let delivered = if let Some(inline) = manifest.secrets.inline() {
         crate::secrets::decrypt_inline(&state.config, ctx.class, inline).await?
     } else if let Some(names) = manifest.secrets.names() {
-        let encrypted = snapshot
-            .files
-            .get(&format!("secrets/{app}.yaml"))
-            .with_context(|| {
-                format!("manifest declares secret names {names:?} but the env branch has none")
-            })?;
-        crate::secrets::decrypt(&state.config, ctx.class, encrypted).await?
+        anyhow::bail!(
+            "app declares legacy `secrets:` names {names:?} but SOPS delivery was removed \
+             (ADR 0024) — set them as an inline `secrets:` map"
+        )
     } else {
         BTreeMap::new()
     };

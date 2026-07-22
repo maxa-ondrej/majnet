@@ -72,11 +72,25 @@ updatekeys`).
    render no longer requires a SOPS file for inline apps; the dashboard read endpoint
    decrypts inline (base ⊕ overlay) or falls back to the SOPS file. New bot config
    `MAJNET_AGE_STABLE_RECIPIENT` (production recipient already existed).
-3. **Migrate** *(endpoint done; fleet migration + legacy removal pending)* — reconciler
-   `POST /api/secrets/reencrypt/{project}/{class}/{app}` re-encrypts a legacy SOPS file
-   to inline ciphertext (plaintext never leaves the reconciler); bot `POST
-   /api/secrets/{org}/{app}/migrate` calls it per class, commits the inline map, and
-   deletes the SOPS file. Once every app is migrated, remove the render SOPS
-   pass-through, `.sops.yaml` seeding and the legacy `secrets::decrypt`.
-4. **Docs + rotation** *(pending)* — runbook + website; rotation sweep; optional
-   `majnet secret encode` CLI.
+3. **Migrate + retire SOPS** *(done)* — a reconciler re-encrypt endpoint + bot
+   `.../migrate` converted every legacy app (7 of 20 had SOPS files) to inline, then
+   the render SOPS pass-through, `.sops.yaml` seeding, legacy `secrets::decrypt`, and
+   the migration endpoints were all removed. No SOPS files remain; converge/read are
+   inline-only, and a stray legacy bare-name declaration now fails the deploy loudly.
+4. **Local encode + docs** *(done)* — **`GET /api/secrets/recipients`** (public,
+   unauthenticated, on the public listener) returns the platform's public age
+   recipients so a developer can encode a value **locally** — plaintext never leaves
+   their machine:
+   ```sh
+   printf %s "$VALUE" | age -r <recipient> | base64 -w0 | sed 's/^/majnet:/'
+   ```
+   Encode-only by construction (a public key can't decrypt; the private-key path is
+   never exposed). Runbook updated.
+
+## Editing / encoding paths (end state)
+
+- **Dashboard** (VPN, admin-gated for prod/base): the Configuration sheet's per-file
+  Secrets editor → bot `set_app_secrets` `age`-encrypts to the file's recipient(s)
+  and writes the inline map. `base.yaml` → all recipients; `<class>.yaml` → that class.
+- **Local** (anyone): `GET /api/secrets/recipients` + the `age` one-liner above.
+- **Decrypt**: reconciler only, at deploy, into tmpfs. Never exposed.

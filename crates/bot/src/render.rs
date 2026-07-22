@@ -163,25 +163,16 @@ fn render_class(
         }
 
         let yaml = serde_yaml::to_string(&merged)?;
+        // Validate the rendered manifest; secrets travel inside it as inline
+        // `majnet:` envelopes (ADR 0024) — rendering never decrypts, no sidecar file.
         let manifest = AppManifest::parse(&yaml)
             .with_context(|| format!("{app}: rendered manifest invalid"))?;
-
-        // Secrets pass through encrypted, rendering never decrypts. Inline secrets
-        // (ADR 0024) travel inside the manifest itself (majnet: envelopes) — no
-        // sidecar file. Only the legacy bare-name list still requires its SOPS file.
-        let secrets_path = format!("apps/{app}/secrets.{}.yaml", class.as_str());
-        match sources.get(&secrets_path) {
-            Some(bytes) => {
-                rendered.insert(
-                    format!("secrets/{app}.yaml"),
-                    String::from_utf8(bytes.clone()).context("secrets file is not UTF-8")?,
-                );
-            }
-            None => ensure!(
-                manifest.secrets.names().is_none(),
-                "{app}: declares secret names but {secrets_path} is missing"
-            ),
-        }
+        // SOPS was retired (ADR 0024 phase 3): a legacy bare-name `secrets:` list has
+        // no delivery path, so reject it at render (converge would fail too).
+        ensure!(
+            manifest.secrets.names().is_none(),
+            "{app}: legacy `secrets:` name list is no longer supported (ADR 0024) — use an inline `secrets:` map"
+        );
         rendered.insert(format!("{app}.yaml"), yaml);
     }
 
@@ -467,7 +458,8 @@ mod tests {
     }
 
     #[test]
-    fn declared_secrets_require_secrets_file() {
+    fn rejects_legacy_name_list_secrets() {
+        // SOPS retired (ADR 0024): a bare-name `secrets:` list has no delivery path.
         let src = sources(&[
             ("apps/api/base.yaml", "secrets: [db-url]\n"),
             (
@@ -478,29 +470,24 @@ mod tests {
         assert!(render_class(&src, EnvClass::Stable, "proj", "majksa.net")
             .unwrap_err()
             .to_string()
-            .contains("secrets"));
+            .contains("inline"));
     }
 
     #[test]
-    fn secrets_pass_through_encrypted() {
+    fn inline_secrets_travel_in_the_manifest() {
         let src = sources(&[
-            ("apps/api/base.yaml", "secrets: [db-url]\n"),
+            ("apps/api/base.yaml", "secrets:\n  DB_URL: majnet:AgABC=\n"),
             (
                 "apps/api/stable.yaml",
                 &format!("image: ghcr.io/o/api@{DIGEST}\n"),
-            ),
-            (
-                "apps/api/secrets.stable.yaml",
-                "db-url: ENC[AES256_GCM,...]\n",
             ),
         ]);
         let rendered = render_class(&src, EnvClass::Stable, "proj", "majksa.net")
             .unwrap()
             .unwrap();
-        assert_eq!(
-            rendered["secrets/api.yaml"],
-            "db-url: ENC[AES256_GCM,...]\n"
-        );
+        // Inline map is in the rendered manifest; no sidecar secrets file.
+        assert!(rendered["api.yaml"].contains("DB_URL: majnet:AgABC="));
+        assert!(!rendered.contains_key("secrets/api.yaml"));
     }
 
     #[test]

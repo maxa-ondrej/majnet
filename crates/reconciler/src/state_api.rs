@@ -24,10 +24,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/events", get(events))
         .route("/api/restart/{project}/{class}/{app}", post(restart))
         .route("/api/secrets/{project}/{class}/{app}", get(secrets_get))
-        .route(
-            "/api/secrets/reencrypt/{project}/{class}/{app}",
-            post(secrets_reencrypt),
-        )
         .route("/api/metrics", get(metrics_get))
         .route("/api/metrics/history", get(metrics_history_get))
         .route("/api/metrics/container-history", get(container_history_get))
@@ -774,64 +770,16 @@ async fn secrets_get(
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("parsing secrets: {e}")))?
         .unwrap_or_default();
 
+    // SOPS was retired (ADR 0024 phase 3); only the inline map is readable now. A
+    // legacy bare-name declaration has no values here (returns empty).
     let values = if let Some(inline) = secrets.inline() {
         crate::secrets::decrypt_inline(&state.config, decrypt_class, inline)
             .await
             .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e:#}")))?
-    } else if secrets.names().is_some() && !is_base {
-        // Legacy per-class SOPS sidecar (base never had one).
-        match snap.files.get(&format!("apps/{app}/secrets.{stem}.yaml")) {
-            Some(enc) => crate::secrets::decrypt(&state.config, decrypt_class, enc)
-                .await
-                .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e:#}")))?,
-            None => BTreeMap::new(),
-        }
     } else {
         BTreeMap::new()
     };
     Ok(Json(values))
-}
-
-/// `POST /api/secrets/reencrypt/{project}/{class}/{app}` — migration helper (ADR
-/// 0024 phase 3). Decrypts the legacy `secrets.{class}.yaml` SOPS file and returns
-/// the values re-encrypted as inline `majnet:` envelopes for the bot to commit
-/// inline + delete the SOPS file. Returns **ciphertext only** (plaintext never
-/// leaves the reconciler), so isolation holds even though the bot receives the
-/// result. Empty map when there's no legacy file (nothing to migrate). Same authz
-/// as the read (Admin for production); the bot's internal call is infra.
-async fn secrets_reencrypt(
-    State(state): State<Arc<AppState>>,
-    axum::extract::Path((project, class, app)): axum::extract::Path<(String, String, String)>,
-    headers: axum::http::HeaderMap,
-) -> Result<Json<BTreeMap<String, String>>, (StatusCode, String)> {
-    let class_e: majnet_common::EnvClass = serde_yaml::from_str(&class).map_err(|_| {
-        (
-            StatusCode::BAD_REQUEST,
-            "class must be production|stable|testing|ephemeral".into(),
-        )
-    })?;
-    let min_role = if class_e == majnet_common::EnvClass::Production {
-        majnet_common::project::Role::Admin
-    } else {
-        majnet_common::project::Role::Developer
-    };
-    crate::authz::require(&state, &headers, &project, min_role)
-        .await
-        .map_err(|e| (StatusCode::FORBIDDEN, format!("{e:#}")))?;
-
-    let snap = crate::snapshot::fetch(&state.http, &state.config, &project, "ops", "main")
-        .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
-    let Some(snap) = snap else {
-        return Ok(Json(BTreeMap::new()));
-    };
-    let Some(enc) = snap.files.get(&format!("apps/{app}/secrets.{class}.yaml")) else {
-        return Ok(Json(BTreeMap::new())); // no legacy file — nothing to migrate
-    };
-    let inline = crate::secrets::reencrypt_legacy(&state.config, class_e, enc)
-        .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
-    Ok(Json(inline))
 }
 
 /// Dashboard TTL extension (§8): postpone a preview's GC. State-adjacent but
