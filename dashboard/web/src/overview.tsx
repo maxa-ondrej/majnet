@@ -240,16 +240,19 @@ const WIDGETS: WidgetDef[] = [
   { id: 'alerts', title: 'Alerts', Body: AlertsWidget },
   { id: 'activity', title: 'Recent activity', Body: ActivityWidget },
 ]
+// Two balanced columns that fill the viewport: a tall Fleet + Activity carry the
+// content, Deployments/Control-plane/Alerts fill the gaps. Both columns bottom
+// out around the same row so there's no dead space below.
 const DEFAULT_LG: Layout[] = [
   { i: 'projects', x: 0, y: 0, w: 3, h: 1, minW: 2, minH: 1 },
   { i: 'apps', x: 3, y: 0, w: 3, h: 1, minW: 2, minH: 1 },
   { i: 'containers', x: 6, y: 0, w: 3, h: 1, minW: 2, minH: 1 },
   { i: 'nodes', x: 9, y: 0, w: 3, h: 1, minW: 2, minH: 1 },
-  { i: 'fleet', x: 0, y: 1, w: 6, h: 3, minW: 3, minH: 2 },
-  { i: 'deployments', x: 6, y: 1, w: 6, h: 3, minW: 3, minH: 2 },
-  { i: 'controlplane', x: 0, y: 4, w: 6, h: 2, minW: 3, minH: 2 },
-  { i: 'alerts', x: 0, y: 6, w: 6, h: 2, minW: 3, minH: 2 },
-  { i: 'activity', x: 6, y: 4, w: 6, h: 3, minW: 3, minH: 2 },
+  { i: 'fleet', x: 0, y: 1, w: 6, h: 4, minW: 3, minH: 2 },
+  { i: 'deployments', x: 6, y: 1, w: 6, h: 2, minW: 3, minH: 2 },
+  { i: 'activity', x: 6, y: 3, w: 6, h: 4, minW: 3, minH: 2 },
+  { i: 'controlplane', x: 0, y: 5, w: 3, h: 2, minW: 3, minH: 2 },
+  { i: 'alerts', x: 3, y: 5, w: 3, h: 2, minW: 3, minH: 2 },
 ]
 const DEFAULT_BY_ID = Object.fromEntries(DEFAULT_LG.map((l) => [l.i, l]))
 
@@ -257,15 +260,17 @@ function WidgetShell({ title, editing, onHide, noPad, children }: {
   title: string; editing: boolean; onHide: () => void; noPad?: boolean; children: React.ReactNode
 }) {
   return (
-    <div className="flex h-full flex-col overflow-hidden rounded-xl border bg-card">
+    <div className="relative flex h-full flex-col overflow-hidden rounded-xl border bg-card">
+      <div className={`min-h-0 flex-1 overflow-auto ${noPad ? 'px-4 py-3' : 'p-4'}`}>{children}</div>
+      {/* In edit mode the drag bar floats OVER the content (absolute) rather than
+          stealing height, so widgets don't lose a row while you're arranging. */}
       {editing && (
-        <div className="drag-handle flex cursor-move items-center gap-2 border-b bg-muted/40 px-3 py-1.5">
+        <div className="drag-handle absolute inset-x-0 top-0 z-10 flex cursor-move items-center gap-2 border-b bg-card/80 px-3 py-1.5 backdrop-blur-sm">
           <GripVertical className="size-3.5 text-muted-foreground" />
           <span className="text-xs font-medium">{title}</span>
           <button onClick={onHide} title="Hide" className="ml-auto rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"><EyeOff className="size-3.5" /></button>
         </div>
       )}
-      <div className={`min-h-0 flex-1 overflow-auto ${noPad ? 'px-4 py-3' : 'p-4'}`}>{children}</div>
     </div>
   )
 }
@@ -313,6 +318,22 @@ export function Overview() {
       <style>{`
         .react-grid-item.react-grid-placeholder { background: var(--primary); opacity: 0.14; border-radius: 12px; }
         .react-grid-item > .react-resizable-handle::after { border-color: var(--muted-foreground); opacity: 0.5; }
+        /* Make the edge (width/height) handles findable, not just the corner. */
+        .react-grid-item > .react-resizable-handle-e,
+        .react-grid-item > .react-resizable-handle-w,
+        .react-grid-item > .react-resizable-handle-s { background-image: none; }
+        .react-grid-item > .react-resizable-handle-e::before,
+        .react-grid-item > .react-resizable-handle-w::before,
+        .react-grid-item > .react-resizable-handle-s::before {
+          content: ''; position: absolute; border-radius: 999px;
+          background: var(--muted-foreground); opacity: 0; transition: opacity .12s;
+        }
+        .react-grid-item > .react-resizable-handle-e::before { top: 50%; right: 2px; width: 3px; height: 26px; transform: translateY(-50%); }
+        .react-grid-item > .react-resizable-handle-w::before { top: 50%; left: 2px; width: 3px; height: 26px; transform: translateY(-50%); }
+        .react-grid-item > .react-resizable-handle-s::before { left: 50%; bottom: 2px; height: 3px; width: 26px; transform: translateX(-50%); }
+        .react-grid-item:hover > .react-resizable-handle-e::before,
+        .react-grid-item:hover > .react-resizable-handle-w::before,
+        .react-grid-item:hover > .react-resizable-handle-s::before { opacity: 0.45; }
       `}</style>
       <PageHead title="Overview" sub={editing ? 'Drag to reorder · drag a corner to resize · hide with the eye' : 'Your at-a-glance view of the platform'}>
         {editing && <Button variant="ghost" size="sm" onClick={reset}><RotateCcw className="size-4" /> Reset</Button>}
@@ -331,14 +352,27 @@ export function Overview() {
         containerPadding={[0, 0]}
         isDraggable={editing}
         isResizable={editing}
+        // East + west (width) and south (height) handles alongside the corner, so
+        // horizontal resize is its own gesture in EITHER direction — a widget at
+        // the right grid edge grows leftward via its west handle. preventCollision
+        // =false lets a widening widget push its neighbour aside instead of block.
+        resizeHandles={['e', 'w', 's', 'se']}
+        preventCollision={false}
+        compactType="vertical"
         draggableHandle=".drag-handle"
         onLayoutChange={onLayoutChange}
       >
-        {visible.map((w) => (
-          <div key={w.id} data-grid={DEFAULT_BY_ID[w.id]}>
-            <WidgetShell title={w.title} editing={editing} onHide={() => hide(w.id)}><w.Body /></WidgetShell>
-          </div>
-        ))}
+        {visible.map((w) => {
+          // `data-grid` overrides the controlled `layouts` prop in RGL's
+          // synchronizeLayoutWithChildren — set it ONLY for widgets missing from
+          // the current layout (else every drag/resize snaps back to it).
+          const known = (layouts.lg ?? []).some((l) => l.i === w.id)
+          return (
+            <div key={w.id} {...(known ? {} : { 'data-grid': DEFAULT_BY_ID[w.id] })}>
+              <WidgetShell title={w.title} editing={editing} onHide={() => hide(w.id)}><w.Body /></WidgetShell>
+            </div>
+          )
+        })}
       </Grid>
 
       {editing && hiddenWidgets.length > 0 && (

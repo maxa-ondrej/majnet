@@ -8,6 +8,12 @@ import tailwindcss from '@tailwindcss/vite'
 // live backend by setting MAJNET_API (e.g. http://majksa over the tailnet).
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // react-draggable (via react-grid-layout, the Overview "Customize" grid) does
+  // `if (process.env.DRAGGABLE_DEBUG)` in its drag-start path. `process` doesn't
+  // exist in the browser, so a drag threw `process is not defined` and aborted.
+  // Replace the reference at build time (dev + prod) so drag/resize work.
+  define: { 'process.env.DRAGGABLE_DEBUG': 'false' },
+  optimizeDeps: { esbuildOptions: { define: { 'process.env.DRAGGABLE_DEBUG': 'false' } } },
   resolve: { alias: { '@': path.resolve(__dirname, './src') } },
   server: process.env.MAJNET_API
     ? { proxy: { '/api': { target: process.env.MAJNET_API, changeOrigin: true } } }
