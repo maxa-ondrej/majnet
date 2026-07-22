@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Link, useNavigate, useParams } from '@tanstack/react-router'
-import { ChevronRight, Plus, Loader2, CheckCircle2, Circle, AlertCircle, MoreVertical, Boxes, Rocket, Trash2, Archive, GitPullRequest, RefreshCw, PenLine, TerminalSquare, FolderGit2 } from 'lucide-react'
+import { Link, Outlet, useNavigate, useParams } from '@tanstack/react-router'
+import { ChevronRight, Plus, Loader2, CheckCircle2, Circle, AlertCircle, MoreVertical, Boxes, Rocket, Trash2, Archive, GitPullRequest, RefreshCw, PenLine, TerminalSquare, FolderGit2, Activity as ActivityIcon } from 'lucide-react'
 import { send, urls, useApps, useAppInfo, useArchivedApps, useBotEvents, useContainerHistory, useDeploys, useEvents, useImports, useMetricsHistory, useNodeMetrics, useNodes, useProjects, useWhoami, parseAt, IMPORT_STEPS, RELEASE_STAGES, type ImportStatus, type ReleaseProgress, type Event, type AppSummary } from './api'
 import { useApiMutation } from './mutations'
 import { ProjectObservability } from './observability'
@@ -274,32 +274,84 @@ function AppEnvBadges({ org, app, classes, digestFor }: {
   )
 }
 
+const useProjectName = (org: string) =>
+  useProjects().data?.find((x) => x.org === org)?.name ?? org
+
+/** Project-detail layout: header + stats + a section tab bar (Apps ·
+ *  Observability) + the active section (Outlet). Deployments & Releases live in
+ *  the global top bar (their popovers); Members is a header action. */
 export function ProjectDetail() {
   const { org } = useParams({ from: '/projects/$org' })
   const projects = useProjects()
   const name = projects.data?.find((x) => x.org === org)?.name ?? org
   const isAdmin = useWhoami().data?.admin ?? false
   const apps = useApps(org)
-  const imports = useImports(org)
   const events = useEvents()
   const deploys = useDeploys(org)
   const pending = deploys.data?.length ?? 0
-  // Importing apps not yet declared in the manifest — shown as skeletons.
-  const importing = (imports.data ?? []).filter((i) => !apps.data?.some((a) => a.name === i.app))
-  // Running image digest per (app, class), from live container names
-  // `<project>-<app>-<class>-<hash>` — the version actually deployed per env.
   const metrics = useNodeMetrics()
-  const runningDigest = (app: string, cls: string): string | null => {
-    const prefix = `${name}-${app}-${cls}-`
-    const c = (metrics.data ?? []).flatMap((n) => n.apps).find((x) => x.name.startsWith(prefix))
-    return c?.image.split('@sha256:')[1]?.slice(0, 7) ?? null
-  }
-
-  const containersFor = (app: string, cls: string) =>
-    (metrics.data ?? []).flatMap((n) => n.apps).filter((c) => c.name.startsWith(`${name}-${app}-${cls}-`))
   const runningCount = (metrics.data ?? []).flatMap((n) => n.apps).filter((c) => c.name.startsWith(`${name}-`)).length
   const anyFailed = (apps.data ?? []).some((a) => latestEventFor(events.data, name, a.name)?.result.startsWith('FAILED'))
   const hasApps = (apps.data?.length ?? 0) > 0
+  const hasOtel = (apps.data ?? []).some((a) => a.otel)
+
+  const tab = 'inline-flex items-center gap-2 border-b-2 border-transparent px-3.5 py-2.5 text-[13.5px] font-medium text-muted-foreground hover:text-foreground'
+  const tabActive = { className: 'inline-flex items-center gap-2 border-b-2 border-primary px-3.5 py-2.5 text-[13.5px] font-medium text-foreground' }
+
+  return (
+    <>
+      <Crumbs><Link to="/projects">Projects</Link> / {name}</Crumbs>
+      <PageHead title={name} sub={org}>
+        <Button asChild variant="outline" size="sm"><a href={`https://github.com/${org}`} target="_blank" rel="noreferrer">GitHub ↗</a></Button>
+        <Button asChild variant="outline" size="sm"><a href={`https://github.com/${org}/ops`} target="_blank" rel="noreferrer">ops repo ↗</a></Button>
+        <Button asChild variant="outline" size="sm"><Link to="/projects/$org/members" params={{ org }}>Members</Link></Button>
+        <Button asChild variant="outline" size="sm"><Link to="/projects/$org/new-service" params={{ org }}><Plus className="size-4" /> New service</Link></Button>
+        <Button asChild size="sm"><Link to="/projects/$org/new-app" params={{ org }}><Plus className="size-4" /> New app</Link></Button>
+        {isAdmin && <ProjectAdminMenu org={org} name={name} activeApps={apps.data?.length ?? 0} />}
+      </PageHead>
+
+      {hasApps && (
+        <div className="mb-6 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(150px,1fr))]">
+          <ProjStat n={String(apps.data?.length ?? 0)} l="Apps" />
+          <ProjStat n={String(runningCount)} l="Running containers" />
+          <ProjStat n={String(pending)} l="Open deployments" />
+          <div className="rounded-xl border bg-card p-4">
+            <StatusBadge tone={anyFailed ? 'danger' : 'success'} dot>{anyFailed ? 'attention' : 'healthy'}</StatusBadge>
+            <div className="mt-2 text-[11px] uppercase tracking-wide text-muted-foreground">Status</div>
+          </div>
+        </div>
+      )}
+
+      <div className="mb-6 flex flex-wrap gap-1 border-b">
+        <Link to="/projects/$org" params={{ org }} activeOptions={{ exact: true }} className={`-mb-px ${tab}`} activeProps={{ className: `-mb-px ${tabActive.className}` }}>
+          <Boxes className="size-4" /> Apps
+        </Link>
+        {hasOtel && (
+          <Link to="/projects/$org/observability" params={{ org }} className={`-mb-px ${tab}`} activeProps={{ className: `-mb-px ${tabActive.className}` }}>
+            <ActivityIcon className="size-4" /> Observability
+          </Link>
+        )}
+      </div>
+
+      <Outlet />
+    </>
+  )
+}
+
+/** Apps section (project index): importing skeletons + the app list (monorepo
+ *  members grouped under their repo) + archived apps. */
+export function ProjectApps() {
+  const { org } = useParams({ from: '/projects/$org' })
+  const name = useProjectName(org)
+  const apps = useApps(org)
+  const imports = useImports(org)
+  const events = useEvents()
+  const metrics = useNodeMetrics()
+  const importing = (imports.data ?? []).filter((i) => !apps.data?.some((a) => a.name === i.app))
+  const runningDigest = (app: string, cls: string): string | null => {
+    const c = (metrics.data ?? []).flatMap((n) => n.apps).find((x) => x.name.startsWith(`${name}-${app}-${cls}-`))
+    return c?.image.split('@sha256:')[1]?.slice(0, 7) ?? null
+  }
 
   // A single app row — reused for solo apps and for monorepo group members. In
   // a group `label` is the repo-stripped name (`zpevnik-api` → `api`), since the
@@ -347,30 +399,6 @@ export function ProjectDetail() {
 
   return (
     <>
-      <Crumbs><Link to="/projects">Projects</Link> / {name}</Crumbs>
-      <PageHead title={name} sub={org}>
-        <Button asChild variant="outline" size="sm"><a href={`https://github.com/${org}`} target="_blank" rel="noreferrer">GitHub ↗</a></Button>
-        <Button asChild variant="outline" size="sm"><a href={`https://github.com/${org}/ops`} target="_blank" rel="noreferrer">ops repo ↗</a></Button>
-        <Button asChild variant="outline" size="sm"><Link to="/projects/$org/deploys" params={{ org }}>Deployments{pending ? ` · ${pending}` : ''}</Link></Button>
-        <Button asChild variant="outline" size="sm"><Link to="/projects/$org/members" params={{ org }}>Members</Link></Button>
-        <Button asChild variant="outline" size="sm"><Link to="/projects/$org/new-service" params={{ org }}><Plus className="size-4" /> New service</Link></Button>
-        <Button asChild size="sm"><Link to="/projects/$org/new-app" params={{ org }}><Plus className="size-4" /> New app</Link></Button>
-        {isAdmin && <ProjectAdminMenu org={org} name={name} activeApps={apps.data?.length ?? 0} />}
-      </PageHead>
-
-      {hasApps && (
-        <div className="mb-6 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(150px,1fr))]">
-          <ProjStat n={String(apps.data?.length ?? 0)} l="Apps" />
-          <ProjStat n={String(runningCount)} l="Running containers" />
-          <ProjStat n={String(pending)} l="Open deployments" />
-          <div className="rounded-xl border bg-card p-4">
-            <StatusBadge tone={anyFailed ? 'danger' : 'success'} dot>{anyFailed ? 'attention' : 'healthy'}</StatusBadge>
-            <div className="mt-2 text-[11px] uppercase tracking-wide text-muted-foreground">Status</div>
-          </div>
-        </div>
-      )}
-
-      <h2 className="mb-3 text-sm font-semibold">Apps</h2>
       <QueryState isLoading={apps.isLoading} error={apps.error}>
         <div className="flex flex-col gap-2.5">
           {apps.data?.length === 0 && importing.length === 0 && <Empty>No apps yet — create one.</Empty>}
@@ -411,13 +439,24 @@ export function ProjectDetail() {
         </div>
       </QueryState>
 
-      {(apps.data ?? []).some((a) => a.otel) && (
-        <ProjectObservability org={org} apps={apps.data ?? []} containersFor={containersFor} />
-      )}
-
       <ArchivedApps org={org} />
     </>
   )
+}
+
+/** Observability section: per-app RED/traces/logs with an app switcher, over the
+ *  project's OTEL-enabled apps. */
+export function ProjectObservabilityTab() {
+  const { org } = useParams({ from: '/projects/$org' })
+  const name = useProjectName(org)
+  const apps = useApps(org)
+  const metrics = useNodeMetrics()
+  const containersFor = (app: string, cls: string) =>
+    (metrics.data ?? []).flatMap((n) => n.apps).filter((c) => c.name.startsWith(`${name}-${app}-${cls}-`))
+  if (!(apps.data ?? []).some((a) => a.otel)) {
+    return <Empty>No app in this project emits OpenTelemetry yet.</Empty>
+  }
+  return <ProjectObservability org={org} apps={apps.data ?? []} containersFor={containersFor} />
 }
 
 function ProjStat({ n, l }: { n: string; l: string }) {

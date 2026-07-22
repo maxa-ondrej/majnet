@@ -1,6 +1,6 @@
 import { createRootRoute, createRoute, createRouter } from '@tanstack/react-router'
 import { Shell } from './shell'
-import { Activity, Nodes, ProjectDetail, Projects } from './views'
+import { Activity, Nodes, ProjectDetail, ProjectApps, ProjectObservabilityTab, Projects } from './views'
 import { Overview } from './overview'
 import { NewApp, NewProject, NewService } from './forms'
 import { AppDetail, AppOverview, AppConfiguration, AppObservability, AppReleases } from './appDetail'
@@ -36,7 +36,13 @@ const terminalRoute = createRoute({
     class: s.class as string | undefined,
   }),
 })
+// Project detail is a layout (header + stats + tab bar + Outlet); Apps and
+// Observability are nested sections. Members / Deployments / New app|service stay
+// standalone routes reached from the header + global top bar.
 const projectRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects/$org', component: ProjectDetail })
+const projectAppsRoute = createRoute({ getParentRoute: () => projectRoute, path: '/', component: ProjectApps })
+const projectObsRoute = createRoute({ getParentRoute: () => projectRoute, path: 'observability', component: ProjectObservabilityTab })
+const projectRouteTree = projectRoute.addChildren([projectAppsRoute, projectObsRoute])
 const newAppRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects/$org/new-app', component: NewApp })
 const newServiceRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects/$org/new-service', component: NewService })
 const membersRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects/$org/members', component: Members })
@@ -62,7 +68,7 @@ const appRouteTree = appRoute.addChildren([appOverviewRoute, appConfigRoute, app
 const routeTree = rootRoute.addChildren([
   indexRoute, projectsRoute, newProjectRoute, activityRoute, settingsRoute, nodesRoute, controlPlaneRoute, terminalRoute,
   releasesRoute, allDeploysRoute,
-  projectRoute, newAppRoute, newServiceRoute, membersRoute, deploysRoute, appRouteTree,
+  projectRouteTree, newAppRoute, newServiceRoute, membersRoute, deploysRoute, appRouteTree,
 ])
 
 export const router = createRouter({ routeTree, defaultPreload: 'intent' })
