@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { ChevronRight, Plus, Loader2, CheckCircle2, Circle, AlertCircle, MoreVertical, Boxes, Rocket, Trash2, Archive, GitPullRequest, RefreshCw, PenLine, TerminalSquare, FolderGit2 } from 'lucide-react'
 import { send, urls, useApps, useAppInfo, useArchivedApps, useBotEvents, useContainerHistory, useDeploys, useEvents, useImports, useMetricsHistory, useNodeMetrics, useNodes, useProjects, useWhoami, parseAt, IMPORT_STEPS, RELEASE_STAGES, type ImportStatus, type ReleaseProgress, type Event, type AppSummary } from './api'
 import { useApiMutation } from './mutations'
+import { ProjectObservability } from './observability'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -294,6 +295,8 @@ export function ProjectDetail() {
     return c?.image.split('@sha256:')[1]?.slice(0, 7) ?? null
   }
 
+  const containersFor = (app: string, cls: string) =>
+    (metrics.data ?? []).flatMap((n) => n.apps).filter((c) => c.name.startsWith(`${name}-${app}-${cls}-`))
   const runningCount = (metrics.data ?? []).flatMap((n) => n.apps).filter((c) => c.name.startsWith(`${name}-`)).length
   const anyFailed = (apps.data ?? []).some((a) => latestEventFor(events.data, name, a.name)?.result.startsWith('FAILED'))
   const hasApps = (apps.data?.length ?? 0) > 0
@@ -407,6 +410,10 @@ export function ProjectDetail() {
           ))}
         </div>
       </QueryState>
+
+      {(apps.data ?? []).some((a) => a.otel) && (
+        <ProjectObservability org={org} apps={apps.data ?? []} containersFor={containersFor} />
+      )}
 
       <ArchivedApps org={org} />
     </>
