@@ -1287,6 +1287,31 @@ pub async fn secrets_post(
     ))
 }
 
+/// `POST /api/secrets/{org}/{app}/migrate` — convert an app's legacy per-class
+/// SOPS secret files to inline `majnet:` maps (ADR 0024 phase 3). Admin-gated
+/// (touches every class, incl. production). Idempotent — a class already inline
+/// (or with no secrets) is skipped.
+pub async fn secrets_migrate_post(
+    State(state): State<Arc<AppState>>,
+    Path((org, app)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<String, ApiError> {
+    check_name(&app)?;
+    crate::authz::require(&state, &headers, &org, Role::Admin)
+        .await
+        .map_err(|e| (StatusCode::FORBIDDEN, format!("{e:#}")))?;
+    let n = crate::migrate::migrate_app_to_inline(&state, &org, &app)
+        .await
+        .map_err(bad_gateway)?;
+    Ok(if n == 0 {
+        format!("{app}: no legacy SOPS secrets to migrate (already inline)")
+    } else {
+        format!(
+            "migrated {n} class(es) of {app} to inline secrets — review the render PR(s) to deploy"
+        )
+    })
+}
+
 // ── rename ─────────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]

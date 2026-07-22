@@ -154,6 +154,10 @@ async fn main() -> Result<()> {
             "/api/secrets/{org}/{app}",
             post(dashboard_api::secrets_post),
         )
+        .route(
+            "/api/secrets/{org}/{app}/migrate",
+            post(dashboard_api::secrets_migrate_post),
+        )
         .route("/api/nodes", get(dashboard_api::nodes_get))
         .route("/api/control-plane", get(control_plane::status_get))
         .route(

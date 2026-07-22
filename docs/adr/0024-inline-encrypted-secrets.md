@@ -72,8 +72,11 @@ updatekeys`).
    render no longer requires a SOPS file for inline apps; the dashboard read endpoint
    decrypts inline (base ⊕ overlay) or falls back to the SOPS file. New bot config
    `MAJNET_AGE_STABLE_RECIPIENT` (production recipient already existed).
-3. **Migrate + remove legacy** *(pending)* — reconciler re-encrypt endpoint + bot
-   migrate action; convert live apps; then remove the SOPS pass-through, `.sops.yaml`
-   dependence and the legacy decrypt.
+3. **Migrate** *(endpoint done; fleet migration + legacy removal pending)* — reconciler
+   `POST /api/secrets/reencrypt/{project}/{class}/{app}` re-encrypts a legacy SOPS file
+   to inline ciphertext (plaintext never leaves the reconciler); bot `POST
+   /api/secrets/{org}/{app}/migrate` calls it per class, commits the inline map, and
+   deletes the SOPS file. Once every app is migrated, remove the render SOPS
+   pass-through, `.sops.yaml` seeding and the legacy `secrets::decrypt`.
 4. **Docs + rotation** *(pending)* — runbook + website; rotation sweep; optional
    `majnet secret encode` CLI.

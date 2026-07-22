@@ -276,6 +276,84 @@ async fn write_inline_secrets_overlay(
     .await
 }
 
+/// Migrate an app's legacy per-class SOPS files to inline `secrets:` maps (ADR
+/// 0024 phase 3). For each class with a `secrets.<class>.yaml`, the reconciler
+/// re-encrypts it (decrypt + re-encrypt to the class recipient, returning
+/// **ciphertext only** — plaintext never reaches the bot), then the bot commits
+/// the inline map to the class overlay and deletes the SOPS file. Returns the
+/// number of classes migrated. Idempotent: a class with no SOPS file is skipped.
+pub(crate) async fn migrate_app_to_inline(state: &AppState, org: &str, app: &str) -> Result<usize> {
+    let mut migrated = 0;
+    for class in ["production", "stable", "testing", "ephemeral"] {
+        let inline = reconciler_reencrypt(state, org, class, app).await?;
+        if inline.is_empty() {
+            continue; // no legacy file for this class
+        }
+        // Write inline first (authoritative at deploy), then drop the SOPS file.
+        write_inline_secrets_overlay(state, org, app, class, &inline).await?;
+        delete_ops_file(
+            state,
+            org,
+            &format!("apps/{app}/secrets.{class}.yaml"),
+            &format!("secrets({app}): migrate {class} to inline (ADR 0024)"),
+        )
+        .await?;
+        migrated += 1;
+    }
+    if migrated > 0 {
+        state.store.log_event(
+            "app-secrets-migrated",
+            Some(org),
+            &format!("{app}: {migrated} class(es) → inline"),
+        )?;
+        tracing::info!(org, app, migrated, "migrated app secrets to inline");
+    }
+    Ok(migrated)
+}
+
+/// Ask the reconciler to re-encrypt an app/class's legacy SOPS secrets into inline
+/// `majnet:` envelopes (the reconciler is the only decryptor). Empty map = no
+/// legacy file for that class.
+async fn reconciler_reencrypt(
+    state: &AppState,
+    org: &str,
+    class: &str,
+    app: &str,
+) -> Result<BTreeMap<String, String>> {
+    anyhow::ensure!(
+        !state.config.reconciler_url.is_empty(),
+        "reconciler URL not configured — cannot migrate secrets"
+    );
+    let url = format!(
+        "{}/api/secrets/reencrypt/{org}/{class}/{app}",
+        state.config.reconciler_url.trim_end_matches('/')
+    );
+    let resp = state
+        .http
+        .post(&url)
+        .send()
+        .await
+        .context("calling reconciler reencrypt")?;
+    let ok = resp.status().is_success();
+    let body = resp.text().await.unwrap_or_default();
+    anyhow::ensure!(ok, "reconciler reencrypt failed: {body}");
+    serde_json::from_str(&body).context("parsing reencrypt response")
+}
+
+/// Delete a file from ops `main` (no-op if it's already gone).
+async fn delete_ops_file(state: &AppState, org: &str, path: &str, message: &str) -> Result<()> {
+    let client = state.github.org_client(org).await?;
+    let repos = client.repos(org, "ops");
+    if let Some((_, sha)) = crate::promote::read_file(&repos, path).await? {
+        repos
+            .delete_file(path, message, &sha)
+            .branch("main")
+            .send()
+            .await?;
+    }
+    Ok(())
+}
+
 /// Migration target class: the running app is production, so prefer it, then the
 /// most-stable selected class.
 fn target_class(classes: &[String]) -> &str {
