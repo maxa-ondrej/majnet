@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import {
-  RotateCw, ScrollText, KeyRound, SlidersHorizontal, ArrowUpFromLine, MoreVertical, TerminalSquare,
+  RotateCw, ScrollText, SlidersHorizontal, ArrowUpFromLine, MoreVertical, TerminalSquare,
 } from 'lucide-react'
 import {
   send, urls, useApps, useAppContainers, useAppInfo, useAppLogs, useAppSecrets, useEvents, useImports,
@@ -90,10 +90,6 @@ export function AppDetail() {
   }, [classes, env])
 
   const [sheet, setSheet] = useState<Sheeted>(null)
-  // Which manifest file the Configuration sheet opens on — secrets now live there,
-  // so the env "Secrets" button deep-links to that env's overlay (ADR 0024).
-  const [configFile, setConfigFile] = useState('base.yaml')
-  const openConfig = (file: string) => { setConfigFile(file); setSheet('config') }
   const [renameOpen, setRenameOpen] = useState(false)
 
   const navigate = useNavigate()
@@ -142,7 +138,7 @@ export function AppDetail() {
               <a href={`https://github.com/${org}/${a?.repo ?? app}`} target="_blank" rel="noreferrer">GitHub ↗</a>
             </Button>
           )}
-          <Button variant="outline" size="sm" onClick={() => openConfig('base.yaml')}>
+          <Button variant="outline" size="sm" onClick={() => setSheet('config')}>
             <SlidersHorizontal className="size-4" /> Configuration
           </Button>
           <ConfirmButton variant="outline" size="sm" title={`Roll back ${app}?`}
@@ -217,7 +213,7 @@ export function AppDetail() {
             version={versionFor(env)}
             domains={env === 'production' ? (a?.domains ?? []) : []}
             adminerUrl={env === 'production' ? adminerUrl : null}
-            onLogs={() => setSheet('logs')} onSecrets={() => openConfig(`${env}.yaml`)}
+            onLogs={() => setSheet('logs')}
             restart={() => act.mutate(() => send(urls.restart(org, env, app)))} busy={act.isPending}
           />
         </>
@@ -286,7 +282,7 @@ export function AppDetail() {
             <span className="text-xs text-muted-foreground">base manifest + per-env overlays</span></SheetHeader>
           <SheetBody>
             <QueryState isLoading={manifest.isLoading} error={imp && !manifest.data ? undefined : manifest.error}>
-              {manifest.data && <ManifestEditor org={org} app={app} files={manifest.data} initialFile={configFile} />}
+              {manifest.data && <ManifestEditor org={org} app={app} files={manifest.data} />}
             </QueryState>
           </SheetBody>
         </SheetContent>
@@ -315,12 +311,12 @@ function SectionHead({ title, hint }: { title: string; hint?: string }) {
 
 // ── the environment section, scoped to the selected class ─────────────────────
 function EnvironmentZone({
-  app, env, org, isAdmin, containers, version, domains, adminerUrl, onLogs, onSecrets, restart, busy,
+  app, env, org, isAdmin, containers, version, domains, adminerUrl, onLogs, restart, busy,
 }: {
   app: string; env: string; org: string; isAdmin: boolean
   containers: { name: string; image: string; state: string; cpu_pct: number; mem_used: number; mem_limit: number }[]
   version: string | null; domains: string[]; adminerUrl: string | null
-  onLogs: () => void; onSecrets: () => void; restart: () => void; busy: boolean
+  onLogs: () => void; restart: () => void; busy: boolean
 }) {
   const running = containers.length > 0
   const cpu = containers.reduce((s, c) => s + c.cpu_pct, 0)
@@ -364,7 +360,6 @@ function EnvironmentZone({
               title={`Restart ${app} in ${env}?`} description="Bounces the container(s) — same digest, brief downtime."
               confirmText="Restart" onConfirm={restart}><RotateCw className="size-4" /> Restart</ConfirmButton>
             <Button variant="outline" size="sm" onClick={onLogs}><ScrollText className="size-4" /> Logs</Button>
-            <Button variant="outline" size="sm" onClick={onSecrets}><KeyRound className="size-4" /> Secrets</Button>
             {isAdmin && (
               <Button asChild variant="outline" size="sm">
                 <Link to="/terminal" search={{ mode: 'container', project: org, app, class: env }}><TerminalSquare className="size-4" /> Exec</Link>
@@ -770,89 +765,45 @@ function LogsView({ org, app, cls }: { org: string; app: string; cls: string }) 
   )
 }
 
-// ── secrets (scoped to the selected env) ──────────────────────────────────────
+// ── manifest editor: file tabs + Form/YAML + per-file secrets (Config sheet) ────
 type Row = { key: string; value: string }
-function SecretsView({ org, app, cls }: { org: string; app: string; cls: string }) {
-  const [mode, setMode] = useState<'fields' | 'bulk'>('fields')
-  const [rows, setRows] = useState<Row[]>([{ key: '', value: '' }])
-  const [bulk, setBulk] = useState('')
-  const q = useAppSecrets(org, cls, app)
-
-  useEffect(() => {
-    if (!q.data) return
-    const entries = Object.entries(q.data)
-    setRows(entries.length ? entries.map(([key, value]) => ({ key, value })) : [{ key: '', value: '' }])
-    setBulk(entries.map(([k, v]) => `${k}=${v}`).join('\n'))
-  }, [q.data])
-
-  const m = useApiMutation({ invalidate: [['deploys', org], ['manifest', org, app], ['secrets', org, cls, app], ['events']] })
-  const envtext = mode === 'bulk'
-    ? bulk.trim()
-    : rows.filter((r) => r.key.trim()).map((r) => `${r.key.trim()}=${r.value}`).join('\n')
-  const setRow = (i: number, patch: Partial<Row>) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)))
-  // Removing every row (or clearing the bulk box) when secrets exist is an
-  // explicit "remove all"; empty with nothing existing is a no-op.
-  const existing = Object.keys(q.data ?? {}).length
-  const isClear = !envtext && existing > 0
-  const canSave = !!envtext || isClear
-
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="flex items-center">
-        <span className="text-xs text-muted-foreground">Decrypted for you (VPN-only). Saving encrypts each value inline (age) and replaces the whole set. Remove a row with × then Save to delete a secret.</span>
-        <div className="ml-auto inline-flex rounded-md border p-0.5">
-          <Button size="sm" variant={mode === 'fields' ? 'secondary' : 'ghost'} className="h-7 px-2.5" onClick={() => setMode('fields')}>Fields</Button>
-          <Button size="sm" variant={mode === 'bulk' ? 'secondary' : 'ghost'} className="h-7 px-2.5" onClick={() => setMode('bulk')}>Bulk</Button>
-        </div>
-      </div>
-      <QueryState isLoading={q.isLoading} error={q.error}>
-        {mode === 'fields' ? (
-          <div className="flex flex-col gap-2">
-            {rows.map((r, i) => (
-              <div key={i} className="flex items-center gap-2">
-                <Input value={r.key} placeholder="SECRET_NAME" className="w-56 font-mono text-xs" onChange={(e) => setRow(i, { key: e.target.value })} />
-                <Input value={r.value} placeholder="value" className="flex-1 font-mono text-xs" onChange={(e) => setRow(i, { value: e.target.value })} />
-                <Button size="sm" variant="ghost" className="text-destructive" onClick={() => setRows((rs) => { const n = rs.filter((_, j) => j !== i); return n.length ? n : [{ key: '', value: '' }] })}>×</Button>
-              </div>
-            ))}
-            <div><Button size="sm" variant="outline" onClick={() => setRows((rs) => [...rs, { key: '', value: '' }])}>+ Add secret</Button></div>
-          </div>
-        ) : (
-          <Textarea value={bulk} onChange={(e) => setBulk(e.target.value)} className="min-h-40 font-mono text-xs" placeholder={'API_KEY=…\nWEBHOOK_URL=…'} />
-        )}
-      </QueryState>
-      <div>
-        <ConfirmButton size="sm" disabled={!canSave || m.isPending}
-          title={isClear ? `Remove all ${cls} secrets for ${app}?` : `Set ${cls} secrets for ${app}?`}
-          description={isClear
-            ? `Deletes all ${existing} secret(s) for ${cls}. ${cls === 'production' ? 'A render PR gates the deploy.' : 'Auto-deploys on render.'}`
-            : (cls === 'production' ? 'Encrypts + commits; a render PR gates the deploy.' : 'Encrypts + commits; auto-deploys on render.')}
-          confirmText={isClear ? 'Remove all' : 'Encrypt & save'}
-          onConfirm={() => m.mutate(() => send(urls.appSecrets(org, app), { json: { class: cls, env: envtext, clear: isClear } }))}>
-          {isClear ? 'Remove all secrets' : 'Save secrets'}
-        </ConfirmButton>
-      </div>
-    </div>
-  )
-}
-
-// ── manifest editor: file tabs + Form/YAML (inside the Configuration sheet) ────
-function ManifestEditor({ org, app, files, initialFile = 'base.yaml' }: { org: string; app: string; files: Record<string, ManifestFile>; initialFile?: string }) {
-  const [file, setFile] = useState(initialFile)
+function ManifestEditor({ org, app, files }: { org: string; app: string; files: Record<string, ManifestFile> }) {
+  const [file, setFile] = useState('base.yaml')
   const [mode, setMode] = useState<'form' | 'yaml'>('form')
   const [draft, setDraft] = useState<ManifestDraft>(() => fromData(files[file]?.data))
   const [yaml, setYaml] = useState(() => files[file]?.yaml ?? '')
   useEffect(() => { setDraft(fromData(files[file]?.data)); setYaml(files[file]?.yaml ?? '') }, [file, files])
-  // Deep-link: the env "Secrets" button opens this sheet on that env's overlay.
-  useEffect(() => { setFile(initialFile) }, [initialFile])
-  // Secrets are per-class (an overlay), never base.yaml; scope the editor to it.
-  const secretsClass = file !== 'base.yaml' ? file.replace(/\.yaml$/, '') : null
 
-  const save = useApiMutation({ invalidate: [['manifest', org, app], ['apps', org], ['deploys', org], ['events']] })
-  const onSave = () => {
-    if (mode === 'form') save.mutate(() => send(urls.manifestFile(org, app, file), { method: 'PUT', json: toManifest(draft, file, app) }))
-    else save.mutate(() => send(urls.manifestFile(org, app, file), { method: 'PUT', body: yaml }))
-  }
+  // Secrets for THIS file, decrypted for editing (ADR 0024). Stem: base.yaml →
+  // 'base' (its secrets apply to every class), else the class name.
+  const stem = file === 'base.yaml' ? 'base' : file.replace(/\.yaml$/, '')
+  const secretsQ = useAppSecrets(org, stem, app)
+  const [secretRows, setSecretRows] = useState<Row[]>([])
+  const [secretsDirty, setSecretsDirty] = useState(false)
+  useEffect(() => {
+    setSecretRows(Object.entries(secretsQ.data ?? {}).map(([key, value]) => ({ key, value })))
+    setSecretsDirty(false)
+  }, [secretsQ.data, file])
+  const editRows = (fn: (rs: Row[]) => Row[]) => { setSecretRows(fn); setSecretsDirty(true) }
+  const existingSecrets = Object.keys(secretsQ.data ?? {}).length
+
+  const save = useApiMutation({ invalidate: [['manifest', org, app], ['apps', org], ['deploys', org], ['secrets', org, stem, app], ['events']] })
+  // One Save commits the manifest AND the secrets. Secrets go first (authoritative)
+  // so the manifest PUT preserves them server-side; only pushed when actually edited.
+  const onSave = () => save.mutate(async () => {
+    const msgs: string[] = []
+    if (secretsDirty) {
+      const env = secretRows.filter((r) => r.key.trim()).map((r) => `${r.key.trim()}=${r.value}`).join('\n')
+      const clear = !env && existingSecrets > 0
+      if (env || clear) msgs.push(await send(urls.appSecrets(org, app), { json: { file, env, clear } }))
+    }
+    msgs.push(await send(urls.manifestFile(org, app, file), mode === 'form'
+      ? { method: 'PUT', json: toManifest(draft, file, app) }
+      : { method: 'PUT', body: yaml }))
+    setSecretsDirty(false)
+    return msgs.join(' · ')
+  })
+
   return (
     <div className="flex flex-col gap-3.5">
       <div className="flex flex-wrap items-center gap-1 border-b pb-2">
@@ -872,22 +823,38 @@ function ManifestEditor({ org, app, files, initialFile = 'base.yaml' }: { org: s
       {mode === 'form'
         ? <ManifestForm file={file} draft={draft} onChange={setDraft} />
         : <Textarea spellCheck={false} value={yaml} onChange={(e) => setYaml(e.target.value)} className="min-h-72 font-mono text-xs" />}
-      <div className="flex items-center gap-3">
-        <Button size="sm" disabled={save.isPending} onClick={onSave}>Save &amp; commit</Button>
-        <span className="text-xs text-muted-foreground">Committed to ops main; a render PR follows. production.yaml requires admin.</span>
+
+      {/* Secrets for this file, encrypted per key (age) and delivered as tmpfs
+          files. Editing routes through the encrypt endpoint (never the committed
+          manifest); the single Save below commits manifest + secrets together. */}
+      <div className="border-t pt-4">
+        <div className="mb-1.5 flex items-baseline gap-2">
+          <h3 className="text-sm font-semibold">Secrets</h3>
+          <StatusBadge tone="accent">{file}</StatusBadge>
+          {secretsQ.isLoading && <span className="text-xs text-muted-foreground">loading…</span>}
+        </div>
+        <p className="mb-2.5 text-xs text-muted-foreground">
+          Encrypted per key; delivered as tmpfs files, never env vars. {file === 'base.yaml' ? 'base.yaml secrets apply to every environment.' : `Only the ${stem} environment.`} Remove a row with × to delete a secret.
+        </p>
+        {secretsQ.error
+          ? <p className="text-xs text-destructive">Couldn’t load secrets (needs VPN + the reconciler).</p>
+          : (
+            <div className="flex flex-col gap-2">
+              {secretRows.map((r, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <Input value={r.key} placeholder="SECRET_NAME" className="w-56 font-mono text-xs" onChange={(e) => editRows((rs) => rs.map((x, j) => (j === i ? { ...x, key: e.target.value } : x)))} />
+                  <Input value={r.value} placeholder="value" className="flex-1 font-mono text-xs" onChange={(e) => editRows((rs) => rs.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))} />
+                  <Button size="sm" variant="ghost" className="text-destructive" title="Remove secret" onClick={() => editRows((rs) => rs.filter((_, j) => j !== i))}>×</Button>
+                </div>
+              ))}
+              <div><Button size="sm" variant="outline" onClick={() => editRows((rs) => [...rs, { key: '', value: '' }])}>+ Add secret</Button></div>
+            </div>
+          )}
       </div>
 
-      {/* Secrets live in the class overlay, encrypted per key (ADR 0024). Edited
-          here (not in the manifest form/YAML above) so values go through the
-          encrypt endpoint and never touch the committed manifest in plaintext. */}
-      <div className="mt-2 border-t pt-4">
-        <div className="mb-2.5 flex items-baseline gap-2">
-          <h3 className="text-sm font-semibold">Secrets</h3>
-          {secretsClass && <StatusBadge tone="accent">{secretsClass}</StatusBadge>}
-        </div>
-        {secretsClass
-          ? <SecretsView org={org} app={app} cls={secretsClass} />
-          : <p className="text-xs text-muted-foreground">Secrets are per-environment — pick an env overlay tab (e.g. <code className="font-mono">production.yaml</code>) to view and edit them.</p>}
+      <div className="flex items-center gap-3 border-t pt-4">
+        <Button size="sm" disabled={save.isPending} onClick={onSave}>Save &amp; commit</Button>
+        <span className="text-xs text-muted-foreground">Manifest + secrets committed to ops main; a render PR follows. base.yaml &amp; production.yaml require admin.</span>
       </div>
     </div>
   )

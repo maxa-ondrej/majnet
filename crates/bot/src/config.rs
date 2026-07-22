@@ -83,6 +83,27 @@ impl Config {
         }
     }
 
+    /// Recipients to encrypt a manifest FILE's secrets to (ADR 0024). A class
+    /// overlay (`<class>.yaml`) targets that class's recipient. `base.yaml` targets
+    /// **every** configured recipient — a base secret is inherited by all classes,
+    /// so it must decrypt under any class key (multi-recipient; still reconciler-
+    /// only). Empty when nothing is configured.
+    pub fn age_recipients_for_file(&self, file: &str) -> Vec<&str> {
+        if file == "base.yaml" {
+            [
+                self.age_production_recipient.as_deref(),
+                self.age_stable_recipient.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            .collect()
+        } else {
+            self.age_recipient(file.strip_suffix(".yaml").unwrap_or(file))
+                .into_iter()
+                .collect()
+        }
+    }
+
     pub fn from_env() -> Result<Self> {
         fn var(name: &str) -> Result<String> {
             std::env::var(name).with_context(|| format!("missing env var {name}"))

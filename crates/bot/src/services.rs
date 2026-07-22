@@ -117,11 +117,17 @@ pub async fn create(
         .await
         .map_err(bad_gateway)?;
 
-    // 3. Optional secrets on the exposure class.
+    // 3. Optional secrets on the exposure class overlay.
     if !req.secrets.trim().is_empty() {
-        crate::migrate::set_app_secrets(&state, &org, &name, class.as_str(), &req.secrets)
-            .await
-            .map_err(bad_gateway)?;
+        crate::migrate::set_app_secrets(
+            &state,
+            &org,
+            &name,
+            &format!("{}.yaml", class.as_str()),
+            &req.secrets,
+        )
+        .await
+        .map_err(bad_gateway)?;
     }
 
     state
