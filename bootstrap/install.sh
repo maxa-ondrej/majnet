@@ -134,6 +134,11 @@ $DOMAIN {
 	handle /healthz {
 		reverse_proxy 127.0.0.1:8080
 	}
+	# Public, unauthenticated: platform age recipients for local secret encoding
+	# (ADR 0024). Encode-only — public keys can't decrypt.
+	handle /api/secrets/recipients {
+		reverse_proxy 127.0.0.1:8080
+	}
 	handle {
 		reverse_proxy 127.0.0.1:7600
 	}
