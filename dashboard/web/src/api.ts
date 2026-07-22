@@ -147,7 +147,13 @@ export interface AppInfo {
 }
 
 /** Parse a reconciler event timestamp (SQLite `datetime('now')`, UTC). */
-export const parseAt = (at: string): number => Date.parse(at.replace(' ', 'T') + 'Z')
+export const parseAt = (at: string): number => {
+  // Reconciler timestamps are naive UTC ("YYYY-MM-DD HH:MM:SS" → needs a 'Z');
+  // GitHub's (e.g. DeployPr.created_at) are already ISO with a zone — appending
+  // another 'Z' double-zones them and Date.parse returns NaN ("NaNd ago").
+  const t = at.replace(' ', 'T')
+  return Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(t) ? t : `${t}Z`)
+}
 
 // ── fetch helpers ────────────────────────────────────────────────────────────
 export async function getJSON<T>(url: string): Promise<T> {

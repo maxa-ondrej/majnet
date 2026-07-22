@@ -1284,11 +1284,13 @@ pub(crate) fn scaffold_base(req: &NewApp) -> Result<String> {
 /// class's whole secret set. An empty `env` with `clear: true` removes them all.
 #[derive(Deserialize)]
 pub struct SetSecrets {
-    pub class: String,
+    /// Manifest file the secrets live in: `base.yaml` (shared across classes) or
+    /// `<class>.yaml` (that class only).
+    pub file: String,
     /// dotenv blob: `KEY=VALUE`, one per line.
     pub env: String,
-    /// Explicit "remove all secrets for this class" — required to save an empty
-    /// set (guards against an accidental empty save wiping secrets).
+    /// Explicit "remove all secrets in this file" — required to save an empty set
+    /// (guards against an accidental empty save wiping secrets).
     #[serde(default)]
     pub clear: bool,
 }
@@ -1300,13 +1302,13 @@ pub async fn secrets_post(
     Json(req): Json<SetSecrets>,
 ) -> Result<String, ApiError> {
     check_name(&app)?;
-    let valid_classes = ["testing", "stable", "production", "ephemeral"];
-    if !valid_classes.contains(&req.class.as_str()) {
-        return Err(bad_request(
-            "class must be one of testing|stable|production|ephemeral",
-        ));
+    if !MANIFEST_FILES.contains(&req.file.as_str()) {
+        return Err(bad_request(format!(
+            "file must be one of {MANIFEST_FILES:?}"
+        )));
     }
-    let min_role = if req.class == "production" {
+    // base.yaml secrets are inherited by production, so gate them like production.
+    let min_role = if req.file == "production.yaml" || req.file == "base.yaml" {
         Role::Admin
     } else {
         Role::Developer
@@ -1319,13 +1321,13 @@ pub async fn secrets_post(
     // stops an accidental empty save from wiping them.
     if req.env.trim().is_empty() && !req.clear {
         return Err(bad_request(
-            "no secrets provided (send clear: true to remove all secrets for this env)",
+            "no secrets provided (send clear: true to remove all secrets in this file)",
         ));
     }
-    let n = crate::migrate::set_app_secrets(&state, &org, &app, &req.class, &req.env)
+    let n = crate::migrate::set_app_secrets(&state, &org, &app, &req.file, &req.env)
         .await
         .map_err(bad_gateway)?;
-    let deploy_note = if req.class == "production" {
+    let deploy_note = if req.file == "production.yaml" || req.file == "base.yaml" {
         "review the render PR to deploy"
     } else {
         "auto-deploys on render"
@@ -1333,12 +1335,12 @@ pub async fn secrets_post(
     Ok(if n == 0 {
         format!(
             "cleared all secrets for {app} ({}); {deploy_note}",
-            req.class
+            req.file
         )
     } else {
         format!(
             "set {n} secret value(s) for {app} ({}); {deploy_note}",
-            req.class
+            req.file
         )
     })
 }

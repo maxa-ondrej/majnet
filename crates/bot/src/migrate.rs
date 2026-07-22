@@ -120,25 +120,24 @@ pub async fn import_app(
 /// them from its secrets dir. Encryption uses the ops `.sops.yaml` recipients,
 /// exactly as an operator running `sops apps/<app>/secrets.<class>.yaml` would.
 async fn import_secrets(state: &AppState, org: &str, req: &NewApp, env_text: &str) -> Result<()> {
-    let class = target_class(&req.classes);
-    set_app_secrets(state, org, &req.name, class, env_text).await?;
+    let file = format!("{}.yaml", target_class(&req.classes));
+    set_app_secrets(state, org, &req.name, &file, env_text).await?;
     Ok(())
 }
 
-/// Encode a dotenv blob into an inline `secrets:` map on the class overlay
-/// `apps/<app>/<class>.yaml` (ADR 0024) — the shared path behind both app-import
-/// (ADR 0010 phase 2) and the dashboard "set secrets" action. Each value is an
-/// `age`-encrypted `majnet:` envelope. Returns the number of secrets written.
-///
-/// The bot holds only the *public* class recipient, never a private key, so it
-/// cannot read existing values to merge: this **replaces** the class's secret set
-/// with exactly what's passed. Secrets are delivered to apps as tmpfs files, never
-/// env vars (§14).
+/// Encode a dotenv blob into the inline `secrets:` map of a manifest FILE
+/// (`base.yaml` or `<class>.yaml`) — the shared path behind app-import (ADR 0010
+/// phase 2) and the dashboard "set secrets" action. Each value is an `age`-encrypted
+/// `majnet:` envelope; a class overlay encrypts to that class's recipient, base.yaml
+/// to every recipient (a base secret is inherited by all classes, ADR 0024).
+/// Returns the number of secrets written. **Replaces** the file's whole secret set
+/// (the bot can't read existing values to merge); an empty set clears them. Secrets
+/// are delivered to apps as tmpfs files, never env vars (§14).
 pub(crate) async fn set_app_secrets(
     state: &AppState,
     org: &str,
     app: &str,
-    class: &str,
+    file: &str,
     env_text: &str,
 ) -> Result<usize> {
     // Only keys that are valid bare secret filenames (§14) — skip + warn on the
@@ -156,59 +155,60 @@ pub(crate) async fn set_app_secrets(
             );
         }
     }
-    // Encrypt each value inline to the class recipient (ADR 0024) — one
+    // Encrypt each value inline to the file's recipient(s) (ADR 0024) — one
     // `majnet:<base64(age ciphertext)>` line per secret. The bot holds only the
-    // public recipient, so it can encode but never decode. An empty set is a valid
-    // "clear all" (skip encryption; the overlay's `secrets` key is removed).
+    // public recipient(s), so it can encode but never decode. An empty set is a
+    // valid "clear all" (skip encryption; the file's `secrets` key is removed).
     let mut inline = BTreeMap::new();
     if !secrets.is_empty() {
-        let recipient = state.config.age_recipient(class).with_context(|| {
-            let var = if class == "production" {
-                "MAJNET_AGE_PRODUCTION_RECIPIENT"
-            } else {
-                "MAJNET_AGE_STABLE_RECIPIENT"
-            };
-            format!("no age recipient configured for class '{class}' — set {var}")
-        })?;
+        let recipients = state.config.age_recipients_for_file(file);
+        anyhow::ensure!(
+            !recipients.is_empty(),
+            "no age recipient configured for {file} — set MAJNET_AGE_PRODUCTION_RECIPIENT / MAJNET_AGE_STABLE_RECIPIENT"
+        );
         for (k, v) in &secrets {
             inline.insert(
                 k.clone(),
-                age_encrypt_inline(recipient, v)
+                age_encrypt_inline(&recipients, v)
                     .await
                     .with_context(|| format!("encrypting secret '{k}'"))?,
             );
         }
     }
 
-    // Write the inline `secrets:` map into the class overlay, replacing the class's
-    // whole set. Inline is authoritative at deploy, so any legacy SOPS file is
-    // ignored (and cleaned up by the phase-3 migration).
-    write_inline_secrets_overlay(state, org, app, class, &inline).await?;
+    // Write the inline `secrets:` map into the file, replacing its whole set. Inline
+    // is authoritative at deploy, so any legacy SOPS file is ignored (cleaned up by
+    // the phase-3 migration).
+    write_inline_secrets_overlay(state, org, app, file, &inline).await?;
 
     state.store.log_event(
         "app-secrets-set",
         Some(org),
-        &format!("{app}: {} secrets → {class}", secrets.len()),
+        &format!("{app}: {} secrets → {file}", secrets.len()),
     )?;
     tracing::info!(
         org,
         app,
-        class,
+        file,
         count = secrets.len(),
         "set app secrets (inline)"
     );
     Ok(secrets.len())
 }
 
-/// Encrypt a plaintext secret value to an age `recipient` as a single-line
+/// Encrypt a plaintext secret value to one or more age `recipients` as a single-line
 /// `majnet:<base64(age ciphertext)>` envelope (ADR 0024). Binary `age` output (no
-/// armor) base64-encoded, so the whole value fits on one YAML line. Only the
-/// public recipient is needed — the bot cannot decrypt.
-async fn age_encrypt_inline(recipient: &str, plaintext: &str) -> Result<String> {
+/// armor) base64-encoded, so the whole value fits on one YAML line. Multiple
+/// recipients (base.yaml) → any of their keys can decrypt. Only public recipients
+/// are needed — the bot cannot decrypt.
+async fn age_encrypt_inline(recipients: &[&str], plaintext: &str) -> Result<String> {
     use base64::Engine;
     use tokio::io::AsyncWriteExt;
-    let mut child = tokio::process::Command::new("age")
-        .args(["-r", recipient])
+    let mut cmd = tokio::process::Command::new("age");
+    for r in recipients {
+        cmd.arg("-r").arg(r);
+    }
+    let mut child = cmd
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -234,17 +234,17 @@ async fn age_encrypt_inline(recipient: &str, plaintext: &str) -> Result<String> 
     ))
 }
 
-/// Replace the class overlay's `secrets:` with the given inline `KEY → majnet:…`
-/// map (ADR 0024), preserving every other overlay key. Writing to the overlay —
-/// not `base.yaml` — keeps other classes from inheriting this class's secrets.
+/// Replace a manifest FILE's `secrets:` with the given inline `KEY → majnet:…` map
+/// (ADR 0024), preserving every other key in the file. `file` is `base.yaml` (shared
+/// across classes) or `<class>.yaml` (that class only).
 async fn write_inline_secrets_overlay(
     state: &AppState,
     org: &str,
     app: &str,
-    class: &str,
+    file: &str,
     inline: &BTreeMap<String, String>,
 ) -> Result<()> {
-    let path = format!("apps/{app}/{class}.yaml");
+    let path = format!("apps/{app}/{file}");
     let client = state.github.org_client(org).await?;
     let repos = client.repos(org, "ops");
     let current = crate::promote::read_file(&repos, &path)
@@ -253,7 +253,7 @@ async fn write_inline_secrets_overlay(
         .unwrap_or_else(|| "{}\n".to_string());
 
     let mut overlay: serde_yaml::Value =
-        serde_yaml::from_str(&current).context("parsing class overlay")?;
+        serde_yaml::from_str(&current).context("parsing manifest file")?;
     if !overlay.is_mapping() {
         overlay = serde_yaml::Value::Mapping(Default::default());
     }
@@ -271,9 +271,9 @@ async fn write_inline_secrets_overlay(
 
     let yaml = serde_yaml::to_string(&overlay)?;
     let msg = if inline.is_empty() {
-        format!("secrets({app}): clear all in {class}")
+        format!("secrets({app}): clear all in {file}")
     } else {
-        format!("secrets({app}): set {} value(s) in {class}", inline.len())
+        format!("secrets({app}): set {} value(s) in {file}", inline.len())
     };
     crate::dashboard_api::commit_file(state, org, &path, &yaml, &msg).await
 }
@@ -292,7 +292,8 @@ pub(crate) async fn migrate_app_to_inline(state: &AppState, org: &str, app: &str
             continue; // no legacy file for this class
         }
         // Write inline first (authoritative at deploy), then drop the SOPS file.
-        write_inline_secrets_overlay(state, org, app, class, &inline).await?;
+        // Legacy SOPS files are per-class → migrate into the class overlay.
+        write_inline_secrets_overlay(state, org, app, &format!("{class}.yaml"), &inline).await?;
         delete_ops_file(
             state,
             org,
