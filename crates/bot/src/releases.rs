@@ -701,6 +701,17 @@ async fn do_cut(state: &AppState, org: &str, app: &str, bump: &str, actor: &str)
         "building",
         "CI is building the image",
     );
+    // The release is cut — drop its draft so the unit stops showing as a release
+    // candidate (mirrors `submit_draft`; `do_cut` is the autorelease + manual-cut
+    // path, and previously relied on the release commit's push to re-run
+    // `prepare_draft`, which never fires for a repo-wide cut or a protected `main`).
+    let key = decl
+        .as_ref()
+        .map(|d| d.release_unit().to_string())
+        .unwrap_or_else(|| app.to_string());
+    if let Err(e) = state.store.delete_release_draft(org, &key) {
+        tracing::warn!(org, %key, error = format!("{e:#}"), "clearing release draft after cut failed");
+    }
     state.store.log_event(
         "release-cut",
         Some(org),

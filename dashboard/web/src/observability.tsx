@@ -14,13 +14,16 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 const ENV_ORDER = ['production', 'stable', 'testing', 'ephemeral']
 const orderClasses = (classes: string[]) => ENV_ORDER.filter((c) => classes.includes(c))
 
-// Look-back windows for the RED tiles + trace/log lists. Page size for the lists
-// (kept below the reconciler's MAX_LIMIT); a full page implies "load more".
+// Look-back windows for the RED tiles + trace/log lists.
 const WINDOWS: { label: string; min: number }[] = [
   { label: '5m', min: 5 }, { label: '15m', min: 15 }, { label: '1h', min: 60 },
   { label: '6h', min: 360 }, { label: '24h', min: 1440 },
 ]
-const PAGE = 100
+// Per-page sizes (below the reconciler's MAX_LIMIT); a full page implies "load
+// more". Traces are heavy rows (each opens a waterfall) so we keep them short;
+// logs are dense one-liners, so a fuller page reads better.
+const TRACE_PAGE = 15
+const LOG_PAGE = 100
 
 /** Debounce a value so text filters don't refetch on every keystroke. */
 function useDebounced<T>(value: T, ms = 400): T {
@@ -41,6 +44,7 @@ function usePagedObs<T>(
   keyOf: (r: T) => string,
   cursorOf: (r: T) => number,
   depsKey: string,
+  pageSize: number,
 ) {
   const [rows, setRows] = useState<T[]>([])
   const [loading, setLoading] = useState(true)
@@ -60,7 +64,7 @@ function usePagedObs<T>(
     setError(null)
     setPaged(false)
     getJSON<T[]>(urlRef.current(undefined))
-      .then((d) => { if (!cancelled) { setRows(d); setHasMore(d.length >= PAGE) } })
+      .then((d) => { if (!cancelled) { setRows(d); setHasMore(d.length >= pageSize) } })
       .catch((e) => { if (!cancelled) setError(e) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
@@ -71,7 +75,7 @@ function usePagedObs<T>(
     if (paged) return
     const id = setInterval(() => {
       getJSON<T[]>(urlRef.current(undefined))
-        .then((d) => { setRows(d); setHasMore(d.length >= PAGE); setError(null) })
+        .then((d) => { setRows(d); setHasMore(d.length >= pageSize); setError(null) })
         .catch(() => {})
     }, 15000)
     return () => clearInterval(id)
@@ -88,7 +92,7 @@ function usePagedObs<T>(
           const seen = new Set(prev.map(keyOf))
           return [...prev, ...more.filter((r) => !seen.has(keyOf(r)))]
         })
-        setHasMore(more.length >= PAGE)
+        setHasMore(more.length >= pageSize)
       })
       .catch(setError)
       .finally(() => setLoadingMore(false))
@@ -284,13 +288,14 @@ function TracesPanel({ org, app, cls, windowMin }: {
   const [status, setStatus] = useState<'all' | 'error' | 'ok'>('all')
   const [text, setText] = useState('')
   const q = useDebounced(text)
-  const filters: TraceFilters = { windowMin, status, q: q || undefined, limit: PAGE }
+  const filters: TraceFilters = { windowMin, status, q: q || undefined, limit: TRACE_PAGE }
   const depsKey = `${org}|${cls}|${app}|${windowMin}|${status}|${q}`
   const { rows, loading, loadingMore, error, hasMore, loadMore } = usePagedObs<ObsTrace>(
     (before) => urls.obsTraces(org, cls, app, filters, before),
     (t) => t.trace_id,
     (t) => t.start_unix_nano,
     depsKey,
+    TRACE_PAGE,
   )
 
   const max = Math.max(1, ...rows.map((t) => t.duration_ms))
@@ -374,13 +379,14 @@ function LogsPanel({ org, app, cls, windowMin }: {
   const [trace, setTrace] = useState('')
   const q = useDebounced(text)
   const traceId = useDebounced(trace)
-  const filters: LogFilters = { windowMin, level, q: q || undefined, traceId: traceId || undefined, limit: PAGE }
+  const filters: LogFilters = { windowMin, level, q: q || undefined, traceId: traceId || undefined, limit: LOG_PAGE }
   const depsKey = `${org}|${cls}|${app}|${windowMin}|${level}|${q}|${traceId}`
   const { rows, loading, loadingMore, error, hasMore, loadMore } = usePagedObs<ObsLog>(
     (before) => urls.obsLogs(org, cls, app, filters, before),
     (r) => `${r.ts_unix_nano}|${r.msg}`,
     (r) => r.ts_unix_nano,
     depsKey,
+    LOG_PAGE,
   )
 
   const lvlColor = (l: string) =>
