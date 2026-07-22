@@ -2,10 +2,15 @@ import { useState } from 'react'
 import { Activity, AlertTriangle, Clock, MemoryStick, ListTree, ScrollText, ChevronRight } from 'lucide-react'
 import {
   useObsOverview, useObsLogs, useObsTrace,
-  type ContainerMetric, type ObsSpan, type ObsTrace,
+  type AppSummary, type ContainerMetric, type ObsSpan, type ObsTrace,
 } from './api'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+
+// Environment order for class pickers; filtered to the classes an app declares.
+const ENV_ORDER = ['production', 'stable', 'testing', 'ephemeral']
+const orderClasses = (classes: string[]) => ENV_ORDER.filter((c) => classes.includes(c))
 
 // Grafana lives on the tailnet as an internal service in the majnet project
 // (ADR 0023). The public/tailnet host is fixed, like the Adminer deep-link.
@@ -45,9 +50,12 @@ function Tile({ icon, label, value, unit, source, tone }: {
   )
 }
 
-/** The per-app Observability tab (ADR 0023 phase 3): RED tiles + traces⇄logs. */
-export function Observability({ org, app, cls, containers }: {
+/** The per-app Observability tab (ADR 0023 phase 3): RED tiles + traces⇄logs.
+ *  `control` renders an extra picker in the header (the project view injects an
+ *  app switcher there so the whole section keeps a single heading). */
+export function Observability({ org, app, cls, containers, control }: {
   org: string; app: string; cls: string; containers: ContainerMetric[]
+  control?: React.ReactNode
 }) {
   const [tab, setTab] = useState<'traces' | 'logs'>('traces')
   const ov = useObsOverview(org, cls, app, true)
@@ -66,7 +74,8 @@ export function Observability({ org, app, cls, containers }: {
       <div className="mb-3 mt-8 flex items-baseline gap-2.5">
         <h2 className="text-sm font-semibold">Observability</h2>
         <span className="text-xs text-muted-foreground">{cls} · last 15 min · traces &amp; logs from OpenTelemetry</span>
-        <Button asChild variant="outline" size="sm" className="ml-auto">
+        {control && <div className="ml-auto">{control}</div>}
+        <Button asChild variant="outline" size="sm" className={control ? '' : 'ml-auto'}>
           <a href={GRAFANA} target="_blank" rel="noreferrer">Open in Grafana ↗</a>
         </Button>
       </div>
@@ -115,6 +124,50 @@ export function Observability({ org, app, cls, containers }: {
         </>
       )}
     </>
+  )
+}
+
+/** Project-level Observability: the same RED tiles + traces/logs as the per-app
+ *  tab, with a header switcher over the project's OTEL-enabled apps (and their
+ *  environments). Renders nothing when no app in the project opts into OTEL. */
+export function ProjectObservability({ org, apps, containersFor }: {
+  org: string; apps: AppSummary[]
+  containersFor: (app: string, cls: string) => ContainerMetric[]
+}) {
+  const otelApps = apps.filter((a) => a.otel)
+  const [appName, setAppName] = useState(otelApps[0]?.name ?? '')
+  const current = otelApps.find((a) => a.name === appName) ?? otelApps[0]
+  const classes = current ? orderClasses(current.classes) : []
+  const [cls, setCls] = useState(classes[0] ?? '')
+  // Keep the class valid when the selected app changes (or on first render).
+  const env = classes.includes(cls) ? cls : (classes[0] ?? '')
+
+  if (!current || !env) return null
+
+  const control = (
+    <div className="flex items-center gap-2">
+      <Select value={current.name} onValueChange={setAppName}>
+        <SelectTrigger className="h-8 w-40 text-[13px]"><SelectValue /></SelectTrigger>
+        <SelectContent>
+          {otelApps.map((a) => <SelectItem key={a.name} value={a.name}>{a.name}</SelectItem>)}
+        </SelectContent>
+      </Select>
+      {classes.length > 1 && (
+        <Select value={env} onValueChange={setCls}>
+          <SelectTrigger className="h-8 w-32 text-[13px]"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {classes.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      )}
+    </div>
+  )
+
+  return (
+    <Observability
+      key={`${current.name}:${env}`}
+      org={org} app={current.name} cls={env}
+      containers={containersFor(current.name, env)} control={control} />
   )
 }
 
