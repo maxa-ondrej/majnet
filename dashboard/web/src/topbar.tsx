@@ -1,14 +1,12 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
+import { Link, useParams } from '@tanstack/react-router'
 import { useQueries } from '@tanstack/react-query'
 import { Bell, GitPullRequest, Loader2, Tag } from 'lucide-react'
 import { getJSON, parseAt, urls, useApps, useDeployProgress, useEvents, useProjects, useReleaseDrafts, DEPLOY_STAGES, type DeployPr, type Event } from './api'
+import { ENV_CLASSES, setEnv, useEnv, type EnvClass } from './env'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-
-// Order the env selector presents an app's classes in.
-const ENV_ORDER = ['production', 'stable', 'testing', 'ephemeral']
 
 function Count({ children }: { children: ReactNode }) {
   return (
@@ -126,7 +124,7 @@ function Deployments() {
               // the deploying env, when we can resolve the org (+ class).
               return org ? (
                 <Link key={i} to="/projects/$org/apps/$app/deploys" params={{ org, app }}
-                  search={dp ? { env: dp.class } : {}} onClick={() => setOpen(false)}
+                  onClick={() => { if (dp) setEnv(dp.class as EnvClass); setOpen(false) }}
                   className="block rounded-md px-2 py-1.5 hover:bg-accent">{inner}</Link>
               ) : (
                 <div key={i} className="rounded-md px-2 py-1.5">{inner}</div>
@@ -301,21 +299,24 @@ function Releases() {
 // on other routes. Lives in the global top bar, alongside Releases & Deployments.
 function EnvSelector() {
   const { org, app } = useParams({ strict: false }) as { org?: string; app?: string }
-  const { env } = useSearch({ strict: false }) as { env?: string }
-  const navigate = useNavigate()
+  const env = useEnv()
   const apps = useApps(org ?? '')
   const a = apps.data?.find((x) => x.name === app)
   if (!org || !app || !a) return null
-  const classes = ENV_ORDER.filter((c) => a.classes.includes(c))
-  if (classes.length === 0) return null
-  const current = env && classes.includes(env) ? env : classes[0]!
+  // Show all classes (not just this app's) so a not-onboarded env is still
+  // selectable — picking it drops Configuration into its "Add {env}" flow.
+  const onboarded = (c: string) => a.classes.includes(c)
   return (
-    <Select value={current} onValueChange={(v) => navigate({ to: '.', search: (prev) => ({ ...prev, env: v }) })}>
+    <Select value={env} onValueChange={(v) => setEnv(v as EnvClass)}>
       <SelectTrigger className="h-8 w-[152px] gap-1.5 text-[13px]" aria-label="Environment">
         <span className="text-muted-foreground">env</span><SelectValue />
       </SelectTrigger>
       <SelectContent align="end">
-        {classes.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+        {ENV_CLASSES.map((c) => (
+          <SelectItem key={c} value={c}>
+            <span className={onboarded(c) ? '' : 'text-muted-foreground'}>{c}</span>
+          </SelectItem>
+        ))}
       </SelectContent>
     </Select>
   )

@@ -48,16 +48,13 @@ const newServiceRoute = createRoute({ getParentRoute: () => rootRoute, path: '/p
 const membersRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects/$org/members', component: Members })
 const deploysRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects/$org/deploys', component: Deploys })
 // App detail is a layout (header + tab bar + Outlet); its sections are nested,
-// deep-linkable routes. The selected environment rides in `?env=` so the top-bar
-// env selector and every section read one source of truth.
-interface AppSearch { env?: string }
+// deep-linkable routes. The selected environment is a global, persisted store
+// (`env.ts` / useEnv), not a search param — the top-bar selector and every
+// section read that one source of truth.
 const appRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/projects/$org/apps/$app',
   component: AppDetail,
-  validateSearch: (s: Record<string, unknown>): AppSearch => ({
-    env: typeof s.env === 'string' ? s.env : undefined,
-  }),
 })
 const appOverviewRoute = createRoute({ getParentRoute: () => appRoute, path: '/', component: AppOverview })
 const appConfigRoute = createRoute({ getParentRoute: () => appRoute, path: 'config', component: AppConfiguration })

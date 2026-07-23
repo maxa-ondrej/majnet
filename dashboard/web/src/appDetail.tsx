@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, Outlet, useNavigate, useParams, useSearch } from '@tanstack/react-router'
+import { Link, Outlet, useNavigate, useParams } from '@tanstack/react-router'
 import {
   RotateCw, ScrollText, SlidersHorizontal, ArrowUpFromLine, MoreVertical, TerminalSquare,
   LayoutGrid, Activity as ActivityIcon, Tag, Rocket,
@@ -12,8 +12,9 @@ import {
 import { useApiMutation } from './mutations'
 import { ConfirmButton, ExtLink, QueryState, short, StatusBadge } from './ui'
 import { Crumbs, ContainerSpark, ImportSteps, DeploySteps } from './views'
-import { fromData, ManifestForm, toManifest, type ManifestDraft } from './manifestForm'
+import { fromData, ManifestForm, OverlayForm, overriddenKeys, toManifest, toOverlay, type ManifestDraft } from './manifestForm'
 import { Observability } from './observability'
+import { ENV_CLASSES, setEnv, useEnv } from './env'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -28,9 +29,6 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Sheet, SheetBody, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 
-const FILES = ['base.yaml', 'testing.yaml', 'stable.yaml', 'production.yaml', 'ephemeral.yaml']
-// Environment order for the selector + strip; filtered to the classes an app has.
-const ENV_ORDER = ['production', 'stable', 'testing', 'ephemeral'] as const
 
 // Replace a full `ghcr.io/…@sha256:…` image ref in a deploy-event result with the
 // version the app reports at /info (else a short digest) — older events predate
@@ -62,11 +60,13 @@ function nextVersions(versions: string[]): { patch: string; minor: string; major
 
 /** Shared per-app derived state for the layout + every section. React Query
  *  dedupes the underlying fetches, so each section can call this freely. The
- *  selected environment comes from `?env=` (written by the top-bar selector),
- *  falling back to the app's first class. */
+ *  selected environment comes from the global, persisted store (`env.ts`). `env`
+ *  is the raw global selection (may be a class this app hasn't onboarded — the
+ *  Configuration Add-flow needs that); `shownEnv` clamps it to a class the app has
+ *  for read-only display sections. */
 function useAppView() {
   const { org, app } = useParams({ from: '/projects/$org/apps/$app' })
-  const { env: envParam } = useSearch({ from: '/projects/$org/apps/$app' })
+  const env = useEnv()
   const apps = useApps(org)
   const a = apps.data?.find((x) => x.name === app)
   const info = useAppInfo(org, app)
@@ -74,15 +74,15 @@ function useAppView() {
   const project = useProjects().data?.find((p) => p.org === org)?.name
   const isAdmin = useWhoami().data?.admin ?? false
   const isService = !!a?.service
-  const classes: string[] = ENV_ORDER.filter((c) => a?.classes.includes(c))
-  const env = envParam && classes.includes(envParam) ? envParam : (classes[0] ?? 'production')
+  const classes: string[] = ENV_CLASSES.filter((c) => a?.classes.includes(c))
+  const shownEnv = classes.includes(env) ? env : (classes[0] ?? 'production')
   const containersFor = (cls: string) =>
     project ? (metrics.data ?? []).flatMap((n) => n.apps).filter((c) => c.name.startsWith(`${project}-${app}-${cls}-`)) : []
   const versionFor = (cls: string): string | null => {
     const v = info.data?.find((r) => r.class === cls)?.info?.version
     return typeof v === 'string' ? v : null
   }
-  return { org, app, a, project, isAdmin, isService, classes, env, info, containersFor, versionFor }
+  return { org, app, a, project, isAdmin, isService, classes, env: shownEnv, rawEnv: env, info, containersFor, versionFor }
 }
 
 const digestShort = (img?: string) => img?.split('@sha256:')[1]?.slice(0, 7) ?? null
@@ -295,15 +295,14 @@ export function AppDeployments() {
   )
 }
 
-// The all-environments comparison; clicking a card switches the top-bar selector
-// (writes `?env=`), so the Overview + every section follow it.
+// The all-environments comparison; clicking a card switches the global env store,
+// so the Overview + every section (+ the top-bar selector) follow it.
 function AllEnvironments({ classes, env, containersFor, versionFor }: {
   classes: string[]; env: string
   containersFor: (cls: string) => { image: string }[]
   versionFor: (cls: string) => string | null
 }) {
-  const navigate = useNavigate()
-  const pick = (c: string) => navigate({ to: '.', search: (prev) => ({ ...prev, env: c }) })
+  const pick = (c: string) => setEnv(c as (typeof ENV_CLASSES)[number])
   return (
     <>
       <SectionHead title="All environments" hint="click to switch the environment selector" />
@@ -330,16 +329,24 @@ function AllEnvironments({ classes, env, containersFor, versionFor }: {
 
 /** Configuration section: the manifest editor (base + per-env overlays, inline
  *  secrets) — was a slide-over drawer, now a first-class section. */
+const parseDigest = (img?: string) => { const d = img?.split('@')[1]; return d?.startsWith('sha256:') ? d : undefined }
+const digestOf = (f?: ManifestFile) => (f?.data as { digest?: string } | null)?.digest
+
 export function AppConfiguration() {
-  const { org, app } = useParams({ from: '/projects/$org/apps/$app' })
+  const { org, app, rawEnv, classes } = useAppView()
   const imports = useImports(org)
   const imp = imports.data?.find((x) => x.app === app)
   const manifest = useManifest(org, app)
+  const releases = useReleases(org, app)
+  const files = manifest.data
+  // Seed digest for the "Add {env}" flow: newest release, else an existing overlay's pin.
+  const seedDigest = parseDigest(releases.data?.[0]?.app_image)
+    ?? digestOf(files?.['production.yaml']) ?? digestOf(files?.['stable.yaml']) ?? ''
   return (
     <>
-      <SectionHead title="Configuration" hint="base manifest + per-env overlays" />
+      <SectionHead title="Configuration" hint="shared base + per-environment overrides" />
       <QueryState isLoading={manifest.isLoading} error={imp && !manifest.data ? undefined : manifest.error}>
-        {manifest.data && <ManifestEditor org={org} app={app} files={manifest.data} />}
+        {files && <ManifestEditor org={org} app={app} files={files} env={rawEnv} classes={classes} seedDigest={seedDigest} />}
       </QueryState>
     </>
   )
@@ -873,18 +880,40 @@ function LogsView({ org, app, cls }: { org: string; app: string; cls: string }) 
   )
 }
 
-// ── manifest editor: file tabs + Form/YAML + per-file secrets (Config sheet) ────
+// ── manifest editor: Base/{env} scope toggle + merged inheritance form + secrets ─
 type Row = { key: string; value: string }
-function ManifestEditor({ org, app, files }: { org: string; app: string; files: Record<string, ManifestFile> }) {
-  const [file, setFile] = useState('base.yaml')
+function ManifestEditor({ org, app, files, env, classes, seedDigest }: {
+  org: string; app: string; files: Record<string, ManifestFile>
+  env: string; classes: string[]; seedDigest: string
+}) {
+  const [scope, setScope] = useState<'base' | 'env'>('env')
   const [mode, setMode] = useState<'form' | 'yaml'>('form')
-  const [draft, setDraft] = useState<ManifestDraft>(() => fromData(files[file]?.data))
-  const [yaml, setYaml] = useState(() => files[file]?.yaml ?? '')
-  useEffect(() => { setDraft(fromData(files[file]?.data)); setYaml(files[file]?.yaml ?? '') }, [file, files])
+  const [adding, setAdding] = useState(false)
 
-  // Secrets for THIS file, decrypted for editing (ADR 0024). Stem: base.yaml →
-  // 'base' (its secrets apply to every class), else the class name.
-  const stem = file === 'base.yaml' ? 'base' : file.replace(/\.yaml$/, '')
+  const file = scope === 'base' ? 'base.yaml' : `${env}.yaml`
+  const onboarded = scope === 'base' || classes.includes(env)
+  const baseDraft = fromData(files['base.yaml']?.data)
+
+  const [draft, setDraft] = useState<ManifestDraft>(() => fromData(files[file]?.data))
+  const [overridden, setOverridden] = useState<Set<string>>(() => overriddenKeys(files[file]?.data))
+  const [yaml, setYaml] = useState(() => files[file]?.yaml ?? '')
+  useEffect(() => {
+    setDraft(fromData(files[file]?.data))
+    setOverridden(overriddenKeys(files[file]?.data))
+    setYaml(files[file]?.yaml ?? '')
+    setAdding(false)
+  }, [file, files])
+
+  // Onboard a new class: a thin overlay pinning this env's digest, nothing else.
+  const startAdd = () => {
+    setDraft({ ...fromData(undefined), digest: seedDigest })
+    setOverridden(new Set(['digest']))
+    setAdding(true)
+  }
+
+  // Secrets for THIS scope, decrypted for editing (ADR 0024). Stem: base scope →
+  // 'base' (secrets apply to every class), else the selected class.
+  const stem = scope === 'base' ? 'base' : env
   const secretsQ = useAppSecrets(org, stem, app)
   const [secretRows, setSecretRows] = useState<Row[]>([])
   const [secretsDirty, setSecretsDirty] = useState(false)
@@ -901,69 +930,89 @@ function ManifestEditor({ org, app, files }: { org: string; app: string; files: 
   const onSave = () => save.mutate(async () => {
     const msgs: string[] = []
     if (secretsDirty) {
-      const env = secretRows.filter((r) => r.key.trim()).map((r) => `${r.key.trim()}=${r.value}`).join('\n')
-      const clear = !env && existingSecrets > 0
-      if (env || clear) msgs.push(await send(urls.appSecrets(org, app), { json: { file, env, clear } }))
+      const envBlob = secretRows.filter((r) => r.key.trim()).map((r) => `${r.key.trim()}=${r.value}`).join('\n')
+      const clear = !envBlob && existingSecrets > 0
+      if (envBlob || clear) msgs.push(await send(urls.appSecrets(org, app), { json: { file, env: envBlob, clear } }))
     }
+    // Base scope emits a full manifest; env scope emits a sparse overlay (only the
+    // overridden keys), preserving any unmanaged keys already in the file.
+    const json = scope === 'base' ? toManifest(draft, 'base.yaml', app) : toOverlay(draft, overridden, files[file]?.data)
     msgs.push(await send(urls.manifestFile(org, app, file), mode === 'form'
-      ? { method: 'PUT', json: toManifest(draft, file, app) }
+      ? { method: 'PUT', json }
       : { method: 'PUT', body: yaml }))
     setSecretsDirty(false)
     return msgs.join(' · ')
   })
 
+  const seg = (on: boolean) => `rounded px-2.5 py-1 text-xs font-medium ${on ? 'bg-background shadow-sm' : 'text-muted-foreground'}`
+  const showAdd = scope === 'env' && !onboarded && !adding && mode === 'form'
+
   return (
     <div className="flex flex-col gap-3.5">
-      <div className="flex flex-wrap items-center gap-1 border-b pb-2">
-        {/* Existing overlays first (keeping the base→prod gradient), the
-            addable "(new)" ones after — so the app's real config isn't buried. */}
-        {[...FILES].sort((x, y) => Number(!files[x]) - Number(!files[y])).map((f) => (
-          <button key={f} onClick={() => setFile(f)}
-            className={`rounded-md px-2.5 py-1.5 text-xs font-medium ${f === file ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground'}`}>
-            {f}{!files[f] && <span className="text-muted-foreground/60"> (new)</span>}
-          </button>
-        ))}
+      <div className="flex flex-wrap items-center gap-2 border-b pb-2">
+        <div className="flex gap-1 rounded-md bg-muted p-0.5">
+          <button onClick={() => setScope('base')} className={seg(scope === 'base')}>Base defaults</button>
+          <button onClick={() => setScope('env')} className={seg(scope === 'env')}>{env} overrides</button>
+        </div>
         <div className="ml-auto flex gap-1 rounded-md bg-muted p-0.5">
-          <button onClick={() => setMode('form')} className={`rounded px-2.5 py-1 text-xs font-medium ${mode === 'form' ? 'bg-background shadow-sm' : 'text-muted-foreground'}`}>Form</button>
-          <button onClick={() => setMode('yaml')} className={`rounded px-2.5 py-1 text-xs font-medium ${mode === 'yaml' ? 'bg-background shadow-sm' : 'text-muted-foreground'}`}>YAML</button>
+          <button onClick={() => setMode('form')} className={seg(mode === 'form')}>Form</button>
+          <button onClick={() => setMode('yaml')} className={seg(mode === 'yaml')}>YAML</button>
         </div>
       </div>
-      {mode === 'form'
-        ? <ManifestForm file={file} draft={draft} onChange={setDraft} />
-        : <Textarea spellCheck={false} value={yaml} onChange={(e) => setYaml(e.target.value)} className="min-h-72 font-mono text-xs" />}
 
-      {/* Secrets for this file, encrypted per key (age) and delivered as tmpfs
+      {showAdd ? (
+        <div className="rounded-lg border border-dashed p-8 text-center">
+          <p className="text-sm font-medium"><span className="font-mono">{env}</span> isn’t set up for this app</p>
+          <p className="mx-auto mt-1 max-w-md text-xs text-muted-foreground">
+            Create a {env} overlay — it inherits everything from <span className="font-mono">base.yaml</span>; you only pin what differs, starting with this env’s image digest.
+          </p>
+          <Button size="sm" className="mt-4" onClick={startAdd}>Add {env}</Button>
+        </div>
+      ) : mode === 'yaml' ? (
+        <Textarea spellCheck={false} value={yaml} onChange={(e) => setYaml(e.target.value)} className="min-h-72 font-mono text-xs" />
+      ) : scope === 'base' ? (
+        <ManifestForm file="base.yaml" draft={draft} onChange={setDraft} />
+      ) : (
+        <OverlayForm cls={env} base={baseDraft} draft={draft} overridden={overridden}
+          onChange={(d, o) => { setDraft(d); setOverridden(o) }} />
+      )}
+
+      {/* Secrets for this scope, encrypted per key (age) and delivered as tmpfs
           files. Editing routes through the encrypt endpoint (never the committed
           manifest); the single Save below commits manifest + secrets together. */}
-      <div className="border-t pt-4">
-        <div className="mb-1.5 flex items-baseline gap-2">
-          <h3 className="text-sm font-semibold">Secrets</h3>
-          <StatusBadge tone="accent">{file}</StatusBadge>
-          {secretsQ.isLoading && <span className="text-xs text-muted-foreground">loading…</span>}
+      {!showAdd && (
+        <div className="border-t pt-4">
+          <div className="mb-1.5 flex items-baseline gap-2">
+            <h3 className="text-sm font-semibold">Secrets</h3>
+            <StatusBadge tone="accent">{file}</StatusBadge>
+            {secretsQ.isLoading && <span className="text-xs text-muted-foreground">loading…</span>}
+          </div>
+          <p className="mb-2.5 text-xs text-muted-foreground">
+            Encrypted per key; delivered as tmpfs files, never env vars. {scope === 'base' ? 'base.yaml secrets apply to every environment.' : `Only the ${env} environment.`} Remove a row with × to delete a secret.
+          </p>
+          {secretsQ.error
+            ? <p className="text-xs text-destructive">Couldn’t load secrets (needs VPN + the reconciler).</p>
+            : (
+              <div className="flex flex-col gap-2">
+                {secretRows.map((r, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <Input value={r.key} placeholder="SECRET_NAME" className="w-56 font-mono text-xs" onChange={(e) => editRows((rs) => rs.map((x, j) => (j === i ? { ...x, key: e.target.value } : x)))} />
+                    <Input value={r.value} placeholder="value" className="flex-1 font-mono text-xs" onChange={(e) => editRows((rs) => rs.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))} />
+                    <Button size="sm" variant="ghost" className="text-destructive" title="Remove secret" onClick={() => editRows((rs) => rs.filter((_, j) => j !== i))}>×</Button>
+                  </div>
+                ))}
+                <div><Button size="sm" variant="outline" onClick={() => editRows((rs) => [...rs, { key: '', value: '' }])}>+ Add secret</Button></div>
+              </div>
+            )}
         </div>
-        <p className="mb-2.5 text-xs text-muted-foreground">
-          Encrypted per key; delivered as tmpfs files, never env vars. {file === 'base.yaml' ? 'base.yaml secrets apply to every environment.' : `Only the ${stem} environment.`} Remove a row with × to delete a secret.
-        </p>
-        {secretsQ.error
-          ? <p className="text-xs text-destructive">Couldn’t load secrets (needs VPN + the reconciler).</p>
-          : (
-            <div className="flex flex-col gap-2">
-              {secretRows.map((r, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  <Input value={r.key} placeholder="SECRET_NAME" className="w-56 font-mono text-xs" onChange={(e) => editRows((rs) => rs.map((x, j) => (j === i ? { ...x, key: e.target.value } : x)))} />
-                  <Input value={r.value} placeholder="value" className="flex-1 font-mono text-xs" onChange={(e) => editRows((rs) => rs.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))} />
-                  <Button size="sm" variant="ghost" className="text-destructive" title="Remove secret" onClick={() => editRows((rs) => rs.filter((_, j) => j !== i))}>×</Button>
-                </div>
-              ))}
-              <div><Button size="sm" variant="outline" onClick={() => editRows((rs) => [...rs, { key: '', value: '' }])}>+ Add secret</Button></div>
-            </div>
-          )}
-      </div>
+      )}
 
-      <div className="flex items-center gap-3 border-t pt-4">
-        <Button size="sm" disabled={save.isPending} onClick={onSave}>Save &amp; commit</Button>
-        <span className="text-xs text-muted-foreground">Manifest + secrets committed to ops main; a render PR follows. base.yaml &amp; production.yaml require admin.</span>
-      </div>
+      {!showAdd && (
+        <div className="flex items-center gap-3 border-t pt-4">
+          <Button size="sm" disabled={save.isPending} onClick={onSave}>Save &amp; commit</Button>
+          <span className="text-xs text-muted-foreground">Manifest + secrets committed to ops main; a render PR follows. base.yaml &amp; production.yaml require admin.</span>
+        </div>
+      )}
     </div>
   )
 }

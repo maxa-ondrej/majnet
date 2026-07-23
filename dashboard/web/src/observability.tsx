@@ -9,10 +9,10 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { ENV_CLASSES } from './env'
 
 // Environment order for class pickers; filtered to the classes an app declares.
-const ENV_ORDER = ['production', 'stable', 'testing', 'ephemeral']
-const orderClasses = (classes: string[]) => ENV_ORDER.filter((c) => classes.includes(c))
+const orderClasses = (classes: string[]): string[] => ENV_CLASSES.filter((c) => classes.includes(c))
 
 // Look-back windows for the RED tiles + trace/log lists.
 const WINDOWS: { label: string; min: number }[] = [
