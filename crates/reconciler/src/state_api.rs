@@ -61,6 +61,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/rename/commit/{org}", post(rename_commit))
         .route("/api/rename/project-prepare/{org}", post(project_prepare))
         .route("/api/rename/project-commit/{org}", post(project_commit))
+        .route("/api/move/prepare", post(move_prepare))
+        .route("/api/move/commit", post(move_commit))
         .route("/api/purge/{org}", post(purge))
         .route("/api/purge-project/{org}", post(purge_project))
         .route("/api/ephemeral/extend/{project}/{app}", post(extend))
@@ -138,6 +140,58 @@ async fn restart(
 struct RenameBody {
     old: String,
     new: String,
+}
+
+#[derive(serde::Deserialize)]
+struct MoveBody {
+    src_org: String,
+    dst_org: String,
+    app: String,
+}
+
+/// `POST /api/move/prepare` — freeze an app's cross-project move in both project
+/// scopes (skip creating the destination stack + skip GC'ing the source one)
+/// before the bot flips either project's git. Platform-admin gated (ADR 0025).
+async fn move_prepare(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(b): Json<MoveBody>,
+) -> Result<String, (StatusCode, String)> {
+    crate::authz::require_platform_admin(&state, &headers)
+        .await
+        .map_err(|e| (StatusCode::FORBIDDEN, format!("{e:#}")))?;
+    let classes = crate::rename::move_prepare(&state, &b.src_org, &b.dst_org, &b.app)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
+    Ok(format!(
+        "froze move {} {} → {} for [{}]",
+        b.app,
+        b.src_org,
+        b.dst_org,
+        classes.join(", ")
+    ))
+}
+
+/// `POST /api/move/commit` — migrate the app's data across projects and clear the
+/// freeze. Run after both projects' env branches have flipped. Platform-admin.
+async fn move_commit(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(b): Json<MoveBody>,
+) -> Result<String, (StatusCode, String)> {
+    crate::authz::require_platform_admin(&state, &headers)
+        .await
+        .map_err(|e| (StatusCode::FORBIDDEN, format!("{e:#}")))?;
+    let done = crate::rename::move_commit(&state, &b.src_org, &b.dst_org, &b.app)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
+    Ok(format!(
+        "moved {} {} → {} for [{}]",
+        b.app,
+        b.src_org,
+        b.dst_org,
+        done.join(", ")
+    ))
 }
 
 /// `POST /api/rename/prepare/{org}` — freeze the rename (convergence + GC skip

@@ -106,6 +106,7 @@ export function AppDetail() {
   const imp = imports.data?.find((x) => x.app === app)
   const isService = !!a?.service
   const [renameOpen, setRenameOpen] = useState(false)
+  const [moveOpen, setMoveOpen] = useState(false)
   const navigate = useNavigate()
   const deploy = useApiMutation({ invalidate: [['deploys', org], ['events']] })
   const retry = useApiMutation({ invalidate: [['imports', org], ['apps', org]] })
@@ -159,6 +160,7 @@ export function AppDetail() {
               {/* Rename would move apps/<name>/ but not the services: entry — hide
                   it for services until rename handles them. */}
               {!isService && <DropdownMenuItem onSelect={() => setRenameOpen(true)}>Rename app…</DropdownMenuItem>}
+              {!isService && <DropdownMenuItem onSelect={() => setMoveOpen(true)}>Move to project…</DropdownMenuItem>}
               <DropdownMenuItem
                 variant="destructive"
                 onSelect={() => archive.mutate(() => send(urls.appArchive(org, app)))}>
@@ -197,6 +199,7 @@ export function AppDetail() {
       <div className="pt-6"><Outlet /></div>
 
       <RenameDialog org={org} app={app} stateful={!!a?.database} open={renameOpen} onOpenChange={setRenameOpen} />
+      <MoveDialog org={org} app={app} stateful={!!a?.database} open={moveOpen} onOpenChange={setMoveOpen} />
     </>
   )
 }
@@ -809,6 +812,42 @@ function RenameDialog({ org, app, stateful, open, onOpenChange }: {
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
           <Button disabled={!valid || m.isPending} onClick={() => m.mutate(() => send(urls.appRename(org, app), { json: { new: name } }))}>Rename</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ── move to another project (ADR 0025) ───────────────────────────────────────
+function MoveDialog({ org, app, stateful, open, onOpenChange }: {
+  org: string; app: string; stateful: boolean; open: boolean; onOpenChange: (o: boolean) => void
+}) {
+  const projects = useProjects()
+  const dests = (projects.data ?? []).filter((p) => p.onboarded && p.org !== org)
+  const [dest, setDest] = useState('')
+  const navigate = useNavigate()
+  const m = useApiMutation({
+    invalidate: [['apps', org], ['projects'], ['deploys', org], ['events']],
+    onDone: () => { onOpenChange(false); navigate({ to: '/projects/$org/apps/$app', params: { org: dest, app } }) },
+  })
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Move {app} to another project</DialogTitle></DialogHeader>
+        <p className="text-sm text-muted-foreground">
+          Moves the app’s manifests, source repo{stateful ? ' and data (volumes + database) — a brief cutover downtime' : ''} to the
+          destination project (a cross-project rename of the resource prefix). You must be an admin of the destination.
+        </p>
+        <Select value={dest} onValueChange={setDest}>
+          <SelectTrigger><SelectValue placeholder="Destination project…" /></SelectTrigger>
+          <SelectContent>
+            {dests.map((p) => <SelectItem key={p.org} value={p.org}>{p.name} ({p.org})</SelectItem>)}
+          </SelectContent>
+        </Select>
+        {dests.length === 0 && <p className="text-xs text-muted-foreground">No other onboarded projects to move to.</p>}
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button disabled={!dest || m.isPending} onClick={() => m.mutate(() => send(urls.appMove(org, app), { json: { dest_org: dest } }))}>Move</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

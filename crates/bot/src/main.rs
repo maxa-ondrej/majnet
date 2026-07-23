@@ -131,6 +131,10 @@ async fn main() -> Result<()> {
             post(dashboard_api::app_rename_post),
         )
         .route(
+            "/api/apps/{org}/{app}/move",
+            post(dashboard_api::app_move_post),
+        )
+        .route(
             "/api/apps/{org}/{app}/release-config",
             get(dashboard_api::release_config_get).put(dashboard_api::release_config_put),
         )

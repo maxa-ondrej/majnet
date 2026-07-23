@@ -1621,6 +1621,257 @@ pub async fn app_rename_post(
     ))
 }
 
+#[derive(Deserialize)]
+pub struct MoveReq {
+    /// The destination project's GitHub org.
+    pub dest_org: String,
+}
+
+/// `POST /api/apps/{org}/{app}/move` — move an app to another project (ADR 0025).
+/// A cross-project rename of the data prefix: the app name is unchanged, the
+/// project (= org) changes. Admin of **both** projects.
+///
+/// Scope (v1): a **solo declared app** (not a monorepo member, not a service).
+/// The image pin travels **verbatim** — the destination deploy pulls the same
+/// `ghcr.io/<src-org>/<app>@<digest>`; a later release in the destination re-homes
+/// the image to `ghcr.io/<dst-org>/…`. The source repo transfer is best-effort
+/// (a failure is warned, not fatal — the ops move + data cutover still apply).
+pub async fn app_move_post(
+    State(state): State<Arc<AppState>>,
+    Path((org, app)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(req): Json<MoveReq>,
+) -> Result<String, ApiError> {
+    check_name(&app)?;
+    let dst_org = req.dest_org.trim().to_string();
+    if dst_org.is_empty() {
+        return Err(bad_request("destination project (org) is required"));
+    }
+    if dst_org == org {
+        return Err(bad_request("the app is already in this project"));
+    }
+    // Admin on BOTH the source and the destination project.
+    let actor = crate::authz::require(&state, &headers, &org, Role::Admin)
+        .await
+        .map_err(|e| (StatusCode::FORBIDDEN, format!("{e:#}")))?;
+    crate::authz::require(&state, &headers, &dst_org, Role::Admin)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::FORBIDDEN,
+                format!("not an admin of the destination: {e:#}"),
+            )
+        })?;
+
+    // The destination must be a registered project.
+    let registry = read_projects(&state).await.map_err(bad_gateway)?;
+    if !registry.projects.iter().any(|p| p.org == dst_org) {
+        return Err(bad_request(format!(
+            "destination org {dst_org} is not a registered project"
+        )));
+    }
+
+    // env must equal main in BOTH projects (a staged-but-unmerged app would be
+    // missed by the cutover) — same gate as rename, on both sides.
+    for o in [&org, &dst_org] {
+        if has_open_render_pr(&state, o).await.map_err(bad_gateway)? {
+            return Err(bad_request(format!(
+                "project {o} has an unmerged render PR — merge or close it in Deployments first, so the move cuts over from the current deployed state"
+            )));
+        }
+    }
+
+    // Source app files; destination must not already have the app.
+    let dir = app_dir_files(&state, &org, &app)
+        .await
+        .map_err(bad_gateway)?;
+    if dir.is_empty() {
+        return Err(bad_request(format!("app {app} not found")));
+    }
+    if !app_dir_files(&state, &dst_org, &app)
+        .await
+        .map(|d| d.is_empty())
+        .unwrap_or(true)
+    {
+        return Err(bad_request(format!(
+            "destination project already has an app named {app}"
+        )));
+    }
+
+    let manifests: BTreeMap<String, String> = dir
+        .iter()
+        .filter(|(p, _)| MANIFEST_FILES.contains(&p.as_str()))
+        .map(|(p, b)| Ok((p.clone(), String::from_utf8(b.clone())?)))
+        .collect::<Result<_>>()
+        .map_err(bad_gateway)?;
+    let manifest = merged_manifest(&app, &manifests).map_err(|e| bad_request(format!("{e:#}")))?;
+    let stateful = !manifest.volumes.is_empty() || manifest.database.is_some();
+
+    let mut src_project = read_project(&state, &org).await.map_err(bad_gateway)?;
+    let decl = src_project.apps.iter().find(|a| a.name == app).cloned();
+    // v1 guards: only a solo declared app.
+    if src_project.services.iter().any(|s| s.name == app) {
+        return Err(bad_request(
+            "moving a service is not supported yet — only apps (ADR 0025 v1)",
+        ));
+    }
+    let decl = decl.ok_or_else(|| {
+        bad_request(format!(
+            "{app} is not a declared app in {org} — cannot move"
+        ))
+    })?;
+    if decl.is_monorepo() {
+        return Err(bad_request(
+            "this app is a monorepo member — its repo is shared and can't move alone; moving a whole repo group isn't supported yet (ADR 0025 open question)",
+        ));
+    }
+
+    let client = state.github.org_client(&org).await.map_err(bad_gateway)?;
+
+    // 1. Freeze the move in the reconciler BEFORE any git flips — skip creating
+    //    the destination stack + skip GC'ing the source one while data migrates.
+    if stateful {
+        reconciler_move(&state, "prepare", &org, &dst_org, &app)
+            .await
+            .map_err(bad_gateway)?;
+    }
+
+    // 2. Destination ops commit: add apps/<app>/* verbatim (manifests + inline
+    //    secrets; name + image pin unchanged) + add the AppDecl to its project.yaml.
+    let new_decl = AppDecl {
+        name: app.clone(),
+        template: decl.template.clone(),
+        repo: None, // solo in the destination (its repo == the app name)
+        release: decl.release.clone(),
+    };
+    let mut dst_project = read_project(&state, &dst_org).await.map_err(bad_gateway)?;
+    dst_project.apps.push(new_decl);
+    let mut dst_changes: BTreeMap<String, Option<String>> = BTreeMap::new();
+    for (rel, bytes) in &dir {
+        let content = String::from_utf8(bytes.clone()).map_err(|e| bad_gateway(e.into()))?;
+        dst_changes.insert(format!("apps/{app}/{rel}"), Some(content));
+    }
+    dst_changes.insert(
+        "project.yaml".to_string(),
+        Some(serde_yaml::to_string(&dst_project).map_err(|e| bad_gateway(e.into()))?),
+    );
+    commit_ops_tree(
+        &state,
+        &dst_org,
+        &dst_changes,
+        &format!("move in app {app} from {org} via dashboard by {actor}"),
+    )
+    .await
+    .map_err(bad_gateway)?;
+
+    // 3. Source ops commit: remove the app dir + its project.yaml entry.
+    src_project.apps.retain(|a| a.name != app);
+    let mut src_changes: BTreeMap<String, Option<String>> = BTreeMap::new();
+    for rel in dir.keys() {
+        src_changes.insert(format!("apps/{app}/{rel}"), None);
+    }
+    src_changes.insert(
+        "project.yaml".to_string(),
+        Some(serde_yaml::to_string(&src_project).map_err(|e| bad_gateway(e.into()))?),
+    );
+    commit_ops_tree(
+        &state,
+        &org,
+        &src_changes,
+        &format!("move out app {app} to {dst_org} via dashboard by {actor}"),
+    )
+    .await
+    .map_err(bad_gateway)?;
+
+    // 4. Transfer the source repo to the destination org (best-effort — a
+    //    failure doesn't strand the move; the operator can re-home it manually).
+    //    The current image pin still resolves against the source-org package;
+    //    the next release in the destination re-homes the image.
+    let repo_note = match client
+        .post::<_, serde_json::Value>(
+            format!("/repos/{org}/{app}/transfer"),
+            Some(&serde_json::json!({ "new_owner": dst_org })),
+        )
+        .await
+    {
+        Ok(_) => " · source repo transferred",
+        Err(e) => {
+            tracing::warn!(org, app, dst_org, error = %format!("{e:#}"), "repo transfer failed — move it manually");
+            " · source repo NOT transferred (transfer it manually)"
+        }
+    };
+
+    // 5. Render + merge production PRs in BOTH projects (dest gains the app, src
+    //    drops it). Non-production classes auto-merge at render.
+    let classes = app_classes(&manifests);
+    let deployed_dst = merge_render_prs(&state, &dst_org, &classes)
+        .await
+        .map_err(bad_gateway)?;
+    merge_render_prs(&state, &org, &classes)
+        .await
+        .map_err(bad_gateway)?;
+
+    // 6. Migrate the data across the project prefixes, then converge the dest.
+    if stateful {
+        reconciler_move(&state, "commit", &org, &dst_org, &app)
+            .await
+            .map_err(bad_gateway)?;
+        crate::notify::notify_reconciler(&state, &dst_org, "ops", "main", "move").await;
+    }
+
+    state
+        .store
+        .log_event(
+            "app-moved",
+            Some(&org),
+            &format!("{app} {org} → {dst_org} by {actor}"),
+        )
+        .map_err(bad_gateway)?;
+    Ok(format!(
+        "moved {app} → {dst_org}{repo_note}{}{}",
+        if deployed_dst.is_empty() {
+            String::new()
+        } else {
+            format!("; deployed in {}: {}", dst_org, deployed_dst.join(", "))
+        },
+        if stateful {
+            " (data migrated — brief downtime during cutover)"
+        } else {
+            ""
+        }
+    ))
+}
+
+/// Drive the reconciler's cross-project move (`prepare` freezes, `commit`
+/// migrates the data). Mirrors `reconciler_rename` but for the move axis.
+async fn reconciler_move(
+    state: &AppState,
+    phase: &str,
+    src_org: &str,
+    dst_org: &str,
+    app: &str,
+) -> Result<()> {
+    anyhow::ensure!(
+        !state.config.reconciler_url.is_empty(),
+        "reconciler URL not configured — cannot migrate a stateful app's data"
+    );
+    let url = format!(
+        "{}/api/move/{phase}",
+        state.config.reconciler_url.trim_end_matches('/')
+    );
+    let resp = state
+        .http
+        .post(&url)
+        .json(&serde_json::json!({ "src_org": src_org, "dst_org": dst_org, "app": app }))
+        .send()
+        .await
+        .with_context(|| format!("calling reconciler move {phase}"))?;
+    let ok = resp.status().is_success();
+    let body = resp.text().await.unwrap_or_default();
+    anyhow::ensure!(ok, "reconciler move {phase} failed: {body}");
+    Ok(())
+}
+
 /// `POST /api/projects/{org}/rename` — rename a project (platform admin). The
 /// project name prefixes every app's container/volume/DB, so this refreezes the
 /// whole project, flips `projects.yaml` + the ops `project.yaml`, then migrates

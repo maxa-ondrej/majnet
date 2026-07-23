@@ -252,6 +252,124 @@ pub async fn project_commit(
     Ok(done)
 }
 
+// ── Move an app between projects (ADR 0025) ────────────────────────────────
+// A move is a cross-project data-prefix rename: the app name is unchanged, the
+// project (= org) changes. Reuses `migrate_stack` on the project axis. The
+// freeze is registered in BOTH project scopes: under the destination so
+// convergence doesn't create an empty new stack from the dest render, and under
+// the source so GC doesn't remove the still-serving old stack before migration.
+
+/// Freeze the move for every class the app is deployed in (read from the SOURCE
+/// env branches, before any flip). Returns the frozen classes.
+pub async fn move_prepare(
+    state: &AppState,
+    src_org: &str,
+    dst_org: &str,
+    app: &str,
+) -> Result<Vec<String>> {
+    let src_project = resolve_project(state, src_org).await?;
+    let dst_project = resolve_project(state, dst_org).await?;
+    anyhow::ensure!(
+        src_project != dst_project,
+        "source and destination projects are the same ({src_project})"
+    );
+    let mut classes = Vec::new();
+    for class in EnvClass::ALL {
+        let Some(snap) = crate::snapshot::fetch(
+            &state.http,
+            &state.config,
+            src_org,
+            "ops",
+            &class.env_branch(),
+        )
+        .await?
+        else {
+            continue;
+        };
+        if snap.files.contains_key(&format!("{app}.yaml")) {
+            // Skip creating the destination stack, and skip GC'ing the source one.
+            state
+                .store
+                .rename_add_pending(&dst_project, app, app, class.as_str())?;
+            state
+                .store
+                .rename_add_pending(&src_project, app, app, class.as_str())?;
+            classes.push(class.as_str().to_string());
+        }
+    }
+    Ok(classes)
+}
+
+/// Migrate the app's data (volumes + DB) from the source project's prefix to the
+/// destination's, for every frozen class, then clear both freezes. Runs after
+/// both projects' env branches have flipped — it reads the *destination* env
+/// branch for the (unchanged-name) manifest.
+pub async fn move_commit(
+    state: &AppState,
+    src_org: &str,
+    dst_org: &str,
+    app: &str,
+) -> Result<Vec<String>> {
+    let src_project = resolve_project(state, src_org).await?;
+    let dst_project = resolve_project(state, dst_org).await?;
+    let platform = crate::snapshot::fetch(
+        &state.http,
+        &state.config,
+        &state.config.root_org,
+        "platform",
+        "main",
+    )
+    .await?
+    .context("platform snapshot unavailable")?;
+    let nodes = NodesFile::parse(platform.files.get("nodes.yaml").context("no nodes.yaml")?)?;
+
+    let mut done = Vec::new();
+    for class in EnvClass::ALL {
+        // Frozen for this move? (the destination-scoped freeze is the checkpoint)
+        if !state
+            .store
+            .renames_pending(&dst_project, class.as_str())?
+            .iter()
+            .any(|(o, n)| o == app && n == app)
+        {
+            continue;
+        }
+        // Read the manifest from the DESTINATION env branch (post-render).
+        migrate_stack(
+            state,
+            &nodes,
+            dst_org,
+            &src_project,
+            app,
+            &dst_project,
+            app,
+            class,
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "moving {src_project}/{app} → {dst_project} ({})",
+                class.as_str()
+            )
+        })?;
+        state
+            .store
+            .rename_complete(&dst_project, app, class.as_str())?;
+        state
+            .store
+            .rename_complete(&src_project, app, class.as_str())?;
+        state.store.record(
+            "imperative-move",
+            &dst_project,
+            "",
+            &format!("move {app} {src_project}→{dst_project}"),
+            class.as_str(),
+        )?;
+        done.push(class.as_str().to_string());
+    }
+    Ok(done)
+}
+
 /// Copy a named Docker volume's contents into another (created if absent) via a
 /// throwaway helper — the same busybox pattern as the metrics host probe.
 async fn copy_volume(docker: &Docker, from: &str, to: &str) -> Result<()> {

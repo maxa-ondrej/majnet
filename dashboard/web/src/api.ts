@@ -319,6 +319,8 @@ export const urls = {
     `${RECON}/restart/${encodeURIComponent(org)}/${encodeURIComponent(cls)}/${encodeURIComponent(app)}`,
   appRename: (org: string, app: string) =>
     `${BOT}/apps/${encodeURIComponent(org)}/${encodeURIComponent(app)}/rename`,
+  appMove: (org: string, app: string) =>
+    `${BOT}/apps/${encodeURIComponent(org)}/${encodeURIComponent(app)}/move`,
   projectRename: (org: string) => `${BOT}/projects/${encodeURIComponent(org)}/rename`,
   appArchive: (org: string, app: string) =>
     `${BOT}/apps/${encodeURIComponent(org)}/${encodeURIComponent(app)}/archive`,

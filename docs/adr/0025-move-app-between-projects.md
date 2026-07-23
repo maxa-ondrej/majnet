@@ -1,6 +1,6 @@
 # 0025 — Move an app/service between projects
 
-**Status:** proposed (pre-implementation) · **Date:** 2026-07-23 · relates to [0009](0009-shared-versioning.md), [0010](0010-app-migration-from-external-paas.md), [0018](0018-monorepo-support.md), [0019](0019-network-aliases.md); builds on the app/project **rename** feature
+**Status:** accepted · **Date:** 2026-07-23 · relates to [0009](0009-shared-versioning.md), [0010](0010-app-migration-from-external-paas.md), [0018](0018-monorepo-support.md), [0019](0019-network-aliases.md); builds on the app/project **rename** feature
 
 ## Context
 
