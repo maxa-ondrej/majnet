@@ -936,7 +936,7 @@ function ManifestEditor({ org, app, files, env, classes, seedDigest }: {
     }
     // Base scope emits a full manifest; env scope emits a sparse overlay (only the
     // overridden keys), preserving any unmanaged keys already in the file.
-    const json = scope === 'base' ? toManifest(draft, 'base.yaml', app) : toOverlay(draft, overridden, files[file]?.data)
+    const json = scope === 'base' ? toManifest(draft, 'base.yaml', app, files['base.yaml']?.data) : toOverlay(draft, overridden, files[file]?.data)
     msgs.push(await send(urls.manifestFile(org, app, file), mode === 'form'
       ? { method: 'PUT', json }
       : { method: 'PUT', body: yaml }))

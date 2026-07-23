@@ -25,6 +25,10 @@ export interface ManifestDraft {
   volumes: [string, string][]
   replicas: string
   resources: { on: boolean; memory: string; cpus: string }
+  /** Opt into OpenTelemetry (ADR 0023). */
+  otel: boolean
+  /** Container ports published on the node's WireGuard IP (cross-node reach). */
+  wgPorts: string[]
 }
 
 type Rec = Record<string, unknown>
@@ -33,7 +37,7 @@ const str = (v: unknown, d = '') => (v == null ? d : String(v))
 
 // Top-level manifest keys the form knows how to edit. Anything else in an overlay
 // (otel, wg_ports, network aliases, depends_on, …) is preserved verbatim on save.
-export const MANAGED_KEYS = ['name', 'image', 'digest', 'tag', 'ingress', 'health', 'database', 'env', 'secrets', 'migration', 'volumes', 'replicas', 'resources'] as const
+export const MANAGED_KEYS = ['name', 'image', 'digest', 'tag', 'ingress', 'health', 'database', 'env', 'secrets', 'migration', 'volumes', 'replicas', 'resources', 'otel', 'wg_ports'] as const
 
 export function fromData(data: unknown): ManifestDraft {
   const d = asRec(data)
@@ -55,6 +59,8 @@ export function fromData(data: unknown): ManifestDraft {
       : [],
     replicas: str(d.replicas, '1'),
     resources: { on: !!d.resources, memory: str(res.memory), cpus: str(res.cpus) },
+    otel: !!d.otel,
+    wgPorts: Array.isArray(d.wg_ports) ? d.wg_ports.map(String) : [],
   }
 }
 
@@ -81,10 +87,14 @@ const emitResources = (d: ManifestDraft): Rec => {
   if (cpus) res.cpus = cpus
   return res
 }
+const emitWgPorts = (d: ManifestDraft) => d.wgPorts.map((p) => Number(p)).filter((p) => Number.isInteger(p) && p > 0 && p <= 65535)
 const hasSecrets = (sec: unknown) => (Array.isArray(sec) ? sec.length > 0 : !!sec && typeof sec === 'object' && Object.keys(sec).length > 0)
 
-export function toManifest(d: ManifestDraft, file: string, app: string): Rec {
+export function toManifest(d: ManifestDraft, file: string, app: string, raw?: unknown): Rec {
   const out: Rec = {}
+  // Preserve any key the form doesn't manage (future schema fields) verbatim.
+  const managed = new Set<string>(MANAGED_KEYS)
+  for (const [k, v] of Object.entries(asRec(raw))) if (!managed.has(k)) out[k] = v
   if (file === 'base.yaml') out.name = app // identity = directory
   if (d.image.trim()) out.image = d.image.trim()
   // Split pin (env-specific): the bare-repo `image` lives in base, the digest/tag
@@ -110,6 +120,9 @@ export function toManifest(d: ManifestDraft, file: string, app: string): Rec {
     const res = emitResources(d)
     if (Object.keys(res).length) out.resources = res
   }
+  if (d.otel) out.otel = true
+  const wg = emitWgPorts(d)
+  if (wg.length) out.wg_ports = wg
   return out
 }
 
@@ -136,6 +149,8 @@ export function toOverlay(d: ManifestDraft, overridden: Set<string>, raw: unknow
   if (has('volumes')) { const v = emitVolumes(d); if (v.length) out.volumes = v }
   if (has('replicas')) { const r = Number(d.replicas); if (Number.isFinite(r) && r >= 1) out.replicas = r }
   if (has('resources')) { const res = emitResources(d); if (Object.keys(res).length) out.resources = res }
+  if (has('otel')) out.otel = d.otel // explicit false overrides an inherited true
+  if (has('wg_ports')) { const wg = emitWgPorts(d); if (wg.length) out.wg_ports = wg }
   return out
 }
 
@@ -253,10 +268,7 @@ export function ManifestForm({ file, draft, onChange }: { file: string; draft: M
           ? 'Env-unspecific repository (or a full digest-pinned ref). Each class overlay supplies its own digest below.'
           : 'Optional per-class repository override — usually blank (inherits base); this env’s pin goes in Digest.'}</span>
       </Fld>
-      <div className="grid gap-2.5 sm:grid-cols-2">
-        <Fld label="Digest — this env’s pin"><Input value={draft.digest} placeholder="sha256:…" onChange={(e) => set('digest', e.target.value)} /></Fld>
-        <Fld label="Tag — optional (digest preferred, §5)"><Input value={draft.tag} placeholder="v1.2.3" onChange={(e) => set('tag', e.target.value)} /></Fld>
-      </div>
+      <Fld label="Digest — optional (env-specific pins live in each overlay)"><Input value={draft.digest} placeholder="sha256:…" onChange={(e) => set('digest', e.target.value)} /></Fld>
 
       <Section label="Ingress" on={draft.ingress.on} onToggle={(on) => set('ingress', { ...draft.ingress, on })}>
         <IngressBody v={draft.ingress} onChange={(v) => set('ingress', v)} />
@@ -291,6 +303,18 @@ export function ManifestForm({ file, draft, onChange }: { file: string; draft: M
       <Section label="Migration" on={draft.migration.on} onToggle={(on) => set('migration', { ...draft.migration, on })}>
         <MigrationBody v={draft.migration} onChange={(v) => set('migration', v)} />
       </Section>
+
+      <div className="flex flex-col gap-2.5 rounded-lg border p-3">
+        <label className="flex items-center gap-2 text-sm font-medium">
+          <Checkbox checked={draft.otel} onCheckedChange={(v) => set('otel', !!v)} /> OpenTelemetry
+        </label>
+        <span className="text-xs text-muted-foreground">Inject the OTLP endpoint + resource attributes so the app emits traces &amp; logs (ADR 0023). Inert until a collector is configured.</span>
+      </div>
+
+      <Fld label="WireGuard published ports">
+        <ListEditor values={draft.wgPorts} placeholder="4317" onChange={(wgPorts) => set('wgPorts', wgPorts)} />
+        <span className="text-xs text-muted-foreground">Container ports bound to the node’s WireGuard IP for cross-node reach (e.g. an OTLP collector). Requires replicas 1. Empty = none.</span>
+      </Fld>
     </div>
   )
 }
@@ -359,11 +383,6 @@ export function OverlayForm({ cls, base, draft, overridden, onChange }: {
         onOverride={() => override('image', { image: base.image })} onRevert={() => revert('image')}>
         <Input value={draft.image} placeholder="ghcr.io/org/app" onChange={(e) => setField('image', e.target.value)} />
         <span className="text-xs text-muted-foreground">Usually inherited — override only for a per-env repository.</span>
-      </OverrideRow>
-
-      <OverrideRow label="Tag" active={ov('tag')} preview={base.tag}
-        onOverride={() => override('tag', { tag: base.tag })} onRevert={() => revert('tag')}>
-        <Input value={draft.tag} placeholder="v1.2.3" onChange={(e) => setField('tag', e.target.value)} />
       </OverrideRow>
 
       <OverrideRow label="Ingress" active={ov('ingress')}
@@ -435,6 +454,16 @@ export function OverlayForm({ cls, base, draft, overridden, onChange }: {
         preview={previewSection(base.migration.on, base.migration.command.join(' '))}
         onOverride={() => override('migration', { migration: { ...base.migration, on: true } })} onRevert={() => revert('migration')}>
         <MigrationBody v={draft.migration} onChange={(v) => setField('migration', { ...v, on: true })} />
+      </OverrideRow>
+
+      <OverrideRow label="OpenTelemetry" active={ov('otel')} preview={base.otel ? 'on' : 'off'}
+        onOverride={() => override('otel', { otel: base.otel })} onRevert={() => revert('otel')}>
+        <label className="flex items-center gap-2 text-sm"><Checkbox checked={draft.otel} onCheckedChange={(v) => setField('otel', !!v)} /> Emit traces &amp; logs for {cls}</label>
+      </OverrideRow>
+
+      <OverrideRow label="WireGuard published ports" active={ov('wg_ports')} preview={base.wgPorts.join(', ')}
+        onOverride={() => override('wg_ports', { wgPorts: base.wgPorts.length ? base.wgPorts : [''] })} onRevert={() => revert('wg_ports')}>
+        <ListEditor values={draft.wgPorts} placeholder="4317" onChange={(wgPorts) => setField('wgPorts', wgPorts)} />
       </OverrideRow>
     </div>
   )

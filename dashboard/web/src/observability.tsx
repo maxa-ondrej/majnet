@@ -9,7 +9,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { ENV_CLASSES } from './env'
+import { ENV_CLASSES, setEnv, useEnv, type EnvClass } from './env'
 
 // Environment order for class pickers; filtered to the classes an app declares.
 const orderClasses = (classes: string[]): string[] => ENV_CLASSES.filter((c) => classes.includes(c))
@@ -248,9 +248,9 @@ export function ProjectObservability({ org, apps, containersFor }: {
   const [appName, setAppName] = useState(otelApps[0]?.name ?? '')
   const current = otelApps.find((a) => a.name === appName) ?? otelApps[0]
   const classes = current ? orderClasses(current.classes) : []
-  const [cls, setCls] = useState(classes[0] ?? '')
-  // Keep the class valid when the selected app changes (or on first render).
-  const env = classes.includes(cls) ? cls : (classes[0] ?? '')
+  // Class follows the global env store; clamp to a class the selected app has.
+  const selected = useEnv()
+  const env = classes.includes(selected) ? selected : (classes[0] ?? '')
 
   if (!current || !env) return null
 
@@ -263,7 +263,7 @@ export function ProjectObservability({ org, apps, containersFor }: {
         </SelectContent>
       </Select>
       {classes.length > 1 && (
-        <Select value={env} onValueChange={setCls}>
+        <Select value={env} onValueChange={(v) => setEnv(v as EnvClass)}>
           <SelectTrigger className="h-8 w-32 text-[13px]"><SelectValue /></SelectTrigger>
           <SelectContent>
             {classes.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
