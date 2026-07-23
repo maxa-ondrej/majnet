@@ -6,7 +6,6 @@ import { getJSON, parseAt, urls, useApps, useDeployProgress, useEvents, useProje
 import { ENV_CLASSES, setEnv, useEnv, type EnvClass } from './env'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
 function Count({ children }: { children: ReactNode }) {
   return (
@@ -295,38 +294,40 @@ function Releases() {
 }
 
 // Context environment selector — on an app-detail route it picks the environment
-// every section follows, stored in `?env=` (one source of truth). Renders nothing
-// on other routes. Lives in the global top bar, alongside Releases & Deployments.
+// every section follows (the global `useEnv` store, one source of truth). A
+// segmented tab strip over all four classes; not-onboarded ones are dimmed and
+// prefixed `+` (picking one drops Configuration into its "Add {env}" flow).
+// Renders nothing off app routes. Lives on the left of the global top bar.
 function EnvSelector() {
   const { org, app } = useParams({ strict: false }) as { org?: string; app?: string }
   const env = useEnv()
   const apps = useApps(org ?? '')
   const a = apps.data?.find((x) => x.name === app)
   if (!org || !app || !a) return null
-  // Show all classes (not just this app's) so a not-onboarded env is still
-  // selectable — picking it drops Configuration into its "Add {env}" flow.
-  const onboarded = (c: string) => a.classes.includes(c)
   return (
-    <Select value={env} onValueChange={(v) => setEnv(v as EnvClass)}>
-      <SelectTrigger className="h-8 w-[152px] gap-1.5 text-[13px]" aria-label="Environment">
-        <span className="text-muted-foreground">env</span><SelectValue />
-      </SelectTrigger>
-      <SelectContent align="end">
-        {ENV_CLASSES.map((c) => (
-          <SelectItem key={c} value={c}>
-            <span className={onboarded(c) ? '' : 'text-muted-foreground'}>{c}</span>
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+    <div className="inline-flex items-center gap-0.5 rounded-lg bg-muted p-0.5" role="tablist" aria-label="Environment">
+      {ENV_CLASSES.map((c) => {
+        const active = env === c
+        const onboarded = a.classes.includes(c)
+        return (
+          <button key={c} type="button" role="tab" aria-selected={active} onClick={() => setEnv(c)}
+            className={`rounded-md px-2.5 py-1 text-[13px] font-medium transition-colors ${
+              active ? 'bg-primary text-primary-foreground shadow-sm'
+                : onboarded ? 'text-muted-foreground hover:text-foreground'
+                  : 'text-muted-foreground/50 hover:text-muted-foreground'}`}>
+            {onboarded || active ? c : `+ ${c}`}
+          </button>
+        )
+      })}
+    </div>
   )
 }
 
 export function TopBar() {
   return (
     <header className="sticky top-0 z-20 flex h-12 items-center gap-1.5 border-b bg-background/80 px-4 backdrop-blur md:px-6">
-      <div className="flex-1" />
       <EnvSelector />
+      <div className="flex-1" />
       <Releases />
       <Deployments />
       <Notifications />
