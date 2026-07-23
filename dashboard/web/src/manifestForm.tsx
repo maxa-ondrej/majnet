@@ -213,7 +213,21 @@ function Fld({ label, children }: { label: string; children: ReactNode }) {
 const ENGINES = ['postgres', 'mariadb', 'valkey', 'mongodb']
 
 // ── shared section bodies (used by both the base form and the overlay form) ────
-function IngressBody({ v, onChange }: { v: ManifestDraft['ingress']; onChange: (v: ManifestDraft['ingress']) => void }) {
+function IngressBody({ v, onChange, autoHost }: { v: ManifestDraft['ingress']; onChange: (v: ManifestDraft['ingress']) => void; autoHost?: string }) {
+  // testing/ephemeral always get an auto-assigned tailnet host (ADR 0013) — the
+  // domain is fixed + tailnet-only, so show it read-only and hide custom-domain
+  // + public-tunnel controls (only the port is configurable).
+  if (autoHost) {
+    return (
+      <>
+        <div className="grid gap-2.5 sm:grid-cols-2">
+          <Fld label="Domain — auto-assigned"><Input value={autoHost} readOnly disabled className="opacity-70" /></Fld>
+          <Fld label="Container port"><Input type="number" value={v.port} onChange={(e) => onChange({ ...v, port: e.target.value })} /></Fld>
+        </div>
+        <span className="text-xs text-muted-foreground">This environment always gets the auto-assigned tailnet host <code className="font-mono">{autoHost}</code> — a custom domain isn’t configurable here.</span>
+      </>
+    )
+  }
   return (
     <>
       <div className="grid gap-2.5 sm:grid-cols-2">
@@ -352,12 +366,15 @@ function OverrideRow({ label, active, preview, onOverride, onRevert, children }:
 
 const previewSection = (on: boolean, summary: string) => (on ? summary : 'disabled')
 
-export function OverlayForm({ cls, base, draft, overridden, onChange }: {
+export function OverlayForm({ cls, base, draft, overridden, onChange, autoHost }: {
   cls: string
   base: ManifestDraft
   draft: ManifestDraft
   overridden: Set<string>
   onChange: (draft: ManifestDraft, overridden: Set<string>) => void
+  /** For classes with an auto-assigned host (testing/ephemeral): the fixed host
+   *  to show read-only in the ingress editor instead of a custom-domain input. */
+  autoHost?: string
 }) {
   const setField = <K extends keyof ManifestDraft>(k: K, v: ManifestDraft[K]) => onChange({ ...draft, [k]: v }, overridden)
   const override = (k: string, patch: Partial<ManifestDraft>) => onChange({ ...draft, ...patch }, new Set(overridden).add(k))
@@ -393,7 +410,7 @@ export function OverlayForm({ cls, base, draft, overridden, onChange }: {
       <OverrideRow label="Ingress" active={ov('ingress')}
         preview={previewSection(base.ingress.on, `${base.ingress.host || 'auto host'} :${base.ingress.port}`)}
         onOverride={() => override('ingress', { ingress: { ...base.ingress, on: true } })} onRevert={() => revert('ingress')}>
-        <IngressBody v={draft.ingress} onChange={(v) => setField('ingress', { ...v, on: true })} />
+        <IngressBody v={draft.ingress} autoHost={autoHost} onChange={(v) => setField('ingress', { ...v, on: true })} />
       </OverrideRow>
 
       <OverrideRow label="Replicas" active={ov('replicas')} preview={base.replicas}

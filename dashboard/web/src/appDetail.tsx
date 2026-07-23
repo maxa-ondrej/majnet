@@ -87,17 +87,29 @@ function useAppView() {
 
 const digestShort = (img?: string) => img?.split('@sha256:')[1]?.slice(0, 7) ?? null
 
-/** The public hostnames the manifest declares for `env` — the class overlay's
- *  ingress host + domains, falling back to base's (overlay wins; the domains
- *  sequence replaces). Auto-assigned non-prod tailnet hosts aren't in the
- *  authored manifest, so they don't appear here. */
-function envHosts(files: Record<string, ManifestFile> | undefined, env: string): string[] {
+// Platform base domain for auto-assigned non-prod ingress hosts (ADR 0013).
+const BASE_DOMAIN = 'majksa.net'
+
+/** The auto-assigned tailnet host for classes that never take a custom domain —
+ *  testing/ephemeral always auto-assign `<app>.<project>.<base_domain>`. */
+function autoHostFor(env: string, app: string, project?: string): string | undefined {
+  if (!project || (env !== 'testing' && env !== 'ephemeral')) return undefined
+  return `${app}.${project}.${BASE_DOMAIN}`
+}
+
+/** The public hostnames shown for `env` — the class overlay's declared ingress
+ *  host + domains (overlay wins over base; the domains sequence replaces), else
+ *  the auto-assigned tailnet host for testing/ephemeral. */
+function envHosts(files: Record<string, ManifestFile> | undefined, env: string, app: string, project?: string): string[] {
   const ing = (f?: ManifestFile) => (f?.data as { ingress?: { host?: string; domains?: string[] } } | null)?.ingress
   const base = ing(files?.['base.yaml'])
   const ov = ing(files?.[`${env}.yaml`])
   const host = ov?.host ?? base?.host
   const domains = ov?.domains ?? base?.domains ?? []
-  return [host, ...domains].filter((x): x is string => !!x)
+  const declared = [host, ...domains].filter((x): x is string => !!x)
+  if (declared.length) return declared
+  const auto = autoHostFor(env, app, project)
+  return auto ? [auto] : []
 }
 
 // The app-detail sections, as a tab bar over nested routes. Releases lives in the
@@ -238,7 +250,7 @@ export function AppOverview() {
           app={app} env={env} org={org} isAdmin={isAdmin}
           containers={containersFor(env)}
           version={versionFor(env)}
-          domains={envHosts(manifest.data, env)}
+          domains={envHosts(manifest.data, env, app, project)}
           adminerUrl={env === 'production' ? adminerUrl : null}
           onLogs={() => setLogsOpen(true)}
           restart={() => act.mutate(() => send(urls.restart(org, env, app)))} busy={act.isPending}
@@ -347,7 +359,7 @@ const parseDigest = (img?: string) => { const d = img?.split('@')[1]; return d?.
 const digestOf = (f?: ManifestFile) => (f?.data as { digest?: string } | null)?.digest
 
 export function AppConfiguration() {
-  const { org, app, rawEnv, classes } = useAppView()
+  const { org, app, project, rawEnv, classes } = useAppView()
   const imports = useImports(org)
   const imp = imports.data?.find((x) => x.app === app)
   const manifest = useManifest(org, app)
@@ -360,7 +372,7 @@ export function AppConfiguration() {
     <>
       <SectionHead title="Configuration" hint="shared base + per-environment overrides" />
       <QueryState isLoading={manifest.isLoading} error={imp && !manifest.data ? undefined : manifest.error}>
-        {files && <ManifestEditor org={org} app={app} files={files} env={rawEnv} classes={classes} seedDigest={seedDigest} />}
+        {files && <ManifestEditor org={org} app={app} project={project} files={files} env={rawEnv} classes={classes} seedDigest={seedDigest} />}
       </QueryState>
     </>
   )
@@ -896,8 +908,8 @@ function LogsView({ org, app, cls }: { org: string; app: string; cls: string }) 
 
 // ── manifest editor: Base/{env} scope toggle + merged inheritance form + secrets ─
 type Row = { key: string; value: string }
-function ManifestEditor({ org, app, files, env, classes, seedDigest }: {
-  org: string; app: string; files: Record<string, ManifestFile>
+function ManifestEditor({ org, app, project, files, env, classes, seedDigest }: {
+  org: string; app: string; project?: string; files: Record<string, ManifestFile>
   env: string; classes: string[]; seedDigest: string
 }) {
   const [scope, setScope] = useState<'base' | 'env'>('env')
@@ -988,6 +1000,7 @@ function ManifestEditor({ org, app, files, env, classes, seedDigest }: {
         <ManifestForm file="base.yaml" draft={draft} onChange={setDraft} />
       ) : (
         <OverlayForm cls={env} base={baseDraft} draft={draft} overridden={overridden}
+          autoHost={autoHostFor(env, app, project)}
           onChange={(d, o) => { setDraft(d); setOverridden(o) }} />
       )}
 
