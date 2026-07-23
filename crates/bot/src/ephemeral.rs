@@ -135,6 +135,23 @@ fn generate_manifest(
         preview_url = Some(format!("https://{host}"));
     }
 
+    // Per-PR host templating: the preview's own host isn't known until the PR
+    // number is (ADR 0013 auto-host), so an app's `ephemeral.yaml` refers to it
+    // as `{host}` in env values (e.g. `SERVER_URL: https://{host}/api`). Fill it
+    // in here so previews get self-consistent URLs instead of a static one.
+    if let Some(env) = map
+        .get_mut(serde_yaml::Value::from("env"))
+        .and_then(|e| e.as_mapping_mut())
+    {
+        for (_k, v) in env.iter_mut() {
+            if let Some(s) = v.as_str() {
+                if s.contains("{host}") {
+                    *v = serde_yaml::Value::from(s.replace("{host}", &host));
+                }
+            }
+        }
+    }
+
     let yaml = serde_yaml::to_string(&merged)?;
     AppManifest::parse(&yaml).context("generated ephemeral manifest invalid")?;
     Ok((yaml, preview_url))
@@ -269,6 +286,17 @@ mod tests {
         assert!(!yaml.contains("www.example.com"), "custom domains dropped");
         assert!(yaml.contains("MODE: preview"));
         assert_eq!(url.as_deref(), Some("https://api-pr12.zpevnik.majksa.net"));
+    }
+
+    #[test]
+    fn substitutes_host_placeholder_in_env() {
+        let base =
+            b"ingress:\n  port: 80\nenv:\n  SERVER_URL: https://{host}/api\n  STATIC: keep\n";
+        let image = format!("ghcr.io/o/api@{DIGEST}");
+        let (yaml, _) =
+            generate_manifest(base, b"{}\n", "proj", "majksa.net", "api", 9, &image).unwrap();
+        assert!(yaml.contains("SERVER_URL: https://api-pr9.proj.majksa.net/api"));
+        assert!(yaml.contains("STATIC: keep"));
     }
 
     #[test]
