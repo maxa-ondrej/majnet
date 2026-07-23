@@ -161,16 +161,18 @@ pub async fn converge_app(
     if ctx.dry_run {
         return Ok(format!(
             "DRY RUN: would deploy {} ({}, {replicas} replica{})",
-            manifest.image,
+            manifest.image_ref(),
             &config_hash[..8],
             if replicas == 1 { "" } else { "s" }
         ));
     }
 
     // Past the in-sync/dry-run short-circuits: this is an actual rollout, so
-    // start tracking its stages (deploy trackability).
-    tracker.stage("pulling", &manifest.image);
-    pull_image(ctx, &manifest.image).await?;
+    // start tracking its stages (deploy trackability). Resolve the effective
+    // image reference (combined `image` or bare-repo + `digest`/`tag`) once.
+    let image_ref = manifest.image_ref();
+    tracker.stage("pulling", &image_ref);
+    pull_image(ctx, &image_ref).await?;
 
     // Secrets land on the node's tmpfs before anything runs.
     let secrets_dir = crate::secrets::host_dir(ctx.project, &manifest.name, ctx.class);
@@ -186,14 +188,14 @@ pub async fn converge_app(
     // Migrations: one-shot, must exit 0 before the rollout (§12.6). Runs in its
     // own image when the manifest gives one (ADR 0009), else the app image.
     if let Some(migration) = &manifest.migration {
-        tracker.stage("migrating", migration.image(&manifest.image));
+        tracker.stage("migrating", migration.image(&image_ref));
         run_migration(
             ctx,
             manifest,
             secrets.is_some(),
             &secrets_dir,
             extra_env,
-            migration.image(&manifest.image),
+            migration.image(&image_ref),
             &migration.command,
         )
         .await?;
@@ -286,7 +288,7 @@ pub async fn converge_app(
     }
     Ok(format!(
         "deployed {} ({}, {replicas} replica{})",
-        manifest.image,
+        image_ref,
         &config_hash[..8],
         if replicas == 1 { "" } else { "s" }
     ))
@@ -506,7 +508,7 @@ fn container_spec(
     let (exposed_ports, port_bindings) = wg_port_bindings(&manifest.wg_ports, ctx.wireguard_ip);
 
     ContainerCreateBody {
-        image: Some(manifest.image.clone()),
+        image: Some(manifest.image_ref()),
         env: Some(env_list(manifest, extra_env)),
         labels: Some(labels),
         healthcheck: health,
@@ -577,7 +579,7 @@ async fn run_migration(
     remove_container_if_exists(ctx.docker, &name).await?;
 
     // The app image was already pulled; a distinct migration image needs its own.
-    if image != manifest.image {
+    if image != manifest.image_ref() {
         pull_image(ctx, image).await?;
     }
 

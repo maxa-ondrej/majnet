@@ -12,8 +12,22 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct AppManifest {
     pub name: String,
-    /// Image pinned by digest (`ghcr.io/<org>/<app>@sha256:...`). Tags are not allowed.
+    /// Container image. Either a full pinned reference (`ghcr.io/<org>/<app>@sha256:…`)
+    /// — the original single-field form — or a bare repository (`ghcr.io/<org>/<app>`)
+    /// paired with a `digest` (or `tag`). The bare-repo form lets `base.yaml` carry
+    /// the env-unspecific repository while each class overlay carries its own
+    /// env-specific pin. Resolve the effective reference with [`Self::image_ref`].
     pub image: String,
+    /// Env-specific digest pin (`sha256:…`) for a bare-repo `image`. Skipped when
+    /// empty so existing combined-`image` manifests serialize identically (no
+    /// `config_hash` change / fleet recycle).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
+    /// Env-specific tag for a bare-repo `image` (used only when `digest` is unset;
+    /// note §5 requires digest-pinning, so a tag alone fails validation — kept for
+    /// forward flexibility). Skipped when empty (byte-compat).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
     #[serde(default)]
     pub env: std::collections::BTreeMap<String, String>,
     /// Secrets delivered to the container as tmpfs files at `/run/secrets/<KEY>`
@@ -241,6 +255,31 @@ impl Ingress {
     }
 }
 
+/// Whether an image string already carries a pin — a `@digest` or a `:tag` on
+/// its last path segment (a `:` in a registry host like `host:5000/repo` is not
+/// a tag). A bare repo (no pin) draws its pin from the `digest`/`tag` fields.
+pub fn image_has_pin(image: &str) -> bool {
+    image.contains('@') || image.rsplit('/').next().unwrap_or(image).contains(':')
+}
+
+/// The full image reference to pull/deploy: the `image` field if it already
+/// carries a pin, otherwise the bare repo joined with the split `digest` (or
+/// `tag`) field. This is the single source of truth every consumer uses so the
+/// combined and split forms are interchangeable.
+impl AppManifest {
+    pub fn image_ref(&self) -> String {
+        if image_has_pin(&self.image) {
+            self.image.clone()
+        } else if let Some(d) = &self.digest {
+            format!("{}@{}", self.image, d)
+        } else if let Some(t) = &self.tag {
+            format!("{}:{}", self.image, t)
+        } else {
+            self.image.clone() // unpinned — rejected by validate()
+        }
+    }
+}
+
 /// Enforce `repo@sha256:<64 hex>` — images are pinned by digest, never by tag
 /// (§5).
 pub fn validate_digest_pinned(image: &str) -> Result<()> {
@@ -322,8 +361,10 @@ impl AppManifest {
             "app name '{}' must be lowercase alphanumeric/hyphens (DNS label)",
             self.name
         );
-        // Images are pinned by digest, never by tag (§5 decision log).
-        validate_digest_pinned(&self.image)?;
+        // Images are pinned by digest, never by tag (§5 decision log). Validated
+        // on the *effective* reference so the combined (`image: repo@digest`) and
+        // split (`image: repo` + `digest:`) forms are held to the same rule.
+        validate_digest_pinned(&self.image_ref())?;
         if let Some(ingress) = &self.ingress {
             for host in ingress.hosts() {
                 ensure!(
@@ -500,6 +541,27 @@ mod tests {
             ingress.hosts(),
             vec!["app.majksa.cz", "www.majksa.cz", "app.majksa.net"]
         );
+    }
+
+    #[test]
+    fn image_ref_handles_combined_and_split_forms() {
+        // Combined form: passed through unchanged.
+        let m = AppManifest::parse(&format!("name: api\nimage: ghcr.io/o/api@{DIGEST}\n")).unwrap();
+        assert_eq!(m.image_ref(), format!("ghcr.io/o/api@{DIGEST}"));
+        assert!(m.digest.is_none());
+        // Split form: bare repo + digest reconstructs to the pinned reference.
+        let s = AppManifest::parse(&format!(
+            "name: api\nimage: ghcr.io/o/api\ndigest: {DIGEST}\n"
+        ))
+        .unwrap();
+        assert_eq!(s.image_ref(), format!("ghcr.io/o/api@{DIGEST}"));
+        // A registry port in the repo is not mistaken for a tag.
+        assert!(!super::image_has_pin("registry.example.com:5000/o/api"));
+        assert!(super::image_has_pin("ghcr.io/o/api:v1"));
+        // A tag-only split still fails §5 digest-pinning.
+        assert!(AppManifest::parse("name: api\nimage: ghcr.io/o/api\ntag: v1\n").is_err());
+        // Byte-compat: a combined manifest never serializes digest/tag keys.
+        assert!(!serde_yaml::to_string(&m).unwrap().contains("digest:"));
     }
 
     #[test]
