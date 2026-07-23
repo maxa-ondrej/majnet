@@ -146,6 +146,7 @@ pub async fn purge_project(state: &AppState, org: &str) -> Result<Vec<String>> {
             continue;
         };
         for name in [
+            format!("proj-{project}-tunnel"),
             format!("proj-{project}-ingress"),
             format!("proj-{project}-tailscale"),
         ] {

@@ -302,6 +302,15 @@ struct ApiError {
 pub struct Zone {
     pub id: String,
     pub name: String,
+    /// The account that owns this zone. Cloudflare Tunnels are account-scoped, so
+    /// this is how the bot derives the account id without extra config (ADR 0026).
+    #[serde(default)]
+    pub account: ZoneAccount,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ZoneAccount {
+    pub id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -372,6 +381,28 @@ impl Cloudflare {
     /// proxy to a tailnet address, and we want the tailnet resolver to follow
     /// the target directly.
     pub async fn ensure_dns_cname(&self, zone: &Zone, name: &str, target: &str) -> Result<()> {
+        self.ensure_cname(zone, name, target, false).await
+    }
+
+    /// Ensure a **proxied** CNAME `name → target` (create or update). Used for a
+    /// Cloudflare Tunnel public hostname, whose record must point at
+    /// `<tunnel-id>.cfargotunnel.com` and be proxied (ADR 0026).
+    pub async fn ensure_dns_cname_proxied(
+        &self,
+        zone: &Zone,
+        name: &str,
+        target: &str,
+    ) -> Result<()> {
+        self.ensure_cname(zone, name, target, true).await
+    }
+
+    async fn ensure_cname(
+        &self,
+        zone: &Zone,
+        name: &str,
+        target: &str,
+        proxied: bool,
+    ) -> Result<()> {
         let existing: Vec<DnsRecord> = self
             .get(&format!(
                 "/zones/{}/dns_records?type=CNAME&name={name}",
@@ -380,10 +411,10 @@ impl Cloudflare {
             .await
             .context("listing CNAME records")?;
         let body = serde_json::json!({
-            "type": "CNAME", "name": name, "content": target, "proxied": false, "ttl": 1
+            "type": "CNAME", "name": name, "content": target, "proxied": proxied, "ttl": 1
         });
         match existing.first() {
-            Some(rec) if rec.content == target && !rec.proxied => Ok(()),
+            Some(rec) if rec.content == target && rec.proxied == proxied => Ok(()),
             Some(rec) => self
                 .send(
                     reqwest::Method::PATCH,
@@ -499,6 +530,123 @@ impl Cloudflare {
         let _: serde_json::Value = unwrap_envelope(req.send().await?).await?;
         Ok(())
     }
+
+    /// Send a request and deserialize the result envelope body.
+    async fn request_json<T: serde::de::DeserializeOwned>(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> Result<T> {
+        let mut req = self
+            .http
+            .request(method, format!("{API}{path}"))
+            .bearer_auth(&self.token);
+        if let Some(body) = body {
+            req = req.json(&body);
+        }
+        unwrap_envelope(req.send().await?).await
+    }
+
+    // ── Cloudflare Tunnel (ADR 0026) ─────────────────────────────────────────
+    /// Provision a public tunnel named `tunnel_name` routing every `hosts` entry
+    /// to the project's Traefik, and point each host's DNS at it. Returns the
+    /// tunnel token for the reconciler to run `cloudflared` with. Idempotent.
+    pub async fn provision_tunnel(&self, tunnel_name: &str, hosts: &[String]) -> Result<String> {
+        anyhow::ensure!(
+            !hosts.is_empty(),
+            "no public hosts to route through the tunnel"
+        );
+        // Tunnels are account-scoped; derive the account from the first host's zone.
+        let first_zone = self.zone_for(&hosts[0]).await?;
+        let account_id = &first_zone.account.id;
+        anyhow::ensure!(
+            !account_id.is_empty(),
+            "Cloudflare zone '{}' returned no account id (token needs Account read + Cloudflare Tunnel edit)",
+            first_zone.name
+        );
+        let (tunnel_id, token) = self.ensure_tunnel(account_id, tunnel_name).await?;
+        let host_refs: Vec<&str> = hosts.iter().map(String::as_str).collect();
+        self.configure_tunnel(account_id, &tunnel_id, &host_refs)
+            .await?;
+        let target = format!("{tunnel_id}.cfargotunnel.com");
+        for host in hosts {
+            let zone = self.zone_for(host).await?;
+            self.ensure_dns_cname_proxied(&zone, host, &target).await?;
+        }
+        Ok(token)
+    }
+
+    /// Find (by name) or create a remotely-managed tunnel; return `(id, token)`.
+    async fn ensure_tunnel(&self, account_id: &str, name: &str) -> Result<(String, String)> {
+        #[derive(Deserialize)]
+        struct Tunnel {
+            id: String,
+        }
+        let existing: Vec<Tunnel> = self
+            .request_json(
+                reqwest::Method::GET,
+                &format!("/accounts/{account_id}/cfd_tunnel?name={name}&is_deleted=false"),
+                None,
+            )
+            .await
+            .context("listing Cloudflare tunnels")?;
+        let id = match existing.into_iter().next() {
+            Some(t) => t.id,
+            None => {
+                let t: Tunnel = self
+                    .request_json(
+                        reqwest::Method::POST,
+                        &format!("/accounts/{account_id}/cfd_tunnel"),
+                        // `config_src: cloudflare` = remotely-managed: ingress rules
+                        // set via the API, cloudflared runs token-only.
+                        Some(serde_json::json!({ "name": name, "config_src": "cloudflare" })),
+                    )
+                    .await
+                    .context("creating Cloudflare tunnel")?;
+                t.id
+            }
+        };
+        let token: String = self
+            .request_json(
+                reqwest::Method::GET,
+                &format!("/accounts/{account_id}/cfd_tunnel/{id}/token"),
+                None,
+            )
+            .await
+            .context("fetching tunnel token")?;
+        Ok((id, token))
+    }
+
+    /// Set the tunnel's public-hostname ingress rules: every host → the project's
+    /// Traefik on loopback (TLS to a wildcard cert whose SNI won't match, so skip
+    /// verify — Cloudflare terminates real TLS at the edge and Traefik routes on
+    /// the HTTP Host header), plus a catch-all 404.
+    async fn configure_tunnel(
+        &self,
+        account_id: &str,
+        tunnel_id: &str,
+        hosts: &[&str],
+    ) -> Result<()> {
+        let mut ingress: Vec<serde_json::Value> = hosts
+            .iter()
+            .map(|h| {
+                serde_json::json!({
+                    "hostname": h,
+                    "service": "https://127.0.0.1:443",
+                    "originRequest": { "noTLSVerify": true },
+                })
+            })
+            .collect();
+        ingress.push(serde_json::json!({ "service": "http_status:404" }));
+        self.send(
+            reqwest::Method::PUT,
+            &format!("/accounts/{account_id}/cfd_tunnel/{tunnel_id}/configurations"),
+            Some(serde_json::json!({ "config": { "ingress": ingress } })),
+        )
+        .await
+        .context("configuring tunnel ingress")
+    }
 }
 
 async fn unwrap_envelope<T: serde::de::DeserializeOwned>(resp: reqwest::Response) -> Result<T> {
@@ -592,6 +740,7 @@ mod tests {
             .map(|n| Zone {
                 id: format!("id-{n}"),
                 name: n.to_string(),
+                account: ZoneAccount::default(),
             })
             .collect()
     }

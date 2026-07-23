@@ -14,6 +14,7 @@
 mod acme;
 mod authz;
 mod cloudflare;
+mod cloudflared;
 mod config;
 mod control_plane;
 mod dashboard_api;
@@ -91,6 +92,7 @@ async fn main() -> Result<()> {
         .route("/api/snapshot/{org}/{repo}/{branch}", get(proxy::snapshot))
         .route("/api/registry-auth/{org}", get(proxy::registry_auth))
         .route("/api/tailscale-authkey/{project}", post(tailscale::authkey))
+        .route("/api/cloudflare-tunnel/{project}", post(cloudflared::token))
         .route("/api/promote/{org}/{app}", post(promote::promote))
         .route("/api/rollback/{org}", post(promote::rollback))
         .route("/api/platform/seed", post(platform_api::seed))

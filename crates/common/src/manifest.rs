@@ -242,6 +242,14 @@ pub struct Ingress {
     /// (ADR 0007). The full set the router serves is `[host] + domains`.
     #[serde(default)]
     pub domains: Vec<String>,
+    /// Expose this app to the public internet via a Cloudflare Tunnel (ADR 0026).
+    /// Only meaningful for non-production classes (production is already public via
+    /// `edge-main`): the reconciler runs a `cloudflared` sidecar on the private node
+    /// that dials out to Cloudflare, so the app's `host` is reachable publicly
+    /// without opening any inbound port. Requires a `host`. Skipped when false so
+    /// existing manifests serialize byte-identically (no `config_hash` change).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub public: bool,
 }
 
 impl Ingress {
@@ -373,6 +381,10 @@ impl AppManifest {
                 );
             }
             ensure!(ingress.port != 0, "ingress port must be non-zero");
+            ensure!(
+                !ingress.public || ingress.host.is_some(),
+                "ingress.public requires a `host` (the public hostname to route via the tunnel)"
+            );
         }
         if let Some(health) = &self.health {
             ensure!(
@@ -541,6 +553,35 @@ mod tests {
             ingress.hosts(),
             vec!["app.majksa.cz", "www.majksa.cz", "app.majksa.net"]
         );
+    }
+
+    #[test]
+    fn ingress_public_requires_host() {
+        let no_host = format!(
+            "name: api\nimage: ghcr.io/org/api@{DIGEST}\ningress:\n  port: 8080\n  public: true\n"
+        );
+        assert!(AppManifest::parse(&no_host)
+            .unwrap_err()
+            .to_string()
+            .contains("requires a `host`"));
+        // With a host it parses fine.
+        let with_host = format!("name: api\nimage: ghcr.io/org/api@{DIGEST}\ningress:\n  host: dev.example.com\n  port: 8080\n  public: true\n");
+        assert!(
+            AppManifest::parse(&with_host)
+                .unwrap()
+                .ingress
+                .unwrap()
+                .public
+        );
+    }
+
+    #[test]
+    fn ingress_public_false_is_not_serialized() {
+        // Byte-compat: an ingress that never set `public` must not emit `public:`
+        // so existing manifests' config_hash is unchanged (no fleet recycle).
+        let m = AppManifest::parse(&valid()).unwrap();
+        let out = serde_yaml::to_string(&m).unwrap();
+        assert!(!out.contains("public"), "unexpected `public` in:\n{out}");
     }
 
     #[test]

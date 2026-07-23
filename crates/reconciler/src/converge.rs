@@ -124,10 +124,32 @@ async fn converge_project_class(
 
     ensure_network(&docker, project, state.config.dry_run).await?;
 
+    // Rendered env branch layout (§9): `<app>.yaml` at root, `secrets/<app>.yaml`.
+    let manifests: BTreeMap<&str, &Vec<u8>> = snapshot
+        .files
+        .iter()
+        .filter_map(|(path, content)| {
+            Some((
+                path.strip_suffix(".yaml").filter(|p| !p.contains('/'))?,
+                content,
+            ))
+        })
+        .collect();
+
     // VPN-only classes are served through the project's tailnet ingress (§7).
     // Local smoke tests have no tailnet — skip.
     if class.node_role() == "private" && !state.config.docker_local {
-        if let Err(e) = crate::ingress::ensure_ingress(state, &docker, project, platform).await {
+        // Apps opting into public exposure via a Cloudflare Tunnel (ADR 0026):
+        // their public hostnames drive the ingress's cloudflared sidecar.
+        let public_hosts: Vec<String> = manifests
+            .values()
+            .filter_map(|c| std::str::from_utf8(c).ok())
+            .filter_map(|s| AppManifest::parse(s).ok())
+            .filter_map(|m| m.ingress.filter(|i| i.public).and_then(|i| i.host))
+            .collect();
+        if let Err(e) =
+            crate::ingress::ensure_ingress(state, &docker, project, platform, &public_hosts).await
+        {
             // Ingress trouble must not block app convergence — apps still
             // deploy; access returns when the ingress recovers.
             tracing::error!(project, error = format!("{e:#}"), "ingress ensure failed");
@@ -144,18 +166,6 @@ async fn converge_project_class(
         bot_url: &state.config.bot_url,
         wireguard_ip: &node.wireguard_ip,
     };
-
-    // Rendered env branch layout (§9): `<app>.yaml` at root, `secrets/<app>.yaml`.
-    let manifests: BTreeMap<&str, &Vec<u8>> = snapshot
-        .files
-        .iter()
-        .filter_map(|(path, content)| {
-            Some((
-                path.strip_suffix(".yaml").filter(|p| !p.contains('/'))?,
-                content,
-            ))
-        })
-        .collect();
 
     // In-flight renames for this project+class: convergence + GC skip both the
     // old and new names until the data migration completes (see `rename`).

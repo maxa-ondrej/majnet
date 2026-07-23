@@ -13,7 +13,7 @@ export interface ManifestDraft {
   /** Split image pin (ADR: image = bare repo in base, digest/tag per class). */
   digest: string
   tag: string
-  ingress: { on: boolean; host: string; port: string; domains: string[] }
+  ingress: { on: boolean; host: string; port: string; domains: string[]; public: boolean }
   health: { on: boolean; path: string; port: string; retries: string }
   database: { on: boolean; engine: string }
   env: [string, string][]
@@ -46,7 +46,7 @@ export function fromData(data: unknown): ManifestDraft {
     image: str(d.image),
     digest: str(d.digest),
     tag: str(d.tag),
-    ingress: { on: !!d.ingress, host: str(ing.host), port: str(ing.port), domains: Array.isArray(ing.domains) ? ing.domains.map(String) : [] },
+    ingress: { on: !!d.ingress, host: str(ing.host), port: str(ing.port), domains: Array.isArray(ing.domains) ? ing.domains.map(String) : [], public: !!ing.public },
     health: { on: !!d.health, path: str(hl.path, '/healthz'), port: str(hl.port), retries: str(hl.retries, '5') },
     database: { on: !!d.database, engine: str(db.engine, 'postgres') },
     env: Object.entries(env)
@@ -73,6 +73,7 @@ const emitIngress = (d: ManifestDraft): Rec => {
   if (host) ing.host = host
   const domains = host ? d.ingress.domains.map((s) => s.trim()).filter(Boolean) : []
   if (domains.length) ing.domains = domains
+  if (d.ingress.public) ing.public = true // skip when false (byte-compat)
   return ing
 }
 const emitHealth = (d: ManifestDraft): Rec => ({ path: d.health.path.trim(), port: Number(d.health.port), retries: Number(d.health.retries) })
@@ -221,6 +222,10 @@ function IngressBody({ v, onChange }: { v: ManifestDraft['ingress']; onChange: (
       </div>
       <span className="text-xs text-muted-foreground">Stable/testing/preview get an auto host <code className="font-mono">{'{app}.{project}.<base-domain>'}</code>; a domain here is a production custom domain (Cloudflare + edge).</span>
       <Fld label="Additional production domains"><ListEditor values={v.domains} placeholder="www.example.com" onChange={(domains) => onChange({ ...v, domains })} /></Fld>
+      <label className="flex items-center gap-2 text-sm">
+        <Checkbox checked={v.public} onCheckedChange={(c) => onChange({ ...v, public: !!c })} /> Publicly reachable (Cloudflare Tunnel)
+      </label>
+      <span className="text-xs text-muted-foreground">Non-production only: exposes this app’s host to the public internet via a Cloudflare Tunnel on the private node (ADR 0026) — needed for e.g. OAuth callbacks. Requires a host above. Production is already public via the edge.</span>
     </>
   )
 }

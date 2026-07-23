@@ -35,6 +35,9 @@ use crate::AppState;
 
 const TAILSCALE_IMAGE: &str = "tailscale/tailscale:stable";
 const TRAEFIK_IMAGE: &str = "traefik:v3.5";
+// Floating channel, like TAILSCALE_IMAGE's `:stable`. Pin to a dated tag/digest
+// if reproducibility matters.
+const CLOUDFLARED_IMAGE: &str = "cloudflare/cloudflared:latest";
 /// Per-project host dir holding the wildcard cert + Traefik dynamic config.
 const INGRESS_STATE_DIR: &str = "/etc/majnet/ingress";
 
@@ -43,9 +46,13 @@ pub async fn ensure_ingress(
     docker: &Docker,
     project: &str,
     platform: &Snapshot,
+    public_hosts: &[String],
 ) -> Result<()> {
     let sidecar = format!("proj-{project}-tailscale");
     let traefik = format!("proj-{project}-ingress");
+    let tunnel = format!("proj-{project}-tunnel");
+    let wants_tunnel = !public_hosts.is_empty();
+    let thash = tunnel_hash(public_hosts);
 
     // The wildcard cert the bot committed (ADR 0013), if any. Its content feeds
     // the Traefik config hash, so a renewed cert forces a Traefik recreate.
@@ -59,7 +66,15 @@ pub async fn ensure_ingress(
     // is up; requiring `sidecar_running` here also forces a Traefik recreate
     // whenever the sidecar is (re)created.
     let traefik_ok = sidecar_running && running_with_hash(docker, &traefik, &hash).await?;
-    if sidecar_running && traefik_ok {
+    // The optional cloudflared tunnel (ADR 0026) is "ok" when it's running with
+    // the current host set (if wanted), or absent (if not) — so turning `public`
+    // off tears a stale tunnel down.
+    let tunnel_ok = if wants_tunnel {
+        sidecar_running && running_with_hash(docker, &tunnel, &thash).await?
+    } else {
+        !container_running(docker, &tunnel).await?
+    };
+    if sidecar_running && traefik_ok && tunnel_ok {
         return Ok(());
     }
     if state.config.dry_run {
@@ -197,6 +212,65 @@ pub async fn ensure_ingress(
             .start_container(&traefik, None::<qp::StartContainerOptions>)
             .await?;
     }
+
+    // Cloudflare Tunnel sidecar (ADR 0026): public exposure for non-prod apps.
+    // Shares the tailscale netns so it reaches Traefik on loopback, and dials out
+    // to Cloudflare — no inbound port. The bot provisions the tunnel + DNS and
+    // returns a scoped token (credential isolation, like the tailscale authkey).
+    if wants_tunnel && !tunnel_ok {
+        let token = state
+            .http
+            .post(format!(
+                "{}/api/cloudflare-tunnel/{project}",
+                state.config.bot_url
+            ))
+            .json(&serde_json::json!({ "hosts": public_hosts }))
+            .send()
+            .await?
+            .error_for_status()
+            .context("bot refused to provision a cloudflare tunnel")?
+            .text()
+            .await?;
+        remove_if_exists(docker, &tunnel).await?;
+        pull(docker, CLOUDFLARED_IMAGE).await?;
+        docker
+            .create_container(
+                Some(qp::CreateContainerOptions {
+                    name: Some(tunnel.clone()),
+                    ..Default::default()
+                }),
+                ContainerCreateBody {
+                    image: Some(CLOUDFLARED_IMAGE.into()),
+                    cmd: Some(vec![
+                        "tunnel".into(),
+                        "--no-autoupdate".into(),
+                        "run".into(),
+                    ]),
+                    env: Some(vec![format!("TUNNEL_TOKEN={token}")]),
+                    labels: Some(HashMap::from([
+                        (LABEL_PROJECT.to_string(), project.to_string()),
+                        (LABEL_CONFIG.to_string(), thash),
+                    ])),
+                    host_config: Some(HostConfig {
+                        network_mode: Some(format!("container:{sidecar}")),
+                        restart_policy: Some(RestartPolicy {
+                            name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            )
+            .await
+            .context("creating cloudflared tunnel sidecar")?;
+        docker
+            .start_container(&tunnel, None::<qp::StartContainerOptions>)
+            .await?;
+    } else if !wants_tunnel {
+        // Public turned off (or never on): ensure no stale tunnel remains.
+        remove_if_exists(docker, &tunnel).await?;
+    }
     Ok(())
 }
 
@@ -245,6 +319,22 @@ fn ingress_hash(cert: Option<&BTreeMap<String, Vec<u8>>>) -> String {
             h.update(content);
             h.update([0]);
         }
+    }
+    hex::encode(h.finalize())[..16].to_string()
+}
+
+/// Config hash for the cloudflared tunnel sidecar: image + spec salt + the sorted
+/// public host set, so adding/removing a public host recreates the sidecar — which
+/// re-fetches the token and re-provisions the tunnel's ingress config via the bot.
+fn tunnel_hash(hosts: &[String]) -> String {
+    let mut h = Sha256::new();
+    h.update(CLOUDFLARED_IMAGE.as_bytes());
+    h.update(b"spec-v1");
+    let mut sorted: Vec<&String> = hosts.iter().collect();
+    sorted.sort();
+    for host in sorted {
+        h.update(host.as_bytes());
+        h.update([0]);
     }
     hex::encode(h.finalize())[..16].to_string()
 }
