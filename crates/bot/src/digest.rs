@@ -146,8 +146,8 @@ pub(crate) async fn bump_class_digest(
 
     // Env pins carry ONLY the digest: the bare repository is inherited from
     // `base.yaml`, and the overlay's job is to pin this class to a digest.
-    let digest = digest_of(image)
-        .with_context(|| format!("built image is not digest-pinned: {image}"))?;
+    let digest =
+        digest_of(image).with_context(|| format!("built image is not digest-pinned: {image}"))?;
     let updated = replace_digest_line(&current, digest)?;
     if updated == current {
         tracing::info!(org, app, class, "digest unchanged, nothing to commit");
@@ -184,7 +184,11 @@ pub(crate) fn overlay_digest(content: &str) -> Option<String> {
     content
         .lines()
         .filter(|l| top_level(l))
-        .find_map(|l| l.strip_prefix("digest:").map(str::trim).filter(|d| d.starts_with("sha256:")))
+        .find_map(|l| {
+            l.strip_prefix("digest:")
+                .map(str::trim)
+                .filter(|d| d.starts_with("sha256:"))
+        })
         .or_else(|| {
             content
                 .lines()
@@ -297,8 +301,8 @@ mod tests {
 
     #[test]
     fn keeps_bare_image_override_and_other_keys() {
-        let out =
-            replace_digest_line("image: ghcr.io/o/a\ningress:\n  host: x\n  port: 80\n", D).unwrap();
+        let out = replace_digest_line("image: ghcr.io/o/a\ningress:\n  host: x\n  port: 80\n", D)
+            .unwrap();
         assert!(out.contains("image: ghcr.io/o/a\n"));
         assert!(out.contains("host: x"));
         assert!(out.contains("digest: sha256:new"));
@@ -308,7 +312,10 @@ mod tests {
     #[test]
     fn empty_map_overlay_becomes_clean_digest_only() {
         // `{}` must be dropped (a key can't follow a flow map — two YAML docs).
-        assert_eq!(replace_digest_line("{}\n\n", D).unwrap(), "digest: sha256:new\n");
+        assert_eq!(
+            replace_digest_line("{}\n\n", D).unwrap(),
+            "digest: sha256:new\n"
+        );
         assert_eq!(
             replace_digest_line("# managed\n{}\n", D).unwrap(),
             "# managed\ndigest: sha256:new\n"
@@ -324,7 +331,10 @@ mod tests {
 
     #[test]
     fn overlay_digest_reads_field_or_combined_image() {
-        assert_eq!(overlay_digest("digest: sha256:abc\n").as_deref(), Some("sha256:abc"));
+        assert_eq!(
+            overlay_digest("digest: sha256:abc\n").as_deref(),
+            Some("sha256:abc")
+        );
         assert_eq!(
             overlay_digest("image: ghcr.io/o/a@sha256:def\n").as_deref(),
             Some("sha256:def")

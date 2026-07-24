@@ -622,9 +622,15 @@ mod tests {
         .unwrap();
         assert_eq!(p.image_ref(), format!("ghcr.io/o/api@{DIGEST}"));
         // strip_pin leaves a registry `host:port` intact, strips a real tag/digest.
-        assert_eq!(super::strip_pin("registry.example.com:5000/o/api"), "registry.example.com:5000/o/api");
+        assert_eq!(
+            super::strip_pin("registry.example.com:5000/o/api"),
+            "registry.example.com:5000/o/api"
+        );
         assert_eq!(super::strip_pin("ghcr.io/o/api:v1"), "ghcr.io/o/api");
-        assert_eq!(super::strip_pin(&format!("ghcr.io/o/api@{DIGEST}")), "ghcr.io/o/api");
+        assert_eq!(
+            super::strip_pin(&format!("ghcr.io/o/api@{DIGEST}")),
+            "ghcr.io/o/api"
+        );
         // A registry port in the repo is not mistaken for a tag.
         assert!(!super::image_has_pin("registry.example.com:5000/o/api"));
         assert!(super::image_has_pin("ghcr.io/o/api:v1"));

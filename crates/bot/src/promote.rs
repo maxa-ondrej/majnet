@@ -76,9 +76,11 @@ async fn do_promote(state: &AppState, org: &str, app: &str, actor: &str) -> Resu
                 .await?;
         }
     }
-    state
-        .store
-        .log_event("promote", Some(org), &format!("{app} → {digest} by {actor}"))?;
+    state.store.log_event(
+        "promote",
+        Some(org),
+        &format!("{app} → {digest} by {actor}"),
+    )?;
     tracing::info!(org, app, %digest, actor, "promoted — env/production render PR will follow");
     Ok(format!(
         "{app}: promotion committed; review the env/production render PR to deploy"
