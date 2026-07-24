@@ -46,7 +46,7 @@ pub async fn capture(
     // version (e.g. `v1.0.0-beta34`) instead of a bare digest (ADR 0021).
     let mut error = error;
     if version.is_none() {
-        if let Some(v) = image_oci_version(ctx.docker, &manifest.image).await {
+        if let Some(v) = image_oci_version(ctx.docker, &manifest.image_ref()).await {
             info = Some(serde_json::json!({ "version": v, "source": "image" }).to_string());
             version = Some(v);
             error = None;

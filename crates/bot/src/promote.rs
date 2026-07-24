@@ -43,26 +43,21 @@ async fn do_promote(state: &AppState, org: &str, app: &str, actor: &str) -> Resu
         .with_context(|| {
             format!("apps/{app}/stable.yaml not found — nothing deployed to stable")
         })?;
-    let image = stable
-        .0
-        .lines()
-        .find_map(|l| l.strip_prefix("image: "))
-        .context("stable overlay has no image line")?
-        .trim()
-        .to_string();
-    anyhow::ensure!(
-        image.contains("@sha256:"),
-        "stable image is not digest-pinned: {image}"
-    );
+    // Promotion pins ONLY the digest: read whatever `stable` is running (a
+    // `digest:` field, or the pin on a legacy combined `image:`) and copy that
+    // digest into `production` — the bare repository is inherited from base.yaml.
+    let digest = crate::digest::overlay_digest(&stable.0)
+        .context("stable overlay carries no digest pin — nothing deployed to stable")?;
 
     let production_path = format!("apps/{app}/production.yaml");
-    let short = &image[image.len().saturating_sub(12)..];
+    let hex = digest.strip_prefix("sha256:").unwrap_or(&digest);
+    let short = &hex[..12.min(hex.len())];
     let message = format!("promote({app}): stable digest to production ({short})");
     match read_file(&repos, &production_path).await? {
         Some((current, sha)) => {
-            let updated = crate::digest::replace_image_line(&current, &image)?;
+            let updated = crate::digest::replace_digest_line(&current, &digest)?;
             if updated == current {
-                return Ok(format!("{app}: production already at {image}"));
+                return Ok(format!("{app}: production already at {digest}"));
             }
             repos
                 .update_file(&production_path, &message, &updated, &sha)
@@ -72,7 +67,7 @@ async fn do_promote(state: &AppState, org: &str, app: &str, actor: &str) -> Resu
         }
         None => {
             let content = format!(
-                "# production overlay for {app} — digest moves via promote\nimage: {image}\n"
+                "# production overlay for {app} — digest moves via promote\ndigest: {digest}\n"
             );
             repos
                 .create_file(&production_path, &message, &content)
@@ -83,8 +78,8 @@ async fn do_promote(state: &AppState, org: &str, app: &str, actor: &str) -> Resu
     }
     state
         .store
-        .log_event("promote", Some(org), &format!("{app} → {image} by {actor}"))?;
-    tracing::info!(org, app, %image, actor, "promoted — env/production render PR will follow");
+        .log_event("promote", Some(org), &format!("{app} → {digest} by {actor}"))?;
+    tracing::info!(org, app, %digest, actor, "promoted — env/production render PR will follow");
     Ok(format!(
         "{app}: promotion committed; review the env/production render PR to deploy"
     ))

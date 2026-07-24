@@ -52,6 +52,13 @@ function Deployments() {
   // the row can deep-link to that env's deploy detail).
   const dpFor = (project: string, app: string) =>
     (progress.data ?? []).find((x) => x.project === project && x.app === app && x.status === 'active')
+  // The env class to deep-link into: prefer the active rollout, but fall back to
+  // the most-recent rollout row for the app — the active one may have just
+  // flipped to 'done' the moment the deploy landed (leaving no active row).
+  const classFor = (project: string, app: string) =>
+    [...(progress.data ?? [])]
+      .filter((x) => x.project === project && x.app === app)
+      .sort((a, b) => b.updated_at - a.updated_at)[0]?.class
   const stageLabel = (stage: string) => DEPLOY_STAGES.find((s) => s.key === stage)?.label ?? stage
   const orgOf = (name: string) => (projects.data ?? []).find((p) => p.name === name)?.org
   // Tick a re-render every 10s so the 90s "deploying" window ages out even when
@@ -104,6 +111,7 @@ function Deployments() {
               const app = e.action.replace(/^converge /, '')
               const ver = verOf(e.result)
               const dp = dpFor(e.project, app)
+              const cls = dp?.class ?? classFor(e.project, app)
               const org = orgOf(e.project)
               const inner = (
                 <>
@@ -123,7 +131,7 @@ function Deployments() {
               // the deploying env, when we can resolve the org (+ class).
               return org ? (
                 <Link key={i} to="/projects/$org/apps/$app/deploys" params={{ org, app }}
-                  onClick={() => { if (dp) setEnv(dp.class as EnvClass); setOpen(false) }}
+                  onClick={() => { if (cls) setEnv(cls as EnvClass); setOpen(false) }}
                   className="block rounded-md px-2 py-1.5 hover:bg-accent">{inner}</Link>
               ) : (
                 <div key={i} className="rounded-md px-2 py-1.5">{inner}</div>
@@ -138,7 +146,8 @@ function Deployments() {
               <GitPullRequest className="size-3" /> Pending review <span className="ml-auto font-mono">{pending.length}</span>
             </div>
             {pending.map(({ p, pr }) => (
-              <Link key={`${p.org}-${pr.number}`} to="/projects/$org/deploys" params={{ org: p.org }} onClick={() => setOpen(false)}
+              <Link key={`${p.org}-${pr.number}`} to="/projects/$org/deploys" params={{ org: p.org }}
+                onClick={() => { setEnv(pr.class as EnvClass); setOpen(false) }}
                 className="block rounded-md px-2 py-1.5 hover:bg-accent">
                 <div className="flex items-center gap-1.5 text-[13px]">
                   <span className="font-medium">{p.name}</span>

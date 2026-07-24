@@ -384,7 +384,7 @@ async fn converge_one(
         tracker.done(&summary);
         if !ctx.dry_run {
             if let Some(version) = crate::info::capture(state, ctx, &manifest).await {
-                return Ok(summary.replace(&manifest.image, &version));
+                return Ok(summary.replace(&manifest.image_ref(), &version));
             }
         }
     }

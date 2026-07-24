@@ -1888,21 +1888,24 @@ pub async fn progress(
 }
 
 /// Build the `production.yaml` for a promote. Promote pins only the digest, so
-/// replace the top-level `image:` in the existing overlay — preserving custom
-/// ingress domains, env, and anything else hand-managed there (ADR 0013). When
-/// the app has no production overlay yet, create a minimal image-only one.
+/// set the `digest:` field in the existing overlay — preserving custom ingress
+/// domains, env, and anything else hand-managed there (ADR 0013); the bare
+/// repository is inherited from base.yaml. When the app has no production
+/// overlay yet, create a minimal digest-only one.
 fn production_overlay(
     current: Option<&str>,
     app: &str,
     version: &str,
     image: &str,
 ) -> Result<String> {
+    let digest = crate::digest::digest_of(image)
+        .with_context(|| format!("release image is not digest-pinned: {image}"))?;
     match current {
         Some(existing) if !existing.trim().is_empty() => {
-            crate::digest::replace_image_line(existing, image)
+            crate::digest::replace_digest_line(existing, digest)
         }
         _ => Ok(format!(
-            "# production overlay for {app} — release {version} (ADR 0009)\nimage: {image}\n"
+            "# production overlay for {app} — release {version} (ADR 0009)\ndigest: {digest}\n"
         )),
     }
 }
@@ -2347,21 +2350,26 @@ mod tests {
     #[test]
     fn promote_preserves_hand_managed_production_config() {
         // The drift case: ingress was hand-added to production.yaml. A promote
-        // must swap only the image and keep the ingress (ADR 0013).
+        // must pin only the digest and keep the ingress (ADR 0013); the stale
+        // combined `image:` pin is demoted to its bare repo.
         let current =
             "image: ghcr.io/o/a@sha256:old\ningress:\n  host: a.example.com\n  port: 8080\n";
         let out = production_overlay(Some(current), "a", "v1.2.3", NEW).unwrap();
-        assert!(out.contains("image: ghcr.io/o/a@sha256:new"));
+        assert!(out.contains("digest: sha256:new"));
+        assert!(out.contains("image: ghcr.io/o/a\n")); // demoted to bare repo
         assert!(out.contains("host: a.example.com"));
         assert!(out.contains("port: 8080"));
         assert!(!out.contains("sha256:old"));
+        // Still a single, valid YAML document.
+        serde_yaml::from_str::<serde_yaml::Value>(&out).unwrap();
     }
 
     #[test]
     fn promote_creates_minimal_overlay_when_absent() {
         for current in [None, Some(""), Some("   \n")] {
             let out = production_overlay(current, "a", "v1.0.0", NEW).unwrap();
-            assert!(out.contains("image: ghcr.io/o/a@sha256:new"));
+            assert!(out.contains("digest: sha256:new"));
+            assert!(!out.contains("image:")); // repo inherited from base.yaml
             assert!(out.contains("release v1.0.0"));
         }
     }

@@ -270,20 +270,36 @@ pub fn image_has_pin(image: &str) -> bool {
     image.contains('@') || image.rsplit('/').next().unwrap_or(image).contains(':')
 }
 
-/// The full image reference to pull/deploy: the `image` field if it already
-/// carries a pin, otherwise the bare repo joined with the split `digest` (or
-/// `tag`) field. This is the single source of truth every consumer uses so the
-/// combined and split forms are interchangeable.
+/// Strip any `@digest` or trailing `:tag` pin off an image reference, returning
+/// the bare repository. A `:` in the registry host (`host:5000/repo`) is not a
+/// tag, so only a `:` on the final path segment is stripped.
+pub fn strip_pin(image: &str) -> &str {
+    let base = image.split('@').next().unwrap_or(image);
+    match base.rfind('/') {
+        // A tag lives on the final path segment; the registry host's `:port` does not.
+        Some(slash) => match base[slash + 1..].find(':') {
+            Some(colon) => &base[..slash + 1 + colon],
+            None => base,
+        },
+        None => base.split(':').next().unwrap_or(base),
+    }
+}
+
+/// The full image reference to pull/deploy. A `digest` (or, failing that, a
+/// `tag`) field is authoritative: it pins `image`'s bare repository, overriding
+/// any pin `image` itself already carries. With neither set, `image` is used
+/// verbatim. This lets a class overlay pin only its own `digest` while the
+/// repository is inherited from `base.yaml` — and keeps existing combined-form
+/// manifests (no `digest`/`tag`) byte-identical. Single source of truth for
+/// every consumer, so the combined and split forms stay interchangeable.
 impl AppManifest {
     pub fn image_ref(&self) -> String {
-        if image_has_pin(&self.image) {
-            self.image.clone()
-        } else if let Some(d) = &self.digest {
-            format!("{}@{}", self.image, d)
-        } else if let Some(t) = &self.tag {
-            format!("{}:{}", self.image, t)
-        } else {
-            self.image.clone() // unpinned — rejected by validate()
+        match self.digest.as_deref().filter(|s| !s.is_empty()) {
+            Some(d) => format!("{}@{}", strip_pin(&self.image), d),
+            None => match self.tag.as_deref().filter(|s| !s.is_empty()) {
+                Some(t) => format!("{}:{}", strip_pin(&self.image), t),
+                None => self.image.clone(), // unpinned unless `image` self-pins
+            },
         }
     }
 }
@@ -596,6 +612,19 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(s.image_ref(), format!("ghcr.io/o/api@{DIGEST}"));
+        // Split-with-inherited-pin: a class overlay pins only its `digest`, so a
+        // pinned base `image:` survives the merge — the digest must win and strip
+        // the stale base pin (this is what a digest-only promote produces).
+        let p = AppManifest::parse(&format!(
+            "name: api\nimage: ghcr.io/o/api@sha256:{}\ndigest: {DIGEST}\n",
+            "0".repeat(64)
+        ))
+        .unwrap();
+        assert_eq!(p.image_ref(), format!("ghcr.io/o/api@{DIGEST}"));
+        // strip_pin leaves a registry `host:port` intact, strips a real tag/digest.
+        assert_eq!(super::strip_pin("registry.example.com:5000/o/api"), "registry.example.com:5000/o/api");
+        assert_eq!(super::strip_pin("ghcr.io/o/api:v1"), "ghcr.io/o/api");
+        assert_eq!(super::strip_pin(&format!("ghcr.io/o/api@{DIGEST}")), "ghcr.io/o/api");
         // A registry port in the repo is not mistaken for a tag.
         assert!(!super::image_has_pin("registry.example.com:5000/o/api"));
         assert!(super::image_has_pin("ghcr.io/o/api:v1"));
