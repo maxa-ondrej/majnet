@@ -85,25 +85,46 @@ pub async fn on_pr_build(
     Ok(())
 }
 
-/// PR closed/merged: remove the manifest (reconciler grace-GCs the stack).
-pub async fn on_pr_closed(state: &AppState, org: &str, app: &str, pr: u64) -> Result<()> {
-    let name = format!("{app}-pr{pr}");
-    let changes = BTreeMap::from([
-        (format!("{name}.yaml"), None),
-        (format!("secrets/{name}.yaml"), None),
-    ]);
+/// PR closed/merged: remove every preview manifest the PR produced so the
+/// reconciler grace-GCs each stack. The `pull_request` webhook gives us only the
+/// source **repo**, but a preview is deployed per **app** — and a monorepo app is
+/// named `<repo>-<leaf>` (not the bare repo), so a single PR on a monorepo spawns
+/// one preview per member. Resolve the repo's apps from the project config and
+/// remove each `<app>-pr<N>.yaml` (+ its secrets). Deletions for apps that never
+/// had a preview are filtered out by `commit_to_ephemeral`.
+pub async fn on_pr_closed(state: &AppState, org: &str, repo: &str, pr: u64) -> Result<()> {
+    let project = crate::dashboard_api::read_project(state, org).await?;
+    let apps: Vec<String> = project
+        .apps
+        .iter()
+        .filter(|a| a.repo() == repo)
+        .map(|a| a.name.clone())
+        .collect();
+    if apps.is_empty() {
+        tracing::info!(org, repo, pr, "no apps declared for repo — nothing to tear down");
+        return Ok(());
+    }
+
+    let mut changes = BTreeMap::new();
+    for app in &apps {
+        let name = format!("{app}-pr{pr}");
+        changes.insert(format!("{name}.yaml"), None);
+        changes.insert(format!("secrets/{name}.yaml"), None);
+    }
     match commit_to_ephemeral(
         state,
         org,
         changes,
-        &format!("preview({app}): remove pr-{pr}"),
+        &format!("preview({repo}): remove pr-{pr}"),
     )
     .await
     {
         Ok(()) => {
-            state
-                .store
-                .log_event("ephemeral-remove", Some(org), &name)?;
+            state.store.log_event(
+                "ephemeral-remove",
+                Some(org),
+                &format!("{repo} pr-{pr} ({} app{})", apps.len(), if apps.len() == 1 { "" } else { "s" }),
+            )?;
             Ok(())
         }
         // Nothing was ever deployed for this PR (e.g. previews disabled).
